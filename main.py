@@ -60,6 +60,7 @@ ALLOWED = MappingProxyType({
     "save": "Lock a secret, e.g. save wifi MyPass123",
     "open": "Show a locked secret, e.g. open wifi",
     "secrets": "List what is in your locker",
+    "edit": "Change your last picture, e.g. edit make it night. Or just say: make me near a building",
     "draw": "Draw a picture, e.g. draw a lion on Mount Elgon. Put your photo as Download/Genius/me.jpg, then 'draw me in a suit' keeps YOUR face",
     "log": "Show the log",
     "setkey": "setkey YOURKEY - lets me answer anything",
@@ -192,6 +193,9 @@ VERSION = "102.0"
 VERSION_DATE = "2026-10-25"
 CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
 - New look: dark doodle wallpaper of game icons behind every screen
+- Picture chat like Gemini: after a picture, say 'make me near a building', 'change it to night'
+  or 'blur the background' and Genius edits THAT picture, keeping the same person
+- Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 
 Genius 101.0 Guardian (2026-10-24)
 - Drawing fixed: if Gemini's free plan can't draw, Genius uses a free picture maker instead
@@ -697,12 +701,74 @@ def gemini_image(prompt):
     return (path, None) if path else (None, err2)
 
 
-def _gemini_image(prompt, ref=None):
-    """Draw a picture from text with Gemini, optionally keeping the face in a reference photo."""
+LAST_IMAGE = {"path": None, "time": 0, "prompt": ""}
+EDIT_START = re.compile(
+    r"^(make (me|it|him|her|them|the|us)|put (me|him|her|it|them|us)|place (me|him|her)|change|now\b|add |remove |"
+    r"take (out|off|away)|turn |move |edit |swap |replace |give (me|him|her)|same (but|picture|photo)|"
+    r"at (night|sunset|sunrise|dawn|dusk)|in (the )?(night|rain|snow|evening|morning)|blur|zoom|closer|"
+    r"wider|near |next to |in front of|behind |wearing |holding |without |more |less |brighter|darker|"
+    r"let (me|him|her|it) |show (me|him|her) (near|in|at|with|holding|wearing))", re.I)
+IMAGE_TIPS = ("Want changes? Just tell me, e.g.\n"
+              "- make me near a modern skyscraper\n"
+              "- change it to night with city lights\n"
+              "- blur the background so I stand out\n"
+              "- put me in a black suit\n"
+              "- make me smile\n"
+              "Say 'new picture' to start fresh, or 'undo picture' to go back.")
+IMAGE_STACK = []
+
+
+def remember_image(path, prompt):
+    if LAST_IMAGE["path"]:
+        IMAGE_STACK.append(dict(LAST_IMAGE))
+        del IMAGE_STACK[:-10]
+    LAST_IMAGE.update(path=path, time=time.time(), prompt=prompt)
+
+
+def is_image_edit(low):
+    """A follow-up like 'make me near building' right after a picture = edit that picture."""
+    return bool(LAST_IMAGE["path"]) and time.time() - LAST_IMAGE["time"] < 3600 \
+        and os.path.exists(LAST_IMAGE["path"]) and bool(EDIT_START.match(low.strip()))
+
+
+def edit_image(instruction):
+    """Change the last picture the way Gemini does: same person, only what was asked changes."""
+    base = LAST_IMAGE["path"]
+    path, err = _gemini_image(instruction, edit=base)
+    if path:
+        return path, None
+    log(f"EDIT: Gemini couldn't ({err}); redrawing with the free picture maker")
+    combined = (LAST_IMAGE["prompt"] + ", " + instruction).strip(", ")
+    path, err2 = free_image(realistic_prompt(combined))
+    if path:
+        return path, ("Gemini picture editing isn't on your key's free plan, so I redrew it. "
+                      "The face may look different. Add billing at aistudio.google.com for true editing.")
+    return None, err2
+
+
+def _img_part(path):
+    mime = "image/png" if path.lower().endswith(".png") else "image/jpeg"
+    return {"inlineData": {"mimeType": mime, "data": base64.b64encode(open(path, "rb").read()).decode()}}
+
+
+def _gemini_image(prompt, ref=None, edit=None):
+    """Draw a picture from text with Gemini, optionally keeping the face in a reference photo.
+    edit = path of the last picture: change only what the user asked (like Gemini's chat editing)."""
     if not os.path.exists(KEY_FILE):
         return None, "no key"
     key = clean_key(open(KEY_FILE).read())
-    if ref:
+    if edit:
+        parts = [_img_part(edit)]
+        face = my_photo()
+        if face:
+            parts.append(_img_part(face))
+        parts.append({"text":
+            "Edit the FIRST photo. Change: " + prompt + ". Keep the SAME person with the exact same face, "
+            "head shape, skin tone, hair and body" + (" (the second photo shows their real face)" if face else "") +
+            ". Keep their clothes, pose and everything else the same unless the change asks otherwise. "
+            "Result must be a real, photorealistic smartphone photograph with natural light, real skin texture, "
+            "correct hands and fingers, believable shadows and perspective. Not a cartoon, no text, no watermark."})
+    elif ref:
         mime = "image/png" if ref.lower().endswith(".png") else "image/jpeg"
         parts = [{"inlineData": {"mimeType": mime, "data": base64.b64encode(open(ref, "rb").read()).decode()}},
                  {"text": "Using this reference photo, create a NEW real photograph of the SAME person. "
@@ -1607,7 +1673,8 @@ def integrity_check():
         return "ok"
     if saved["sha"] == now:
         return "ok"
-    if saved.get("version") != VERSION and saved.get("pending") == now:
+    if saved.get("version") != VERSION:   # a new APK version was installed
+
         json.dump({"sha": now, "version": VERSION}, open(INTEGRITY_FILE, "w"))
         return "ok"
     intruder_log("code changed outside upgrade", now[:12])
@@ -2670,6 +2737,25 @@ class ChatScreen(BoxLayout):
         log("CHAT CLEARED")
         self.say("Chat cleared. Fresh start.")
 
+    def do_edit(self, instruction):
+        self.busy = True
+        self.say("Changing your picture... this takes a moment.")
+
+        def d(*_):
+            path, note = edit_image(instruction)
+
+            def done(*_):
+                self.busy = False
+                if path:
+                    remember_image(path, LAST_IMAGE["prompt"] + ", " + instruction)
+                    self.show_image(path, instruction)
+                    self.say(note or "Here it is.")
+                    self.show("AI", IMAGE_TIPS)
+                else:
+                    self.say(note)
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=d, daemon=True).start()
+
     def show_image(self, path, caption):
         box = BoxLayout(orientation="vertical", spacing=10, padding=12)
         box.add_widget(KivyImage(source=path, allow_stretch=True, keep_ratio=True))
@@ -2722,6 +2808,32 @@ class ChatScreen(BoxLayout):
         action = LUGANDA_CMDS.get(action, action)
         action = {"whatsnew": "version", "changelog": "version", "update": "version"}.get(action, action)
 
+        # picture follow-ups, like Gemini: "make me near building" edits the last picture
+        if low.strip(" .!") in ("new picture", "new photo", "start fresh"):
+            LAST_IMAGE.update(path=None, time=0, prompt="")
+            self.say("Okay, the next picture starts fresh.")
+            return
+        if low.strip(" .!") in ("undo picture", "undo", "go back", "previous picture"):
+            if IMAGE_STACK:
+                LAST_IMAGE.update(IMAGE_STACK.pop())
+                LAST_IMAGE["time"] = time.time()
+                self.show_image(LAST_IMAGE["path"], "Back to the previous picture")
+            else:
+                self.say("There's no earlier picture to go back to.")
+            return
+        if action == "edit" or (action not in ALLOWED and action not in NEW_ACTIONS
+                                and action not in LIFE_ACTIONS and is_image_edit(low)):
+            instr = arg if action == "edit" else line
+            if not LAST_IMAGE["path"]:
+                self.say("Draw a picture first, then tell me what to change.")
+            elif not instr:
+                self.say("Tell me what to change, e.g. edit make it night time")
+            else:
+                self.do_edit(instr)
+            return
+        if not LAST_IMAGE["path"] and my_photo() and re.match(r"^(make|put|show|place) me\b", low):
+            self.run(line, "draw", line)
+            return
         if getattr(self, "pending_quiz", None) and action.strip(".)") in ("a", "b", "c", "d"):
             self.check_quiz(action.strip(".)").upper())
             return
@@ -2877,8 +2989,10 @@ class ChatScreen(BoxLayout):
                 def done(*_):
                     self.busy = False
                     if path:
+                        remember_image(path, arg)
                         self.show_image(path, arg)
                         self.say("Here is your picture.")
+                        self.show("AI", IMAGE_TIPS)
                     else:
                         self.say(err)
                 Clock.schedule_once(done, 0)
