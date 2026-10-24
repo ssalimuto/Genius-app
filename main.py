@@ -60,6 +60,7 @@ ALLOWED = MappingProxyType({
     "save": "Lock a secret, e.g. save wifi MyPass123",
     "open": "Show a locked secret, e.g. open wifi",
     "secrets": "List what is in your locker",
+    "setme": "Save your newest selfie as your face, so 'make me ...' pictures look like you. 'keep this face' uses the last picture",
     "edit": "Change your last picture, e.g. edit make it night. Or just say: make me near a building",
     "draw": "Draw a picture, e.g. draw a lion on Mount Elgon. Put your photo as Download/Genius/me.jpg, then 'draw me in a suit' keeps YOUR face",
     "log": "Show the log",
@@ -196,6 +197,8 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
 - Picture chat like Gemini: after a picture, say 'make me near a building', 'change it to night'
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
+- setme: take a selfie, type setme, and your face is saved for 'make me ...' pictures
+- Better photos: golden light, blurred background, natural pose, and Gemini's newest picture model
 
 Genius 101.0 Guardian (2026-10-24)
 - Drawing fixed: if Gemini's free plan can't draw, Genius uses a free picture maker instead
@@ -604,7 +607,7 @@ DEEP_RULES = (LUGANDA + "You are the private AI of your owner ssalimuto, a young
               "points or steps. Say honestly when you are not sure. Never claim to control devices.")
 
 
-IMAGE_MODELS = ("gemini-2.5-flash-image", "gemini-2.0-flash-preview-image-generation")
+IMAGE_MODELS = ("gemini-2.5-flash-image", "gemini-3-pro-image-preview", "gemini-2.0-flash-preview-image-generation")
 
 
 def free_image(prompt, tries=3):
@@ -669,6 +672,38 @@ def realistic_prompt(prompt):
 
 
 ME_WORDS = re.compile(r"\b(me|my face|myself|my photo|like me|of me)\b", re.I)
+
+
+def set_my_photo(src=None):
+    """Save a face photo as Download/Genius/me.jpg: the given file, or the newest photo/screenshot on the phone."""
+    if not src:
+        best, bt = None, 0
+        for d in ("/storage/emulated/0/Download", "/storage/emulated/0/DCIM/Camera",
+                  "/storage/emulated/0/Pictures/Screenshots", "/storage/emulated/0/DCIM/Screenshots",
+                  "/storage/emulated/0/Pictures"):
+            try:
+                for n in os.listdir(d):
+                    if n.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                        f = os.path.join(d, n)
+                        t = os.path.getmtime(f)
+                        if t > bt:
+                            best, bt = f, t
+            except Exception:
+                continue
+        src = best
+    if not src or not os.path.exists(src):
+        return None
+    d = "/storage/emulated/0/Download/Genius" if os.path.isdir("/storage/emulated/0") else "."
+    os.makedirs(d, exist_ok=True)
+    out = os.path.join(d, "me.png" if src.lower().endswith(".png") else "me.jpg")
+    for n in ("me.jpg", "me.jpeg", "me.png"):
+        try:
+            os.remove(os.path.join(d, n))
+        except Exception:
+            pass
+    with open(src, "rb") as a, open(out, "wb") as b:
+        b.write(a.read())
+    return out
 
 
 def my_photo():
@@ -771,10 +806,11 @@ def _gemini_image(prompt, ref=None, edit=None):
     elif ref:
         mime = "image/png" if ref.lower().endswith(".png") else "image/jpeg"
         parts = [{"inlineData": {"mimeType": mime, "data": base64.b64encode(open(ref, "rb").read()).decode()}},
-                 {"text": "Using this reference photo, create a NEW real photograph of the SAME person. "
-                          "Keep the face exactly identical: head shape, hair, eyes, nose, lips, jawline, skin tone, "
-                          "marks. Scene: " + prompt + ". Natural true-to-life colours, no filters, real skin "
-                          "texture, sharp phone-camera photo. Photorealistic, not a cartoon, no text, no watermark."}]
+                 {"text": "Photorealistic smartphone photo of the same person as in the reference image, same face "
+                          "(head shape, hair, eyes, nose, lips, jaw, skin tone). Scene: " + prompt + ". "
+                          "Relaxed confident pose, warm natural light (golden hour outdoors), the background softly "
+                          "blurred so the person stands out, 35mm lens, real skin texture, correct hands. "
+                          "Real photograph, no text, no watermark."}]
     else:
         parts = [{"text":
             "Create a highly realistic, photorealistic photograph of: " + prompt +
@@ -2809,6 +2845,12 @@ class ChatScreen(BoxLayout):
         action = {"whatsnew": "version", "changelog": "version", "update": "version"}.get(action, action)
 
         # picture follow-ups, like Gemini: "make me near building" edits the last picture
+        if low.strip(" .!") in ("setme", "set me", "this is me", "use this face", "keep this face", "save my face"):
+            src = LAST_IMAGE["path"] if low.strip(" .!") in ("use this face", "keep this face") else None
+            f = set_my_photo(src)
+            self.say("Saved your face. Now say 'make me ...' and every picture keeps it." if f
+                     else "I couldn't find a photo. Take a clear selfie first, then say setme.")
+            return
         if low.strip(" .!") in ("new picture", "new photo", "start fresh"):
             LAST_IMAGE.update(path=None, time=0, prompt="")
             self.say("Okay, the next picture starts fresh.")
