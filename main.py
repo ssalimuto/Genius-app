@@ -198,6 +198,7 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
 - Picture chat like Gemini: after a picture, say 'make me near a building', 'change it to night'
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
+- Top right: Find (search chats, notes, creations, internet) and Menu (My creations, Exit, Lock, Help)
 - + button: add a picture or a file (PDF, text) from your phone, or your newest photo/file.
   Then ask about it ('summarize', 'what is this?') or change the picture ('make me near a building')
 - setme: take a selfie, type setme, and your face is saved for 'make me ...' pictures
@@ -2513,8 +2514,16 @@ class ChatScreen(BoxLayout):
         header.add_widget(Label(text="[b]Genius[/b]", markup=True, font_size="23sp",
                                 color=GOLD, halign="left"))
         self.mode_lbl = Label(text="Fast", font_size="15sp", color=HINT,
-                              halign="right", size_hint_x=None, width="90dp")
+                              halign="right", size_hint_x=None, width="60dp")
         header.add_widget(self.mode_lbl)
+        hb = BoxLayout(size_hint_x=None, width="104dp", spacing=8, padding=[0, 9, 0, 9])
+        menu_btn = RoundButton(text="Menu", bg=GREY, fg=TEXTCOL, font_size="13sp", bold=True)
+        menu_btn.bind(on_press=self.options_menu)
+        find_btn = RoundButton(text="Find", bg=BLUE, fg=TEXTCOL, font_size="13sp", bold=True)
+        find_btn.bind(on_press=self.search_box)
+        hb.add_widget(menu_btn)
+        hb.add_widget(find_btn)
+        header.add_widget(hb)
         self.add_widget(header)
 
         # chat area
@@ -2875,6 +2884,141 @@ class ChatScreen(BoxLayout):
         self.out.text = ""
         log("CHAT CLEARED")
         self.say("Chat cleared. Fresh start.")
+
+    # ---------- header: Menu (options) and Find (search) ----------
+    def options_menu(self, *_):
+        box = BoxLayout(orientation="vertical", spacing=10, padding=12)
+        pop = Popup(title="Options", content=box, size_hint=(0.9, 0.7),
+                    separator_color=GOLD, title_color=GOLD)
+        opts = [("My creations (pictures)", self.creations, BLUE),
+                ("Add a picture or file", self.attach_menu, BLUE),
+                ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
+                ("Help (all commands)", lambda: self.handle("help"), GREY),
+                ("Lock Genius", self.app.build_login, GREY),
+                ("Exit Genius", self.exit_app, RED)]
+        for label, fn, col in opts:
+            b = RoundButton(text=label, bg=col, fg=TEXTCOL, size_hint_y=None, height="52dp",
+                            font_size="17sp", bold=True)
+
+            def go(btn, fn=fn):
+                pop.dismiss()
+                Clock.schedule_once(lambda *_: fn(), 0.1)
+            b.bind(on_press=go)
+            box.add_widget(b)
+        close = RoundButton(text="Close", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), size_hint_y=None,
+                            height="48dp", bold=True)
+        close.bind(on_press=pop.dismiss)
+        box.add_widget(close)
+        pop.open()
+
+    def exit_app(self):
+        log("EXIT by menu")
+        self.say("Goodbye ssalimuto.")
+        Clock.schedule_once(lambda *_: self.app.stop(), 1.5)
+
+    def creation_files(self):
+        found = []
+        for d in (".", attach_dir()):
+            try:
+                for n in os.listdir(d):
+                    if n.lower().endswith(IMG_EXTS) and (n.startswith("drawing_") or d != "."):
+                        found.append(os.path.abspath(os.path.join(d, n)))
+            except Exception:
+                pass
+        return sorted(set(found), key=lambda f: os.path.getmtime(f), reverse=True)
+
+    def creations(self, query=""):
+        files = self.creation_files()
+        if query:
+            files = [f for f in files if query.lower() in os.path.basename(f).lower()] or files
+        if not files:
+            self.say("No creations yet. Tap Draw or say 'draw ...' to make your first picture.")
+            return
+        grid = GridLayout(cols=3, spacing=6, padding=6, size_hint_y=None)
+        grid.bind(minimum_height=grid.setter("height"))
+        sv = ScrollView()
+        sv.add_widget(grid)
+        box = BoxLayout(orientation="vertical", spacing=8, padding=8)
+        box.add_widget(Label(text=f"{len(files)} pictures. Tap one to open it and change it.",
+                             size_hint_y=None, height="30dp", color=HINT, font_size="14sp"))
+        box.add_widget(sv)
+        pop = Popup(title="My creations", content=box, size_hint=(0.96, 0.9),
+                    separator_color=GOLD, title_color=GOLD)
+        for f in files[:60]:
+            b = Button(background_normal=f, background_down=f, size_hint_y=None, height="150dp")
+
+            def open_it(btn, f=f):
+                pop.dismiss()
+                remember_image(f, "my earlier picture")
+                self.show_image(f, os.path.basename(f) + "\nSay what to change, e.g. change it to night")
+            b.bind(on_press=open_it)
+            grid.add_widget(b)
+        close = RoundButton(text="Close", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), size_hint_y=None,
+                            height="48dp", bold=True)
+        close.bind(on_press=pop.dismiss)
+        box.add_widget(close)
+        pop.open()
+
+    def search_box(self, *_):
+        box = BoxLayout(orientation="vertical", spacing=10, padding=12)
+        ti = style_input(TextInput(hint_text="Search for...", multiline=False, font_size="18sp",
+                                   size_hint_y=None, height="52dp"))
+        box.add_widget(ti)
+        pop = Popup(title="Find", content=box, size_hint=(0.92, 0.6),
+                    separator_color=GOLD, title_color=GOLD)
+        opts = [("Search my chats and notes", self.search_mine, BLUE),
+                ("Search my creations", lambda q: self.creations(q), BLUE),
+                ("Search the internet", lambda q: self.web_search(q), GREY)]
+        for label, fn, col in opts:
+            b = RoundButton(text=label, bg=col, fg=TEXTCOL, size_hint_y=None, height="52dp",
+                            font_size="17sp", bold=True)
+
+            def go(btn, fn=fn):
+                q = ti.text.strip()
+                if not q:
+                    return
+                pop.dismiss()
+                Clock.schedule_once(lambda *_: fn(q), 0.1)
+            b.bind(on_press=go)
+            box.add_widget(b)
+        ti.bind(on_text_validate=lambda *_: (pop.dismiss(), self.search_mine(ti.text.strip())) if ti.text.strip() else None)
+        pop.open()
+        Clock.schedule_once(lambda *_: setattr(ti, "focus", True), 0.3)
+
+    def search_mine(self, q):
+        ql = q.lower()
+        hits = []
+        for m in history:
+            for part in m.get("parts", []):
+                t = part.get("text", "")
+                if ql in t.lower():
+                    i = t.lower().find(ql)
+                    who = "You" if m.get("role") == "user" else "Genius"
+                    hits.append(f"{who}: ..." + t[max(0, i - 60): i + 100].replace("\n", " ") + "...")
+        for fname, label in ((NOTES_FILE, "Note"), (LOG_FILE, "Log")):
+            try:
+                for line in open(fname, encoding="utf8", errors="ignore"):
+                    if ql in line.lower():
+                        hits.append(f"{label}: " + line.strip()[:160])
+            except Exception:
+                pass
+        if hits:
+            self.show("AI", f"Found '{q}' {len(hits)} time(s):\n" + "\n".join(hits[-15:]))
+        else:
+            self.say(f"I couldn't find '{q}' in your chats or notes. Try 'Search the internet'.")
+
+    def web_search(self, q):
+        self.busy = True
+        self.say("Searching the internet...")
+
+        def d(*_):
+            r = ask_gemini("Search the internet and answer briefly with the key facts: " + q, 700, search=True)
+
+            def done(*_):
+                self.busy = False
+                self.say(r or "The search didn't work. Check your internet.")
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=d, daemon=True).start()
 
     # ---------- + button: add pictures and files ----------
     PICK_CODE = 7780
