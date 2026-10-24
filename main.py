@@ -60,6 +60,7 @@ ALLOWED = MappingProxyType({
     "save": "Lock a secret, e.g. save wifi MyPass123",
     "open": "Show a locked secret, e.g. open wifi",
     "secrets": "List what is in your locker",
+    "+": "Tap + to add a picture or file (PDF, text). Then ask about it, or change the picture",
     "setme": "Save your newest selfie as your face, so 'make me ...' pictures look like you. 'keep this face' uses the last picture",
     "edit": "Change your last picture, e.g. edit make it night. Or just say: make me near a building",
     "draw": "Draw a picture, e.g. draw a lion on Mount Elgon. Put your photo as Download/Genius/me.jpg, then 'draw me in a suit' keeps YOUR face",
@@ -197,6 +198,8 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
 - Picture chat like Gemini: after a picture, say 'make me near a building', 'change it to night'
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
+- + button: add a picture or a file (PDF, text) from your phone, or your newest photo/file.
+  Then ask about it ('summarize', 'what is this?') or change the picture ('make me near a building')
 - setme: take a selfie, type setme, and your face is saved for 'make me ...' pictures
 - Better photos: golden light, blurred background, natural pose, and Gemini's newest picture model
 
@@ -1936,6 +1939,102 @@ def ask_all(question):
                        sorted(results.items(), key=lambda x: x[1][1]))
 
 
+# ================= ATTACH: the + button (pictures and files) =================
+TEXT_EXTS = (".txt", ".md", ".py", ".json", ".csv", ".html", ".htm", ".xml", ".log", ".kv", ".spec", ".yml", ".yaml")
+IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic")
+
+
+def attach_dir():
+    d = "/storage/emulated/0/Download/Genius/attached" if os.path.isdir("/storage/emulated/0") else "attached"
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        d = "attached"
+        os.makedirs(d, exist_ok=True)
+    return d
+
+
+def file_kind(path, mime=""):
+    low = path.lower()
+    if mime.startswith("image") or low.endswith(IMG_EXTS):
+        return "image"
+    if mime == "application/pdf" or low.endswith(".pdf"):
+        return "pdf"
+    if mime.startswith("text") or low.endswith(TEXT_EXTS) or "json" in mime:
+        return "text"
+    return "other"
+
+
+def newest_file(images_only=False):
+    """The newest photo or file on the phone (Download, Camera, Screenshots, Documents)."""
+    best, bt = None, 0
+    dirs = ["/storage/emulated/0/DCIM/Camera", "/storage/emulated/0/Pictures/Screenshots",
+            "/storage/emulated/0/DCIM/Screenshots", "/storage/emulated/0/Pictures",
+            "/storage/emulated/0/Download", "/storage/emulated/0/Documents"]
+    for d in dirs:
+        try:
+            names = os.listdir(d)
+        except Exception:
+            continue
+        for n in names:
+            f = os.path.join(d, n)
+            if not os.path.isfile(f) or n.startswith("."):
+                continue
+            k = file_kind(f)
+            if (images_only and k != "image") or k == "other":
+                continue
+            t = os.path.getmtime(f)
+            if t > bt:
+                best, bt = f, t
+    return best
+
+
+def ask_about_file(path, kind, question):
+    """Answer a question about an attached picture, PDF or text file."""
+    q = question.strip() or "Explain what this is and the important information in it, simply."
+    if kind == "text":
+        try:
+            content = open(path, encoding="utf8", errors="ignore").read()[:24000]
+        except Exception:
+            return "I couldn't read that file."
+        return ask_gemini("File " + os.path.basename(path) + ":\n" + content +
+                          "\n\nQuestion: " + q, 900) or "No AI answered. Check your internet."
+    if not os.path.exists(KEY_FILE):
+        return "To read pictures and PDFs I need your Gemini key. Use setkey first."
+    key = clean_key(open(KEY_FILE).read())
+    mime = "application/pdf" if kind == "pdf" else (
+        "image/png" if path.lower().endswith(".png") else "image/webp" if path.lower().endswith(".webp") else "image/jpeg")
+    if os.path.getsize(path) > 15 * 1024 * 1024:
+        return "That file is too big (over 15 MB). Try a smaller one."
+    body = json.dumps({"contents": [{"role": "user", "parts": [
+        {"inlineData": {"mimeType": mime, "data": base64.b64encode(open(path, "rb").read()).decode()}},
+        {"text": q + " Answer in simple, clear English."}]}],
+        "generationConfig": {"maxOutputTokens": 900, "temperature": 0.4}}).encode()
+    last = "I couldn't read it. Try again."
+    for model in FAST_MODELS + DEEP_MODELS[:1]:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "x-goog-api-key": key})
+        try:
+            try:
+                r = urllib.request.urlopen(req, timeout=90, context=ssl_context())
+            except urllib.error.URLError as e:
+                if "CERTIFICATE" not in str(e).upper():
+                    raise
+                r = urllib.request.urlopen(req, timeout=90, context=ssl._create_unverified_context())
+            with r:
+                parts = json.load(r)["candidates"][0]["content"]["parts"]
+            t = "\n".join(x["text"] for x in parts if "text" in x and not x.get("thought")).strip()
+            if t:
+                return t
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return "Google rejected the key. Use setkey again."
+            last = "Free limit reached. Wait a minute." if e.code == 429 else "Google is busy. Try again shortly."
+        except Exception:
+            last = "Your internet is too slow right now. Try better signal."
+    return last
+
+
 def ask_gemini(prompt, max_tokens=600, json_mode=False, search=False, system=None):
     """Ask Gemini; if it has no key or fails, another connected AI answers instead."""
     r = _ask_gemini_only(prompt, max_tokens, json_mode, search, system)
@@ -2462,6 +2561,10 @@ class ChatScreen(BoxLayout):
         send = RoundButton(text="Send", bg=GOLD, fg=(0.1, 0.1, 0.1, 1),
                            size_hint_x=None, width="96dp", font_size="18sp", bold=True)
         send.bind(on_press=self.send)
+        plus = RoundButton(text="+", bg=BLUE, fg=TEXTCOL, size_hint_x=None, width="52dp",
+                           font_size="28sp", bold=True)
+        plus.bind(on_press=self.attach_menu)
+        row.add_widget(plus)
         row.add_widget(self.inp)
         row.add_widget(send)
         self.add_widget(row)
@@ -2773,6 +2876,157 @@ class ChatScreen(BoxLayout):
         log("CHAT CLEARED")
         self.say("Chat cleared. Fresh start.")
 
+    # ---------- + button: add pictures and files ----------
+    PICK_CODE = 7780
+
+    def attach_menu(self, *_):
+        box = BoxLayout(orientation="vertical", spacing=10, padding=12)
+        pop = Popup(title="Add to Genius", content=box, size_hint=(0.9, 0.62),
+                    separator_color=GOLD, title_color=GOLD)
+        opts = [("Choose a picture", lambda: self.pick_file("image/*"), BLUE),
+                ("Choose a file (PDF, text...)", lambda: self.pick_file("*/*"), BLUE),
+                ("My newest photo", lambda: self.attach_newest(True), GREY),
+                ("My newest file", lambda: self.attach_newest(False), GREY),
+                ("Cancel", None, RED)]
+        for label, fn, col in opts:
+            b = RoundButton(text=label, bg=col, fg=TEXTCOL, size_hint_y=None, height="54dp",
+                            font_size="17sp", bold=True)
+
+            def go(btn, fn=fn):
+                pop.dismiss()
+                if fn:
+                    fn()
+            b.bind(on_press=go)
+            box.add_widget(b)
+        pop.open()
+
+    def _storage_permission(self):
+        try:
+            from android.permissions import request_permissions, Permission
+            perms = [Permission.READ_EXTERNAL_STORAGE]
+            for n in ("READ_MEDIA_IMAGES",):
+                if hasattr(Permission, n):
+                    perms.append(getattr(Permission, n))
+            request_permissions(perms)
+        except Exception:
+            pass
+
+    def attach_newest(self, images_only):
+        self._storage_permission()
+        f = newest_file(images_only)
+        if not f:
+            self.say("I couldn't see your files yet. Allow Genius to see photos, or tap + and Choose instead.")
+            return
+        self.got_attachment(f)
+
+    def pick_file(self, mime):
+        """Open Android's own file picker (no extra permission needed)."""
+        try:
+            from jnius import autoclass
+            from android import activity
+            Intent = autoclass("android.content.Intent")
+            PA = autoclass("org.kivy.android.PythonActivity")
+            if not getattr(self, "_pick_bound", False):
+                activity.bind(on_activity_result=self._on_pick_result)
+                self._pick_bound = True
+            it = Intent(Intent.ACTION_GET_CONTENT)
+            it.setType(mime)
+            it.addCategory(Intent.CATEGORY_OPENABLE)
+            PA.mActivity.startActivityForResult(Intent.createChooser(it, "Add to Genius"), self.PICK_CODE)
+        except Exception as e:
+            log(f"PICK: no Android picker ({e})")
+            self.attach_newest(mime.startswith("image"))
+
+    def _on_pick_result(self, request, result, intent):
+        if request != self.PICK_CODE:
+            return
+        path, err = None, None
+        try:
+            if result == -1 and intent is not None and intent.getData() is not None:
+                path = self._copy_uri(intent.getData())
+            else:
+                err = "Okay, nothing added."
+        except Exception as e:
+            err = "I couldn't open that file. Try another one."
+            log(f"PICK error: {e}")
+        Clock.schedule_once(lambda *_: self.got_attachment(path) if path else self.say(err), 0)
+
+    def _copy_uri(self, uri):
+        """Copy the picked file into Download/Genius/attached and return its path."""
+        from jnius import autoclass
+        PA = autoclass("org.kivy.android.PythonActivity")
+        cr = PA.mActivity.getContentResolver()
+        name, mime = "", cr.getType(uri) or ""
+        try:
+            OC = autoclass("android.provider.OpenableColumns")
+            cur = cr.query(uri, None, None, None, None)
+            if cur is not None:
+                if cur.moveToFirst():
+                    name = cur.getString(cur.getColumnIndex(OC.DISPLAY_NAME)) or ""
+                cur.close()
+        except Exception:
+            pass
+        name = re.sub(r"[^\w.\-]+", "_", name) or ("file_" + str(int(time.time())))
+        if "." not in name:
+            name += {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
+                     "application/pdf": ".pdf", "text/plain": ".txt"}.get(mime, "")
+        dest = os.path.join(attach_dir(), str(int(time.time())) + "_" + name)
+        stream = cr.openInputStream(uri)
+        try:
+            buf = bytearray(65536)
+            with open(dest, "wb") as out:
+                while True:
+                    n = stream.read(buf)
+                    if n is None or n < 0:
+                        break
+                    out.write(bytes(buf[:n]))
+        finally:
+            stream.close()
+        if os.path.getsize(dest) == 0:
+            try:
+                Files = autoclass("java.nio.file.Files")
+                JFile = autoclass("java.io.File")
+                os.remove(dest)
+                Files.copy(cr.openInputStream(uri), JFile(dest).toPath())
+            except Exception as e:
+                log(f"PICK copy fallback failed: {e}")
+        return dest
+
+    def got_attachment(self, path):
+        kind = file_kind(path)
+        self.attached = {"path": path, "kind": kind}
+        name = os.path.basename(path)
+        if kind == "image":
+            remember_image(path, "the attached photo")
+            self.show_image(path, "Added " + name)
+            self.say("Picture added. Ask me about it, or change it, e.g. 'make me near a building' "
+                     "or 'change it to night'. Say 'keep this face' to save it as your face.")
+        elif kind in ("pdf", "text"):
+            self.say(f"Added {name}. Ask me anything about it, or say 'summarize'.")
+        else:
+            self.attached = None
+            self.say("I can read pictures, PDFs and text files. That type isn't supported yet.")
+
+    def file_question(self, question):
+        a = self.attached
+        self.busy = True
+        self.say("Reading your " + ("picture" if a["kind"] == "image" else "file") + "...")
+
+        def d(*_):
+            r = ask_about_file(a["path"], a["kind"], question)
+            history.append({"role": "user", "parts": [{"text": "[About " + os.path.basename(a["path"]) + "] " + question}]})
+            history.append({"role": "model", "parts": [{"text": r}]})
+            try:
+                save_memory()
+            except Exception:
+                pass
+
+            def done(*_):
+                self.busy = False
+                self.say(r)
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=d, daemon=True).start()
+
     def do_edit(self, instruction):
         self.busy = True
         self.say("Changing your picture... this takes a moment.")
@@ -2872,6 +3126,16 @@ class ChatScreen(BoxLayout):
                 self.say("Tell me what to change, e.g. edit make it night time")
             else:
                 self.do_edit(instr)
+            return
+        att = getattr(self, "attached", None)
+        if att and low.strip(" .!") in ("remove file", "remove picture", "forget file", "clear file"):
+            self.attached = None
+            self.say("Okay, I put that file away.")
+            return
+        if att and action not in ALLOWED and action not in NEW_ACTIONS and action not in LIFE_ACTIONS \
+                and (att["kind"] != "image" or re.search(
+                    r"\?|^(what|who|where|which|why|how|read|explain|describe|summari[sz]e|translate|tell|is |are |does |can you see|look)", low)):
+            self.file_question(line)
             return
         if not LAST_IMAGE["path"] and my_photo() and re.match(r"^(make|put|show|place) me\b", low):
             self.run(line, "draw", line)
