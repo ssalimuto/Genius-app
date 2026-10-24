@@ -14,7 +14,7 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.popup import Popup
 from kivy.uix.image import Image as KivyImage
 from kivy.uix.widget import Widget
-from kivy.graphics import Color, RoundedRectangle
+from kivy.graphics import Color, RoundedRectangle, Rectangle
 
 Window.softinput_mode = "below_target"   # keyboard doesn't cover the text box
 
@@ -132,7 +132,7 @@ LIFE_ACTIONS = ("life", "study", "subjects", "exam", "quiz", "explain", "studypl
 NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 101.0
+ABOUT_TEXT = """Genius 102.0
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -188,9 +188,12 @@ What this means
 
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
-VERSION = "101.0"
-VERSION_DATE = "2026-10-24"
-CHANGELOG = """Genius 101.0 Guardian (2026-10-24)
+VERSION = "102.0"
+VERSION_DATE = "2026-10-25"
+CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
+- New look: dark doodle wallpaper of game icons behind every screen
+
+Genius 101.0 Guardian (2026-10-24)
 - Drawing fixed: if Gemini's free plan can't draw, Genius uses a free picture maker instead
 - Same face: save your selfie as Download/Genius/me.jpg, then "draw me ..." keeps your real face
 - Real photos only: every picture is photo-realistic, never a cartoon. Cartoon words are removed,
@@ -3605,6 +3608,24 @@ class GeniusApp(App):
 
     def build(self):
         self.root_box = BoxLayout()
+        # doodle wallpaper behind every screen (cover-fit, keeps aspect)
+        bgp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bg.jpg")
+        if os.path.exists(bgp):
+            try:
+                from kivy.core.image import Image as CoreImage
+                tex = CoreImage(bgp).texture
+                with self.root_box.canvas.before:
+                    Color(1, 1, 1, 1)
+                    self._bg = Rectangle(texture=tex)
+                def _fit(w, *_):
+                    tw, th = tex.size
+                    sc = max(w.width / float(tw), w.height / float(th))
+                    dw, dh = tw * sc, th * sc
+                    self._bg.size = (dw, dh)
+                    self._bg.pos = (w.x + (w.width - dw) / 2.0, w.y + (w.height - dh) / 2.0)
+                self.root_box.bind(size=_fit, pos=_fit)
+            except Exception:
+                pass
         self.root_box.add_widget(LoginScreen(self))
         return self.root_box
 
