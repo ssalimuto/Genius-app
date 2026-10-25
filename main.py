@@ -277,6 +277,7 @@ CHANGELOG = """Genius 108.0 (2026-10-26)
 - Opens with your secret code: create it the first time, then just type it to unlock.
 - The three-bar menu at the top right holds Speak, Draw, Locker, Notes, Weather, Deep, Clear, Stop and the rest.
 - The top shows only your chat, Search and the menu.
+- Updates arrive by themselves: Genius checks every time you unlock and every hour, then you just tap Update.
 
 Genius 107.0 (2026-10-25)
 - Updates itself: type update and Genius downloads and installs the newest version, no website needed.
@@ -1094,7 +1095,7 @@ def update_due():
         last = json.load(open(UPDATE_CHECK_FILE)).get("t", 0)
     except Exception:
         last = 0
-    if time.time() - last < 5 * 3600:
+    if time.time() - last < 50 * 60:
         return False
     try:
         json.dump({"t": time.time()}, open(UPDATE_CHECK_FILE, "w"))
@@ -7984,8 +7985,10 @@ class GeniusApp(App):
                 return                     # the Play Store updates this build
             while getattr(self, "chat", None) is None:
                 time.sleep(5)              # wait until the owner has unlocked Genius
+            first = True
             while True:
-                if update_due():
+                if first or update_due():
+                    first = False
                     found, _ = online_update()
                     if found and CURRENT.get("owner"):
                         def tell(t):
@@ -7998,7 +8001,7 @@ class GeniusApp(App):
                             Clock.schedule_once(go, 1)
                         tell(f"Genius {found[0]} is out. Getting it for you now.")
                         install_online_update(found[0], found[1], tell)
-                time.sleep(6 * 3600)
+                time.sleep(3600)
         threading.Thread(target=check_update, daemon=True).start()
         EVERYWHERE["pending"] = intent_action()
         try:
