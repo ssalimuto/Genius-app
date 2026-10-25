@@ -3735,36 +3735,52 @@ def usd_rates():
     return _get_json("https://open.er-api.com/v6/latest/USD").get("rates", {})
 
 
-def crypto_price(sym):
-    cid = CRYPTO_IDS.get(sym.lower(), sym.lower())
-    d = _get_json(f"https://api.coingecko.com/api/v3/simple/price?ids={cid}&vs_currencies=usd,ugx"
-                  f"&include_24hr_change=true")
-    if cid not in d:
+def _yahoo(symbol):
+    d = _get_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1d&interval=1d")
+    m = d["chart"]["result"][0]["meta"]
+    p, prev = m.get("regularMarketPrice"), m.get("chartPreviousClose") or m.get("previousClose")
+    if p is None:
         return None
-    x = d[cid]
-    return {"name": cid, "usd": x.get("usd"), "ugx": x.get("ugx"), "chg": x.get("usd_24h_change")}
+    return {"symbol": m.get("symbol", symbol), "price": float(p), "currency": m.get("currency", "USD"),
+            "chg": ((p - prev) / prev * 100) if prev else None}
+
+
+def crypto_price(sym):
+    """Live coin price: CoinGecko, then Yahoo, then Coinbase."""
+    cid = CRYPTO_IDS.get(sym.lower(), sym.lower())
+    try:
+        d = _get_json(f"https://api.coingecko.com/api/v3/simple/price?ids={cid}&vs_currencies=usd,ugx"
+                      f"&include_24hr_change=true")
+        if cid in d:
+            x = d[cid]
+            return {"name": cid, "usd": x.get("usd"), "ugx": x.get("ugx"), "chg": x.get("usd_24h_change")}
+    except Exception:
+        pass
+    tick = {v: k for k, v in CRYPTO_IDS.items() if len(k) <= 4}.get(cid, sym).upper()
+    ugx = None
+    try:
+        ugx = usd_rates().get("UGX")
+    except Exception:
+        pass
+    try:
+        y = _yahoo(f"{tick}-USD")
+        if y:
+            return {"name": cid, "usd": y["price"], "ugx": y["price"] * ugx if ugx else None, "chg": y["chg"]}
+    except Exception:
+        pass
+    try:
+        amt = float(_get_json(f"https://api.coinbase.com/v2/prices/{tick}-USD/spot")["data"]["amount"])
+        return {"name": cid, "usd": amt, "ugx": amt * ugx if ugx else None, "chg": None}
+    except Exception:
+        return None
 
 
 def stock_price(sym):
-    sym = sym.lower()
-    code = sym if "." in sym else sym + ".us"
-    req = urllib.request.Request(f"https://stooq.com/q/l/?s={code}&f=sd2t2ohlcv&h&e=csv",
-                                 headers={"User-Agent": "Genius/102"})
     try:
-        r = urllib.request.urlopen(req, timeout=20, context=ssl_context())
-    except urllib.error.URLError:
-        r = urllib.request.urlopen(req, timeout=20, context=ssl._create_unverified_context())
-    with r:
-        rows = r.read().decode("utf8", "ignore").strip().splitlines()
-    if len(rows) < 2:
+        y = _yahoo(sym.upper())
+    except Exception:
         return None
-    head, vals = rows[0].lower().split(","), rows[1].split(",")
-    row = dict(zip(head, vals))
-    if row.get("close", "N/D") in ("N/D", ""):
-        return None
-    o, c = float(row["open"]), float(row["close"])
-    return {"symbol": sym.upper(), "date": row.get("date"), "open": o, "high": float(row["high"]),
-            "low": float(row["low"]), "close": c, "chg": (c - o) / o * 100 if o else 0}
+    return y
 
 
 def market_quote(q):
@@ -3788,13 +3804,13 @@ def market_quote(q):
     try:
         c = crypto_price(sym) if sym in CRYPTO_IDS else None
         if c:
-            chg = f"{c['chg']:+.2f}% in 24h" if c.get("chg") is not None else ""
+            chg = f", {c['chg']:+.2f}% in 24h" if c.get("chg") is not None else ""
             ugx = f" = UGX {c['ugx']:,.0f}" if c.get("ugx") else ""
-            return f"{c['name'].title()}: ${c['usd']:,.2f}{ugx}, {chg} (live)."
+            return f"{c['name'].title()}: ${c['usd']:,.2f}{ugx}{chg} (live)."
         s_ = stock_price(sym)
         if s_:
-            return (f"{s_['symbol']}: ${s_['close']:,.2f} on {s_['date']} (open {s_['open']:,.2f}, high "
-                    f"{s_['high']:,.2f}, low {s_['low']:,.2f}, {s_['chg']:+.2f}% today).")
+            chg = f", {s_['chg']:+.2f}% today" if s_.get("chg") is not None else ""
+            return f"{s_['symbol']}: {s_['price']:,.2f} {s_['currency']}{chg} (live)."
         c = crypto_price(sym)
         if c:
             return f"{c['name'].title()}: ${c['usd']:,.2f} (live)."
@@ -7058,7 +7074,7 @@ class HomeScreen(BoxLayout):
         try:
             c = crypto_price("btc")
             if c:
-                parts.append(f"BTC ${c['usd']:,.0f} ({c['chg']:+.1f}%)")
+                parts.append(f"BTC ${c['usd']:,.0f}" + (f" ({c['chg']:+.1f}%)" if c.get("chg") is not None else ""))
         except Exception:
             pass
         txt = "   \u2022   ".join(parts) if parts else "Live prices need internet"
