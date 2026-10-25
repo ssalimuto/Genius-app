@@ -197,6 +197,7 @@ ALLOWED = MappingProxyType({
     "know": "Teach Genius facts it uses to solve problems, e.g. know school: fees due 5 Nov",
     "knowledge": "What Genius knows to help you",
     "upgrade": "Install a new Genius version from Download/Genius/update (checked first)",
+    "update": "Get the newest Genius straight inside the app, no website needed",
     "rollback": "Go back to the previous Genius version",
     "security": "Security status: firewall, decoy, intruders, tampering",
     "intruders": "See who tried to break in",
@@ -209,10 +210,10 @@ LIFE_ACTIONS = ("life", "study", "subjects", "exam", "quiz", "explain", "studypl
                 "freelance", "skills", "cv", "proposal", "gigs", "price",
                 "build", "myapps", "showapp", "hotspot", "makeai", "myais", "ask", "backup")
 NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
-OWNER_ONLY = ("upgrade", "rollback", "security", "intruders", "tripwire", "restore")
+OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 106.0
+ABOUT_TEXT = """Genius 107.0
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -268,9 +269,13 @@ What this means
 
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
-VERSION = "106.0"
+VERSION = "107.0"
 VERSION_DATE = "2026-10-25"
-CHANGELOG = """Genius 106.0 (2026-10-25)
+CHANGELOG = """Genius 107.0 (2026-10-25)
+- Updates itself: type update and Genius downloads and installs the newest version, no website needed.
+- Tells you once a day when a new version is out.
+
+Genius 106.0 (2026-10-25)
 - Understands misspelled commands, e.g. itruders becomes intruders.
 
 Genius 105.0 (2026-10-25)
@@ -962,6 +967,133 @@ def key_reason(code, detail=""):
     if msg:
         out += "\nGoogle says: " + msg[:220]
     return out
+
+
+RELEASES_URL = "https://api.github.com/repos/ssalimuto/Genius-app/releases?per_page=15"
+UPDATE_CHECK_FILE = os.path.join(ROOT, "update_check.json")
+
+
+def _ver_tuple(v):
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except Exception:
+        return (0,)
+
+
+def online_update():
+    """Newest Genius on the release page: (version, apk_url) or (None, reason)."""
+    try:
+        req = urllib.request.Request(RELEASES_URL, headers={
+            "Accept": "application/vnd.github+json", "User-Agent": "Genius-app"})
+        try:
+            r = urllib.request.urlopen(req, timeout=20, context=ssl_context())
+        except urllib.error.URLError as e:
+            if "CERTIFICATE" not in str(e).upper():
+                raise
+            r = urllib.request.urlopen(req, timeout=20, context=ssl._create_unverified_context())
+        with r:
+            rels = json.load(r)
+    except Exception:
+        return None, "I couldn't reach the update page. Check your internet and try again."
+    best = None
+    for rel in rels:
+        if rel.get("draft"):
+            continue
+        for a in rel.get("assets") or []:
+            m = re.match(r"genius-(\d+(?:\.\d+)*)-.*\.apk$", a.get("name", ""))
+            if m and (best is None or _ver_tuple(m.group(1)) > _ver_tuple(best[0])):
+                best = (m.group(1), a.get("browser_download_url"))
+    if not best:
+        return None, "No Genius download is on the release page yet."
+    if _ver_tuple(best[0]) <= _ver_tuple(VERSION):
+        return None, f"You already have the newest Genius ({VERSION})."
+    return best, None
+
+
+def install_online_update(ver, url, tell):
+    """Download the new APK inside the app, then open Android's Update screen."""
+    try:
+        from jnius import autoclass, cast
+    except Exception:
+        tell("Updating inside the app only works on the phone.")
+        return
+    try:
+        Context = autoclass("android.content.Context")
+        DM = autoclass("android.app.DownloadManager")
+        DMRequest = autoclass("android.app.DownloadManager$Request")
+        DMQuery = autoclass("android.app.DownloadManager$Query")
+        Env = autoclass("android.os.Environment")
+        Uri = autoclass("android.net.Uri")
+        Intent = autoclass("android.content.Intent")
+        Build = autoclass("android.os.Build$VERSION")
+        act = autoclass("org.kivy.android.PythonActivity").mActivity
+        if Build.SDK_INT >= 26 and not act.getPackageManager().canRequestPackageInstalls():
+            Settings = autoclass("android.provider.Settings")
+            i = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                       Uri.parse("package:" + act.getPackageName()))
+            act.startActivity(i)
+            tell("First allow Genius to install updates: switch on 'Allow from this source', "
+                 "come back, and type update again. You only do this once.")
+            return
+        dm = cast("android.app.DownloadManager", act.getSystemService(Context.DOWNLOAD_SERVICE))
+        name = f"Genius-{ver}.apk"
+        old = os.path.join(Env.getExternalStoragePublicDirectory(Env.DIRECTORY_DOWNLOADS).getAbsolutePath(), name)
+        try:
+            if os.path.exists(old):
+                os.remove(old)
+        except Exception:
+            pass
+        req = DMRequest(Uri.parse(url))
+        req.setTitle(f"Genius {ver}")
+        req.setDescription("Downloading the new Genius")
+        req.setMimeType("application/vnd.android.package-archive")
+        req.setNotificationVisibility(1)
+        req.setDestinationInExternalPublicDir(Env.DIRECTORY_DOWNLOADS, name)
+        did = dm.enqueue(req)
+        tell(f"Downloading Genius {ver} now. Keep the app open, about a minute on good signal.")
+        for _ in range(600):                 # up to 20 minutes
+            time.sleep(2)
+            q = DMQuery()
+            q.setFilterById([did])
+            c = dm.query(q)
+            status = 0
+            if c is not None and c.moveToFirst():
+                status = c.getInt(c.getColumnIndex("status"))
+            if c is not None:
+                c.close()
+            if status == 8:                  # successful
+                break
+            if status == 16:                 # failed
+                tell("The download failed. Check your internet and type update again.")
+                return
+        else:
+            tell("The download is taking too long. Type update again on better signal.")
+            return
+        uri = dm.getUriForDownloadedFile(did)
+        i = Intent(Intent.ACTION_VIEW)
+        i.setDataAndType(uri, "application/vnd.android.package-archive")
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK)
+        act.startActivity(i)
+        tell(f"Downloaded. Tap Update on the screen that opens to get Genius {ver}. "
+             "Your notes, lessons and storage stay.")
+    except Exception as e:
+        log(f"update error: {e}")
+        tell("Something went wrong while updating. Type update to try again.")
+
+
+def update_due():
+    """True once a day, for the quiet background check."""
+    try:
+        last = json.load(open(UPDATE_CHECK_FILE)).get("t", 0)
+    except Exception:
+        last = 0
+    if time.time() - last < 20 * 3600:
+        return False
+    try:
+        json.dump({"t": time.time()}, open(UPDATE_CHECK_FILE, "w"))
+    except Exception:
+        pass
+    return True
 
 
 def clean_key(text):
@@ -6317,7 +6449,7 @@ class ChatScreen(BoxLayout):
         action, _, arg = line.partition(" ")
         action, arg = action.lower(), arg.strip()
         action = LUGANDA_CMDS.get(action, action)
-        action = {"whatsnew": "version", "changelog": "version", "update": "version"}.get(action, action)
+        action = {"whatsnew": "version", "changelog": "version", "updates": "update", "getupdate": "update"}.get(action, action)
         # Typo-tolerant commands: "itruders" -> "intruders" (short inputs only)
         if action not in ALLOWED and action.isalpha() and len(action) >= 4 \
                 and len(line.split()) <= 3 and not action.startswith("set"):
@@ -6729,6 +6861,17 @@ class ChatScreen(BoxLayout):
                 self.say("Say it like: askall what causes rain")
                 return
             self._bg(lambda: ask_all(arg), "Asking all your AIs at once...", speak=False)
+            return
+        if action == "update":
+            def work():
+                tell = lambda t: Clock.schedule_once(lambda *_: self.say(t))
+                found, why = online_update()
+                if not found:
+                    tell(why)
+                    return
+                install_online_update(found[0], found[1], tell)
+            self.say("Checking for a new Genius...")
+            threading.Thread(target=work, daemon=True).start()
             return
         if action == "setkey":
             if arg:
@@ -7661,6 +7804,19 @@ class GeniusApp(App):
     def on_start(self):
         everywhere_load()
         threading.Thread(target=lambda: brain_self_review(), daemon=True).start()
+        def check_update():
+            if not update_due():
+                return
+            found, _ = online_update()
+            if found:
+                def tell(*_):
+                    chat = getattr(self, "chat", None)
+                    if chat is not None:
+                        chat.say(f"Genius {found[0]} is out. Type update to install it right here.")
+                    else:
+                        Clock.schedule_once(tell, 5)
+                Clock.schedule_once(tell, 3)
+        threading.Thread(target=check_update, daemon=True).start()
         EVERYWHERE["pending"] = intent_action()
         try:
             from android import activity
