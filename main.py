@@ -3701,14 +3701,14 @@ CRYPTO_IDS = {"btc": "bitcoin", "bitcoin": "bitcoin", "eth": "ethereum", "ethere
               "bnb": "binancecoin", "sol": "solana", "solana": "solana", "xrp": "ripple", "usdt": "tether",
               "doge": "dogecoin", "ada": "cardano", "trx": "tron", "ton": "the-open-network", "ltc": "litecoin"}
 FX_CODES = ("usd", "ugx", "kes", "tzs", "rwf", "eur", "gbp", "zar", "ngn", "cny", "aed", "inr")
-WEALTH_SYSTEM = ("You are Genius Wealth, a friendly, honest money coach for young people in Uganda and East Africa. "
-                 "Explain simply. Use UGX amounts. Teach budgeting, saving, emergency funds, avoiding debt and scams, "
-                 "earning more (skills, freelancing, small business), and investing for the long term: SACCOs, "
-                 "unit trusts and money market funds (e.g. regulated by Uganda's CMA), Bank of Uganda treasury bills "
-                 "and bonds, the Uganda Securities Exchange, and global index funds. For trading and crypto: explain "
-                 "risk, position size (risk at most 1-2% per trade), stop-losses, and that most traders lose money. "
-                 "Never promise profits or say 'guaranteed'. Never ask for PINs or passwords. "
-                 "Give a clear next step at the end. This is education, not licensed financial advice.")
+WEALTH_SYSTEM = ("You are Genius Wealth, a free trading coach for people in Uganda and East Africa who want to build "
+                 "wealth through trading (forex, stocks, crypto). Explain simply, with UGX where useful. Teach: reading "
+                 "charts (trend, support/resistance, candles, RSI, MACD, moving averages), building a written trading plan, "
+                 "entries and exits, stop-loss and take-profit, risking at most 1-2% of the account per trade, position "
+                 "size math, a trading journal, demo practice before real money, regulated brokers only, and avoiding "
+                 "signal-sellers, 'account managers' and scams. Use the live prices given. Be honest that most traders "
+                 "lose money and growth comes from discipline over time. Never promise profits or say 'guaranteed'. "
+                 "Never ask for PINs or passwords. End with one clear next step. Education, not financial advice.")
 CHART_PROMPT = ("You are a careful technical analyst. Read this trading chart picture. Report, in simple English: "
                 "1) the asset and timeframe if visible, 2) the trend (up, down, sideways) and why, 3) key support and "
                 "resistance levels with prices read from the axis, 4) any patterns or candles (e.g. double top, "
@@ -4625,8 +4625,9 @@ class ChatScreen(BoxLayout):
             self.bot_mode = "wealth"
             self.mode_lbl.text = "Wealth"
             self._bg(lambda: wealth_answer(
-                "Build me a simple step-by-step wealth plan: budget, emergency fund, paying off debt, growing income, "
-                "and investing monthly in Uganda. Show a 12-month and a 5-year example in UGX.",
+                "Build me a step-by-step plan to grow wealth by trading: how much to start with, demo practice, a simple "
+                "strategy, risk 1-2% per trade with position size math, a journal, and a 12-month growth example in UGX "
+                "with realistic (not hype) returns.",
                 self._wealth_profile()))
 
         def about_me():
@@ -4651,9 +4652,9 @@ class ChatScreen(BoxLayout):
             pop.open()
 
         self._buttons_popup("Genius Wealth", [
-            ("Talk to Genius Wealth bot", bot_on, GOLD),
+            ("Talk to Genius Wealth bot (free for everyone)", bot_on, GOLD),
             ("Read a trading chart (picture)", self.chart_pick, GOLD),
-            ("Make my wealth plan", plan, BLUE),
+            ("Make my trading plan", plan, BLUE),
             ("About my money (private)", about_me, BLUE),
             ("Live prices: Bitcoin", lambda: self._bg(lambda: market_quote("btc")), GREY),
             ("Live dollar rate (USD to UGX)", lambda: self._bg(lambda: market_quote("usd ugx")), GREY),
@@ -4662,7 +4663,7 @@ class ChatScreen(BoxLayout):
                 "unit trust funds, treasury bills and bonds, and the stock exchange. Risks and how to start.")), GREY),
             ("Spot money scams", lambda: self._bg(lambda: wealth_answer(
                 "How do I spot investment, crypto and forex scams in Uganda? Give clear warning signs.")), GREY)],
-            hint="Real prices, chart reading and a step-by-step wealth guide")
+            hint="Free for everyone: real prices, chart reading and a wealth guide")
 
     def chart_pick(self, *_):
         self._chart_mode = True
@@ -6055,7 +6056,12 @@ class ChatScreen(BoxLayout):
         if lw.startswith("makecode") or lw.startswith("make code"):
             self.owner_make_code(line)
             return
-        if not CURRENT["owner"] and lw not in ("help", "version", "exit", "close", "bye"):
+        FREE_WEALTH = (lw in ("wealth", "wealth bot", "genius wealth", "money bot", "trading bot", "trade bot", "invest",
+                              "chart", "read chart", "trading chart", "analyse chart", "analyze chart", "dollar rate",
+                              "usd rate", "home", "home page", "dashboard")
+                       or lw.startswith(("market ", "live ", "rate "))
+                       or getattr(self, "bot_mode", None) == "wealth")
+        if not CURRENT["owner"] and not FREE_WEALTH and lw not in ("help", "version", "exit", "close", "bye"):
             ok, _msg = premium_status()
             if not ok:
                 self.premium_popup()
