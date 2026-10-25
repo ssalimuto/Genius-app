@@ -3670,6 +3670,32 @@ def pin_shortcut(action, label):
     return True
 
 
+GENIUS_LINK = "https://github.com/ssalimuto/Genius-app/releases/latest"
+SHARE_TEXT = ("Meet Genius - an AI that talks with you, makes songs, edits photos without changing your face, "
+              "zooms 100x and more. Free 7-day trial. Download for Android: " + GENIUS_LINK)
+
+
+def share_genius(target=None):
+    """Open Android's share sheet (WhatsApp, TikTok, Facebook, X, Instagram, SMS...) with the download link."""
+    from jnius import autoclass
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    Intent = autoclass("android.content.Intent")
+    i = Intent(Intent.ACTION_SEND)
+    i.setType("text/plain")
+    i.putExtra(Intent.EXTRA_TEXT, SHARE_TEXT)
+    if target:
+        i.setPackage(target)
+        try:
+            act.startActivity(i)
+            return True
+        except Exception:
+            i.setPackage(None)
+    ch = Intent.createChooser(i, "Share Genius")
+    ch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    act.startActivity(ch)
+    return True
+
+
 def intent_action(intent=None):
     try:
         from jnius import autoclass
@@ -4438,6 +4464,7 @@ class ChatScreen(BoxLayout):
     def fun_studio(self, *_):
         self._buttons_popup("Fun studio", [
             ("Banana studio (realistic AI editing)", self.banana_studio, GOLD),
+            ("Share Genius (WhatsApp, TikTok...)", self.share_menu, GOLD),
             ("Genius everywhere (bubble, Hey Genius)", self.everywhere_menu, GOLD),
             ("Genius Premium", self.premium_popup, GOLD),
             ("Music maker (AI songs)", self.music_menu, GOLD),
@@ -4659,6 +4686,19 @@ class ChatScreen(BoxLayout):
         threading.Thread(target=d, daemon=True).start()
 
     # ---------- Genius everywhere ----------
+    def share_menu(self, *_):
+        apps = [("WhatsApp", "com.whatsapp"), ("Facebook", "com.facebook.katana"), ("TikTok", "com.zhiliaoapp.musically"),
+                ("Instagram", "com.instagram.android"), ("X (Twitter)", "com.twitter.android"), ("Telegram", "org.telegram.messenger")]
+
+        def go(pkg=None):
+            try:
+                share_genius(pkg)
+            except Exception as e:
+                self.say(f"Sharing didn't open: {e}. The link is {GENIUS_LINK}")
+        self._buttons_popup("Share Genius", [(n, lambda p=p: go(p), BLUE) for n, p in apps] +
+                            [("Any other app...", go, GOLD)], cols=2,
+                            hint="Friends download Genius from your link")
+
     def everywhere_menu(self, *_):
         on = EVERYWHERE["bubble_on"]
         hey = getattr(self, "hey_on", False)
@@ -5578,6 +5618,9 @@ class ChatScreen(BoxLayout):
             self.say("Only the owner of this phone can do that.")
             return
         lw = low.strip(" .!")
+        if lw in ("share", "share genius", "share app", "invite", "invite friends"):
+            self.share_menu()
+            return
         if lw in ("everywhere", "bubble", "hey genius", "shortcuts", "widget", "home screen"):
             self.everywhere_menu()
             return
