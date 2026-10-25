@@ -273,6 +273,7 @@ VERSION_DATE = "2026-10-25"
 CHANGELOG = """Genius 104.0 Agent (2026-10-25)
 - Genius Agent: "do <job>" plans the job, does each step with live search, checks itself and saves the result.
 - Teach a skill once: "teach skill news: step; step", then "run news" forever. "skillbook" lists them.
+- Every question now trains the Brain: each answer, from any mode, leaves a lesson for next time.
 - Daily self-review: Genius merges and sharpens its own lessons ("improve yourself" runs it now).
 
 Genius 103.0 Brain (2026-10-25)
@@ -1527,7 +1528,7 @@ def brain_recall(text, n=4):
 
 def brain_reflect(q, a):
     """After a new kind of question, Genius writes itself one lesson for next time (in the background)."""
-    if len(q) < 12 or len(a) < 40 or needs_tools(q):
+    if len(q.strip()) < 4 or len(a) < 30:
         return
     def go():
         ask = ("Question: " + q[:600] + "\nAnswer given: " + a[:1500] +
@@ -1540,9 +1541,30 @@ def brain_reflect(q, a):
             out = other_ai(prov, ask, system=sysm, max_tokens=80)
             if out:
                 break
+        if not out:
+            try:
+                out = ask_gemini(sysm + "\n\n" + ask, 80)
+            except Exception:
+                out = None
         if out and "NONE" not in out.upper()[:8]:
             brain_add(out.strip().strip('"'), q=q)
+        brain_count_question(q)
     threading.Thread(target=go, daemon=True).start()
+
+
+def brain_count_question(q):
+    try:
+        st = json.load(open("genius_brain_stats.json"))
+    except Exception:
+        st = {"questions": 0, "topics": {}}
+    st["questions"] = st.get("questions", 0) + 1
+    for w in list(_words(q))[:6]:
+        st["topics"][w] = st["topics"].get(w, 0) + 1
+    st["topics"] = dict(sorted(st["topics"].items(), key=lambda x: -x[1])[:60])
+    try:
+        json.dump(st, open("genius_brain_stats.json", "w"))
+    except Exception:
+        pass
 
 
 def brain_report():
@@ -1551,7 +1573,13 @@ def brain_report():
         return "I haven't learned anything yet. Ask me things, correct me with 'better: ...', or say 'teach ...'."
     top = items[:8]
     lines = [f"{i+1}. {it['lesson']}" for i, it in enumerate(top)]
-    return f"I've learned {len(items)} lessons. My strongest:\n" + "\n".join(lines)
+    try:
+        st = json.load(open("genius_brain_stats.json"))
+        top_t = ", ".join(list(st.get("topics", {}))[:6])
+        extra = f"\nQuestions studied: {st.get('questions', 0)}. Your top topics: {top_t}."
+    except Exception:
+        extra = ""
+    return f"I've learned {len(items)} lessons. My strongest:\n" + "\n".join(lines) + extra
 
 
 def agent_reply(text, ui, deep=False):
@@ -2440,7 +2468,8 @@ def fast_answer(question):
 
 def genius_mind(question):
     """Genius Mind: plan, ask every AI, cross-check with live web search, critique, then one best answer."""
-    plan = ask_gemini("Break this question into the key sub-questions and facts needed. Short list only.\n\n" + question,
+    plan = ask_gemini("Break this question into the key sub-questions and facts needed. Short list only."
+                      + brain_recall(question) + "\n\n" + question,
                       300) or ""
     views = ask_all(question + "\n\nThink step by step. Key points only.")
     draft = ask_gemini(f"Question: {question}\n\nPlan:\n{plan}\n\nAnswers from several AIs:\n{views}\n\n"
@@ -6212,6 +6241,12 @@ class ChatScreen(BoxLayout):
     def say(self, text):
         self.show("AI", text)
         self._last_said = text
+        q = getattr(self, "_pending_q", "")
+        if q and text and len(text) > 30 and not text.startswith(("Still ", "Say it like")):
+            self._pending_q = ""
+            if LAST_QA.get("q") != q or LAST_QA.get("a") != text:
+                LAST_QA.update(q=q, a=text)
+                brain_reflect(q, text)          # every question makes the brain a little smarter
         tts(text)
         if getattr(self, "talking", False):
             self.listen_after_speech()
@@ -6225,6 +6260,9 @@ class ChatScreen(BoxLayout):
     # brain
     def handle(self, line):
         low = line.lower()
+        if not low.startswith(("setkey", "save ", "setvoice", "setgroq", "setrouter", "setsunbird", "better:",
+                               "correct:", "actually:", "wrong:", "teach")):
+            self._pending_q = line
         if low.strip(" .!?") in ("mic test", "test mic", "test microphone", "microphone test"):
             self.mic_test()
             return
@@ -7388,9 +7426,6 @@ class ChatScreen(BoxLayout):
                         break
             if reply and not needs_tools(text):
                 _answer_cache[ck] = reply
-            if reply:
-                LAST_QA.update(q=text, a=reply)
-                brain_reflect(text, reply)        # grows smarter from every new question
             r = reply or err
 
             def done(*_):
