@@ -206,6 +206,7 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 - Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
+- Banana studio (say "banana"): Nano Banana / Nano Banana Pro realistic editing, blend 2-4 photos, ultra realistic, fix hands, remove people, restore old photos, picture shape
 - Fun studio (Menu or say "fun"): change clothes (12 outfits), change place (14 places), beautiful photo, photo collages, 14 instant effects + AI styles, video slideshows, fun videos
 - Accounts: anyone can tap "Create an account" (name, email, hidden password, hidden code; sign in with name or email) and gets their own private Genius. Owner manages them in Menu > Accounts
 - Login: password + hidden secret code (4-8 digits). Change it in Menu or say "change code"
@@ -747,7 +748,16 @@ DEEP_RULES = (LUGANDA + "You are the private AI of your owner ssalimuto, a young
               "points or steps. Say honestly when you are not sure. Never claim to control devices.")
 
 
-IMAGE_MODELS = ("gemini-2.5-flash-image", "gemini-3-pro-image-preview", "gemini-2.0-flash-preview-image-generation")
+IMAGE_MODELS = ("gemini-2.5-flash-image", "gemini-3-pro-image-preview", "gemini-2.5-flash-image-preview",
+                "gemini-2.0-flash-preview-image-generation")
+# Nano Banana = gemini-2.5-flash-image, Nano Banana Pro = gemini-3-pro-image-preview (sharper, more realistic)
+BANANA = {"pro": False, "aspect": ""}
+
+
+def image_models():
+    if BANANA["pro"]:
+        return ("gemini-3-pro-image-preview",) + tuple(m for m in IMAGE_MODELS if m != "gemini-3-pro-image-preview")
+    return IMAGE_MODELS
 
 
 def free_image(prompt, tries=3):
@@ -919,6 +929,11 @@ def is_image_edit(low):
         and os.path.exists(LAST_IMAGE["path"]) and bool(EDIT_START.match(low.strip()))
 
 
+def blend_images(paths, instruction):
+    path, err = _gemini_image(instruction, blend=paths)
+    return path, (None if path else err)
+
+
 def edit_image(instruction):
     """Change the last picture the way Gemini does: same person, only what was asked changes."""
     base = LAST_IMAGE["path"]
@@ -939,13 +954,19 @@ def _img_part(path):
     return {"inlineData": {"mimeType": mime, "data": base64.b64encode(open(path, "rb").read()).decode()}}
 
 
-def _gemini_image(prompt, ref=None, edit=None):
+def _gemini_image(prompt, ref=None, edit=None, blend=None):
     """Draw a picture from text with Gemini, optionally keeping the face in a reference photo.
     edit = path of the last picture: change only what the user asked (like Gemini's chat editing)."""
     if not os.path.exists(KEY_FILE):
         return None, "no key"
     key = clean_key(open(KEY_FILE).read())
-    if edit:
+    if blend:
+        parts = [_img_part(b) for b in blend[:4]]
+        parts.append({"text":
+            "Combine these photos into ONE new real photograph: " + prompt + ". Keep every person's exact face, "
+            "skin tone, hair and body from their photo. Matching light, shadows, perspective and colour so it "
+            "looks like one real smartphone photo, real skin texture, correct hands. No text, no watermark."})
+    elif edit:
         parts = [_img_part(edit)]
         face = my_photo()
         if face:
@@ -972,10 +993,11 @@ def _gemini_image(prompt, ref=None, edit=None):
             "Not a cartoon, not a drawing."}]
     body = json.dumps({
         "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {"responseModalities": ["IMAGE", "TEXT"], "temperature": 0.9},
+        "generationConfig": dict({"responseModalities": ["IMAGE", "TEXT"], "temperature": 0.8},
+                                 **({"imageConfig": {"aspectRatio": BANANA["aspect"]}} if BANANA["aspect"] else {})),
     }).encode()
     last = "I couldn't draw that. Try again."
-    for model in IMAGE_MODELS:
+    for model in image_models():
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         req = urllib.request.Request(url, data=body, headers={
             "Content-Type": "application/json", "x-goog-api-key": key})
@@ -3510,6 +3532,7 @@ class ChatScreen(BoxLayout):
 
     def fun_studio(self, *_):
         self._buttons_popup("Fun studio", [
+            ("Banana studio (realistic AI editing)", self.banana_studio, GOLD),
             ("Change clothes", lambda: self.ai_menu("Change clothes", OUTFITS), GOLD),
             ("Change place", lambda: self.ai_menu("Change place", PLACES), GOLD),
             ("Beautiful photo", self.beauty_menu, GOLD),
@@ -3572,6 +3595,93 @@ class ChatScreen(BoxLayout):
             ("Effect: soft glow", lambda: setv(effect="Soft glow"), GREY)], cols=2,
             hint=f"Now: {o['seconds']} s per picture, effect {o['effect'] or 'none'}")
 
+    def banana_studio(self, *_):
+        def setb(**k):
+            BANANA.update(k)
+            self.say(f"Banana: {'Pro (most realistic)' if BANANA['pro'] else 'normal (faster)'}, "
+                     f"shape {BANANA['aspect'] or 'same as photo'}.")
+            self.banana_studio()
+        self._buttons_popup("Banana studio", [
+            ("Edit my picture (type the change)", self.banana_edit_box, GOLD),
+            ("Blend 2-4 photos into one", lambda: self.fun_pick("blend"), GOLD),
+            ("Ultra realistic", lambda: self.banana_quick("make it ultra realistic: real camera photo, 4K detail, "
+                                                          "natural skin texture, true colours, sharp focus"), BLUE),
+            ("Fix hands and face", lambda: self.banana_quick("fix any wrong hands, fingers, eyes or face so they look "
+                                                             "perfectly natural"), BLUE),
+            ("Remove people behind", lambda: self.banana_quick("remove the other people and objects in the "
+                                                               "background, keep the main person"), BLUE),
+            ("Restore old photo", lambda: self.banana_quick("restore this old photo: remove scratches and blur, "
+                                                            "add natural colour, sharp and clear"), BLUE),
+            ("Pro mode ON (best)", lambda: setb(pro=True), GREY),
+            ("Pro mode OFF (faster)", lambda: setb(pro=False), GREY),
+            ("Shape: square 1:1", lambda: setb(aspect="1:1"), GREY),
+            ("Shape: phone 9:16", lambda: setb(aspect="9:16"), GREY),
+            ("Shape: wide 16:9", lambda: setb(aspect="16:9"), GREY),
+            ("Shape: same as photo", lambda: setb(aspect=""), GREY)], cols=2,
+            hint=f"Nano Banana{' Pro' if BANANA['pro'] else ''}  |  shape {BANANA['aspect'] or 'same'}")
+
+    def banana_quick(self, instruction):
+        src = self._edit_src()
+        if not src:
+            self.say("Add a photo with + first, then use the Banana studio.")
+            return
+        remember_image(src, "photo to edit")
+        self.do_edit(instruction + "." + KEEP)
+
+    def banana_edit_box(self):
+        if not self._edit_src():
+            self.say("Add a photo with + first, then type your change.")
+            return
+        box = BoxLayout(orientation="vertical", spacing=8, padding=12)
+        ti = style_input(TextInput(hint_text="e.g. put me in a blue suit at Entebbe airport at sunset",
+                                   font_size="17sp"))
+        box.add_widget(ti)
+        pop = Popup(title="Banana edit", content=box, size_hint=(0.94, 0.55),
+                    separator_color=GOLD, title_color=GOLD)
+        b = RoundButton(text="Make it", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), size_hint_y=None, height="52dp", bold=True)
+
+        def go(*_):
+            t = ti.text.strip()
+            pop.dismiss()
+            if t:
+                self.banana_quick(t)
+        b.bind(on_press=go)
+        box.add_widget(b)
+        pop.open()
+        Clock.schedule_once(lambda *_: setattr(ti, "focus", True), 0.3)
+
+    def banana_blend(self, paths):
+        box = BoxLayout(orientation="vertical", spacing=8, padding=12)
+        ti = style_input(TextInput(hint_text="What should the new photo show? e.g. us two shaking hands at Kololo",
+                                   font_size="17sp"))
+        box.add_widget(ti)
+        pop = Popup(title=f"Blend {len(paths)} photos", content=box, size_hint=(0.94, 0.55),
+                    separator_color=GOLD, title_color=GOLD)
+        b = RoundButton(text="Blend", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), size_hint_y=None, height="52dp", bold=True)
+
+        def go(*_):
+            t = ti.text.strip() or "these people standing together, smiling, in a nice place"
+            pop.dismiss()
+            self.busy = True
+            self.say("Blending your photos with Nano Banana...")
+
+            def d(*_):
+                out, err = blend_images(paths, t)
+
+                def done(*_):
+                    self.busy = False
+                    if out:
+                        remember_image(out, t)
+                        self.show_image(out, t)
+                        self.show("AI", IMAGE_TIPS)
+                    else:
+                        self.say(err or "Blending didn't work. Try again.")
+                Clock.schedule_once(done, 0)
+            threading.Thread(target=d, daemon=True).start()
+        b.bind(on_press=go)
+        box.add_widget(b)
+        pop.open()
+
     def fun_videos(self):
         self._buttons_popup("Watch fun videos", [
             (t, lambda q=q: (open_url("https://www.youtube.com/results?search_query=" + urllib.parse.quote(q)),
@@ -3626,6 +3736,9 @@ class ChatScreen(BoxLayout):
     def fun_run(self, job, paths):
         if len(paths) < 2:
             self.say("I need at least 2 pictures. Allow Genius to see photos, or choose them yourself.")
+            return
+        if job == "blend":
+            self.banana_blend(paths[:4])
             return
         self.busy = True
         self.say("Making your " + ("collage" if job == "collage" else "video") + "...")
@@ -4166,6 +4279,20 @@ class ChatScreen(BoxLayout):
         lw = low.strip(" .!")
         if lw in ("fun", "fun studio", "studio", "have fun"):
             self.fun_studio()
+            return
+        if lw in ("banana", "banana studio", "nano banana", "banana creator"):
+            self.banana_studio()
+            return
+        if lw in ("banana pro", "banana pro on", "pro mode"):
+            BANANA["pro"] = True
+            self.say("Nano Banana Pro is on: the most realistic pictures (a bit slower).")
+            return
+        if lw in ("banana pro off", "pro mode off"):
+            BANANA["pro"] = False
+            self.say("Back to normal Nano Banana (faster).")
+            return
+        if low.startswith("banana ") and len(line.split()) > 2:
+            self.banana_quick(line.split(" ", 1)[1])
             return
         if lw in ("change clothes", "clothes", "outfit", "change outfit", "change wear"):
             self.ai_menu("Change clothes", OUTFITS)
