@@ -212,7 +212,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 105.0
+ABOUT_TEXT = """Genius 106.0
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -268,9 +268,12 @@ What this means
 
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
-VERSION = "105.0"
+VERSION = "106.0"
 VERSION_DATE = "2026-10-25"
-CHANGELOG = """Genius 105.0 (2026-10-25)
+CHANGELOG = """Genius 106.0 (2026-10-25)
+- Understands misspelled commands, e.g. itruders becomes intruders.
+
+Genius 105.0 (2026-10-25)
 - When Google refuses your key, Genius now tells you exactly why and how to fix it.
 
 Genius 104.0 Agent (2026-10-25)
@@ -6315,6 +6318,17 @@ class ChatScreen(BoxLayout):
         action, arg = action.lower(), arg.strip()
         action = LUGANDA_CMDS.get(action, action)
         action = {"whatsnew": "version", "changelog": "version", "update": "version"}.get(action, action)
+        # Typo-tolerant commands: "itruders" -> "intruders" (short inputs only)
+        if action not in ALLOWED and action.isalpha() and len(action) >= 4 \
+                and len(line.split()) <= 3 and not action.startswith("set"):
+            import difflib
+            names = [k for k in ALLOWED if k.isalpha() and len(k) >= 4 and not k.startswith("set")]
+            near = difflib.get_close_matches(action, names, n=1, cutoff=0.8)
+            if near:
+                self.show("AI", f"I took '{action}' as '{near[0]}'.")
+                action = near[0]
+                line = (near[0] + " " + arg).strip()
+                low = line.lower()
 
         # Genius Brain: it learns and improves itself
         lw = low.strip(" .!?")
