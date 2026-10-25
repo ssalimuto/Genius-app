@@ -437,7 +437,7 @@ def create_account(name, pw, code, email=""):
 # ---------------- Genius Premium: free trial, then 2,000 UGX ----------------
 TRIAL_DAYS = 7
 TRIAL_USES = 50
-TRIAL_MB = 30                           # free-trial users can save up to 30 MB of downloads
+TRIAL_MB = 0                            # 0 = no download limit during the free trial
 
 
 def _user_mb():
@@ -508,10 +508,11 @@ def premium_status():
     _trial_mark_set(email, start)
     days_left = TRIAL_DAYS - int((now - start) // 86400)
     uses_left = TRIAL_USES - acc.get("uses", 0)
-    mb_left = TRIAL_MB - _user_mb()
+    mb_left = (TRIAL_MB - _user_mb()) if TRIAL_MB else 1
     if days_left > 0 and uses_left > 0 and mb_left > 0:
+        mb_txt = f" and {mb_left:.0f} MB of downloads" if TRIAL_MB else ", with unlimited downloads,"
         return True, (f"Free trial: {days_left} day{'s' if days_left != 1 else ''}, {uses_left} "
-                      f"use{'s' if uses_left != 1 else ''} and {mb_left:.0f} MB of downloads left.")
+                      f"use{'s' if uses_left != 1 else ''}{mb_txt} left.")
     if mb_left <= 0 and days_left > 0 and uses_left > 0:
         return False, f"You've used your {TRIAL_MB} MB of free downloads."
     return False, "Your free trial has ended."
@@ -4504,7 +4505,7 @@ class ChatScreen(BoxLayout):
                f"3. Type the unlock code you get below.")
         if CURRENT["owner"]:
             txt = (f"[b][color=ffc84d]Genius Premium[/color][/b]\n{msg}\n\nOther people get {TRIAL_DAYS} free days "
-                   f"{TRIAL_USES} uses or {TRIAL_MB} MB of downloads, then pay {PREMIUM_PRICE} a week.\n"
+                   f"{TRIAL_USES} uses (unlimited downloads), then pay {PREMIUM_PRICE} a week.\n"
                    f"When someone pays, say: makecode their@email.com (or makecode their@email.com 4 for 4 weeks).")
         lab = Label(text=txt, markup=True, color=TEXTCOL, font_size="15sp", halign="left", valign="top")
         lab.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
