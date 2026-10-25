@@ -941,13 +941,10 @@ def edit_image(instruction):
     path, err = _gemini_image(instruction, edit=base)
     if path:
         return path, None
-    log(f"EDIT: Gemini couldn't ({err}); redrawing with the free picture maker")
-    combined = (LAST_IMAGE["prompt"] + ", " + instruction).strip(", ")
-    path, err2 = free_image(realistic_prompt(combined))
-    if path:
-        return path, ("Gemini picture editing isn't on your key's free plan, so I redrew it. "
-                      "The face may look different. Add billing at aistudio.google.com for true editing.")
-    return None, err2
+    log(f"EDIT: Gemini couldn't ({err}); not redrawing, so the face and position never change")
+    return None, ("I couldn't edit it without changing how you look, so I left your picture as it is. "
+                  f"({err}) True editing needs Nano Banana: turn on billing for your key at aistudio.google.com, "
+                  "or try again later. Instant looks and effects in Fun studio always keep your picture the same.")
 
 
 def _img_part(path):
@@ -976,6 +973,8 @@ def _gemini_image(prompt, ref=None, edit=None, blend=None):
             "Edit the FIRST photo. Change: " + prompt + ". Keep the SAME person with the exact same face, "
             "head shape, skin tone, hair and body" + (" (the second photo shows their real face)" if face else "") +
             ". Keep their clothes, pose and everything else the same unless the change asks otherwise. "
+            "Keep the exact same composition: the person stays in the same position, same size, same angle and "
+            "same framing, same image width and height; do not move, crop, zoom, rotate or re-pose anything. "
             "Result must be a real, photorealistic smartphone photograph with natural light, real skin texture, "
             "correct hands and fingers, believable shadows and perspective. Not a cartoon, no text, no watermark."})
     elif ref:
@@ -2185,7 +2184,9 @@ AI_STYLES = (("Oil painting", "turn it into a realistic oil painting"),
              ("Rainy day", "make it a rainy day with wet reflections"))
 
 
-KEEP = " Keep the same person, the same face, body shape and pose exactly; photorealistic, natural light."
+KEEP = (" Change ONLY that. Keep the same person with the identical face, skin tone, hair, body shape and pose, "
+        "in exactly the same position, size and framing; do not move, crop, zoom or rotate anything. "
+        "Photorealistic, natural light.")
 OUTFITS = (("Smart suit", "dress the person in a smart, well-fitted dark suit with a white shirt"),
            ("Kanzu", "dress the person in a clean white Ugandan kanzu with a dark coat"),
            ("Gomesi", "dress the person in a beautiful colourful Ugandan gomesi"),
@@ -2268,7 +2269,7 @@ def pro_look(path, look):
     """Phone-camera style looks (like iPhone Photographic Styles) done on the phone, instant."""
     from PIL import ImageOps, ImageEnhance, ImageFilter, Image
     im = _open_rgb(path)
-    im.thumbnail((2400, 2400))
+    im.thumbnail((4096, 4096))
     im = ImageOps.autocontrast(im, cutoff=0.5)
     L = look.lower()
     if "vibrant" in L:
@@ -2301,11 +2302,6 @@ def pro_look(path, look):
         hi = _tint(im, 1.08, 1.0, 0.9)
         im = Image.composite(hi, sh, ImageOps.grayscale(im))
         im = _vignette(ImageEnhance.Color(im).enhance(0.92), 0.3)
-        w, h = im.size
-        bar = int(h * 0.06)
-        canvas = Image.new("RGB", (w, h), (0, 0, 0))
-        canvas.paste(im.crop((0, bar, w, h - bar)), (0, bar))
-        im = canvas
     elif "golden" in L:
         im = _tint(im, 1.12, 1.03, 0.85)
         im = _curve(im, 8, 0.9)
@@ -2338,7 +2334,7 @@ def pro_look(path, look):
 def beautify(path):
     from PIL import ImageOps, ImageEnhance, ImageFilter
     im = _open_rgb(path)
-    im.thumbnail((2000, 2000))
+    im.thumbnail((4096, 4096))
     im = ImageOps.autocontrast(im, cutoff=1)
     im = ImageEnhance.Color(im).enhance(1.18)
     im = ImageEnhance.Brightness(im).enhance(1.04)
@@ -2391,7 +2387,7 @@ def make_collage(paths):
 def transform_image(path, style):
     from PIL import Image, ImageOps, ImageFilter, ImageEnhance, ImageChops
     im = _open_rgb(path)
-    im.thumbnail((1600, 1600))
+    im.thumbnail((4096, 4096))
     st = style.lower()
     if "black" in st:
         im = ImageOps.grayscale(im).convert("RGB")
