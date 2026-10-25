@@ -67,6 +67,7 @@ ALLOWED = MappingProxyType({
     "log": "Show the log",
     "setkey": "setkey YOURKEY - lets me answer anything",
     "help": "List commands",
+    "storage": "Open My storage (200 MB for pictures, files, notes). Also: save this, save note ...",
     "life": "Study coach, money, morning brief and freelancing commands",
     "study": "Study progress and exam countdown",
     "subjects": "Save your subjects, e.g. subjects Maths, Biology",
@@ -198,7 +199,8 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
 - Picture chat like Gemini: after a picture, say 'make me near a building', 'change it to night'
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
-- Top right: Find (search chats, notes, creations, internet) and Menu (My creations, Exit, Lock, Help)
+- Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
+- My storage: a private 200 MB space for pictures, files and notes. Say "storage", "save this" or "save note ..."
 - + button: add a picture or a file (PDF, text) from your phone, or your newest photo/file.
   Then ask about it ('summarize', 'what is this?') or change the picture ('make me near a building')
 - setme: take a selfie, type setme, and your face is saved for 'make me ...' pictures
@@ -1955,6 +1957,65 @@ def attach_dir():
     return d
 
 
+STORAGE_LIMIT_MB = 200
+
+
+def storage_dir():
+    d = "/storage/emulated/0/Download/Genius/storage" if os.path.isdir("/storage/emulated/0") else "genius_storage"
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        d = "genius_storage"
+        os.makedirs(d, exist_ok=True)
+    return d
+
+
+def storage_files():
+    d = storage_dir()
+    out = []
+    for n in os.listdir(d):
+        f = os.path.join(d, n)
+        if os.path.isfile(f) and not n.startswith("."):
+            out.append(f)
+    return sorted(out, key=os.path.getmtime, reverse=True)
+
+
+def storage_used():
+    return sum(os.path.getsize(f) for f in storage_files())
+
+
+def nice_size(b):
+    for unit in ("B", "KB", "MB", "GB"):
+        if b < 1024 or unit == "GB":
+            return (f"{b:.0f} {unit}" if unit == "B" else f"{b:.1f} {unit}")
+        b /= 1024.0
+
+
+def storage_put(path, move=False):
+    """Copy (or move) a file into Genius storage. Returns (new_path, message)."""
+    import shutil
+    size = os.path.getsize(path)
+    if storage_used() + size > STORAGE_LIMIT_MB * 1024 * 1024:
+        return None, f"Storage is full ({STORAGE_LIMIT_MB} MB). Delete something first."
+    name = os.path.basename(path)
+    name = re.sub(r"^\d{9,}_", "", name)
+    dest = os.path.join(storage_dir(), name)
+    base, ext = os.path.splitext(dest)
+    i = 1
+    while os.path.exists(dest):
+        dest = f"{base}_{i}{ext}"
+        i += 1
+    (shutil.move if move else shutil.copy2)(path, dest)
+    return dest, f"Saved {os.path.basename(dest)} to your storage ({nice_size(size)})."
+
+
+def storage_note(text):
+    name = "note_" + time.strftime("%Y%m%d_%H%M%S") + ".txt"
+    f = os.path.join(storage_dir(), name)
+    open(f, "w", encoding="utf8").write(text)
+    return f
+
+
 def file_kind(path, mime=""):
     low = path.lower()
     if mime.startswith("image") or low.endswith(IMG_EXTS):
@@ -2888,9 +2949,10 @@ class ChatScreen(BoxLayout):
     # ---------- header: Menu (options) and Find (search) ----------
     def options_menu(self, *_):
         box = BoxLayout(orientation="vertical", spacing=10, padding=12)
-        pop = Popup(title="Options", content=box, size_hint=(0.9, 0.7),
+        pop = Popup(title="Options", content=box, size_hint=(0.9, 0.78),
                     separator_color=GOLD, title_color=GOLD)
         opts = [("My creations (pictures)", self.creations, BLUE),
+                ("My storage", self.storage_box, BLUE),
                 ("Add a picture or file", self.attach_menu, BLUE),
                 ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
                 ("Help (all commands)", lambda: self.handle("help"), GREY),
@@ -2957,6 +3019,131 @@ class ChatScreen(BoxLayout):
                             height="48dp", bold=True)
         close.bind(on_press=pop.dismiss)
         box.add_widget(close)
+        pop.open()
+
+    # ---------- My storage: a small private space inside Genius ----------
+    def storage_box(self, *_):
+        files = storage_files()
+        used = storage_used()
+        limit = STORAGE_LIMIT_MB * 1024 * 1024
+        box = BoxLayout(orientation="vertical", spacing=8, padding=10)
+        pop = Popup(title="My storage", content=box, size_hint=(0.96, 0.9),
+                    separator_color=GOLD, title_color=GOLD)
+        pct = int(used * 100 / limit) if limit else 0
+        box.add_widget(Label(text=f"Used {nice_size(used)} of {STORAGE_LIMIT_MB} MB ({pct}%)  |  {len(files)} items",
+                             size_hint_y=None, height="30dp", color=HINT, font_size="15sp"))
+        row = BoxLayout(size_hint_y=None, height="50dp", spacing=8)
+        for label, fn, col in (("+ Save file", lambda: self.storage_add(), BLUE),
+                               ("Save last picture", lambda: self.storage_save_last(), GREY),
+                               ("+ Note", lambda: self.storage_note_box(), GREY)):
+            b = RoundButton(text=label, bg=col, fg=TEXTCOL, font_size="14sp", bold=True)
+
+            def go(btn, fn=fn):
+                pop.dismiss()
+                Clock.schedule_once(lambda *_: fn(), 0.1)
+            b.bind(on_press=go)
+            row.add_widget(b)
+        box.add_widget(row)
+        grid = GridLayout(cols=1, spacing=6, padding=4, size_hint_y=None)
+        grid.bind(minimum_height=grid.setter("height"))
+        sv = ScrollView()
+        sv.add_widget(grid)
+        box.add_widget(sv)
+        if not files:
+            grid.add_widget(Label(text="Empty. Save pictures, files and notes here.",
+                                  size_hint_y=None, height="60dp", color=HINT))
+        for f in files[:100]:
+            line = BoxLayout(size_hint_y=None, height="52dp", spacing=6)
+            nm = os.path.basename(f)
+            ob = RoundButton(text=(nm[:26] + "..." if len(nm) > 29 else nm) + "  " + nice_size(os.path.getsize(f)),
+                             bg=GREY, fg=TEXTCOL, font_size="14sp")
+            db = RoundButton(text="Delete", bg=RED, fg=TEXTCOL, font_size="14sp", size_hint_x=0.3)
+
+            def open_it(btn, f=f):
+                pop.dismiss()
+                Clock.schedule_once(lambda *_: self.storage_open(f), 0.1)
+
+            def del_it(btn, f=f):
+                pop.dismiss()
+                Clock.schedule_once(lambda *_: self.storage_delete(f), 0.1)
+            ob.bind(on_press=open_it)
+            db.bind(on_press=del_it)
+            line.add_widget(ob)
+            line.add_widget(db)
+            grid.add_widget(line)
+        close = RoundButton(text="Close", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), size_hint_y=None,
+                            height="48dp", bold=True)
+        close.bind(on_press=pop.dismiss)
+        box.add_widget(close)
+        pop.open()
+
+    def storage_add(self):
+        self._to_storage = True
+        self.pick_file("*/*")
+
+    def storage_save_last(self):
+        p = LAST_IMAGE.get("path")
+        if not p or not os.path.exists(p):
+            self.say("There's no picture yet. Draw one or add one first.")
+            return
+        _, msg = storage_put(p)
+        self.say(msg)
+
+    def storage_note_box(self):
+        box = BoxLayout(orientation="vertical", spacing=8, padding=10)
+        ti = style_input(TextInput(hint_text="Write your note...", font_size="17sp"))
+        box.add_widget(ti)
+        pop = Popup(title="New note", content=box, size_hint=(0.94, 0.6),
+                    separator_color=GOLD, title_color=GOLD)
+        b = RoundButton(text="Save", bg=BLUE, fg=TEXTCOL, size_hint_y=None, height="50dp", bold=True)
+
+        def save(*_):
+            t = ti.text.strip()
+            pop.dismiss()
+            if t:
+                f = storage_note(t)
+                self.say("Note saved to your storage as " + os.path.basename(f) + ".")
+        b.bind(on_press=save)
+        box.add_widget(b)
+        pop.open()
+        Clock.schedule_once(lambda *_: setattr(ti, "focus", True), 0.3)
+
+    def storage_open(self, f):
+        kind = file_kind(f)
+        if kind == "text":
+            try:
+                txt = open(f, encoding="utf8", errors="ignore").read()
+            except Exception:
+                txt = ""
+            self.show("AI", os.path.basename(f) + ":\n" + (txt[:3000] or "(empty)"))
+            self.attached = {"path": f, "kind": kind}
+        else:
+            self.got_attachment(f)
+
+    def storage_delete(self, f):
+        box = BoxLayout(orientation="vertical", spacing=10, padding=12)
+        box.add_widget(Label(text="Delete " + os.path.basename(f) + "?\nThis can't be undone.",
+                             color=TEXTCOL, halign="center"))
+        row = BoxLayout(size_hint_y=None, height="50dp", spacing=8)
+        pop = Popup(title="Delete", content=box, size_hint=(0.85, 0.4),
+                    separator_color=GOLD, title_color=GOLD)
+        yes = RoundButton(text="Delete", bg=RED, fg=TEXTCOL, bold=True)
+        no = RoundButton(text="Keep", bg=GREY, fg=TEXTCOL, bold=True)
+
+        def do(*_):
+            pop.dismiss()
+            try:
+                os.remove(f)
+                if self.attached and self.attached.get("path") == f:
+                    self.attached = None
+                self.say("Deleted " + os.path.basename(f) + ".")
+            except Exception:
+                self.say("I couldn't delete that file.")
+        yes.bind(on_press=do)
+        no.bind(on_press=pop.dismiss)
+        row.add_widget(no)
+        row.add_widget(yes)
+        box.add_widget(row)
         pop.open()
 
     def search_box(self, *_):
@@ -3093,6 +3280,14 @@ class ChatScreen(BoxLayout):
         except Exception as e:
             err = "I couldn't open that file. Try another one."
             log(f"PICK error: {e}")
+        to_store = getattr(self, "_to_storage", False)
+        self._to_storage = False
+        if path and to_store:
+            def store(*_):
+                newp, msg = storage_put(path, move=True)
+                self.say(msg)
+            Clock.schedule_once(store, 0)
+            return
         Clock.schedule_once(lambda *_: self.got_attachment(path) if path else self.say(err), 0)
 
     def _copy_uri(self, uri):
@@ -3248,6 +3443,19 @@ class ChatScreen(BoxLayout):
             f = set_my_photo(src)
             self.say("Saved your face. Now say 'make me ...' and every picture keeps it." if f
                      else "I couldn't find a photo. Take a clear selfie first, then say setme.")
+            return
+        if low.strip(" .!") in ("storage", "my storage", "open storage", "show storage"):
+            self.storage_box()
+            return
+        if low.strip(" .!") in ("save this", "save picture", "save to storage", "store this"):
+            if self.attached and os.path.exists(self.attached["path"]):
+                self.say(storage_put(self.attached["path"])[1])
+            else:
+                self.storage_save_last()
+            return
+        if low.startswith("store note ") or low.startswith("save note "):
+            f = storage_note(line.split(" ", 2)[2])
+            self.say("Note saved to your storage as " + os.path.basename(f) + ".")
             return
         if low.strip(" .!") in ("new picture", "new photo", "start fresh"):
             LAST_IMAGE.update(path=None, time=0, prompt="")
