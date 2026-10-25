@@ -7080,8 +7080,41 @@ class ChatScreen(BoxLayout):
         }
 
         def work():
-            reply, err = agent_reply(text, ui, self.deep) if os.path.exists(KEY_FILE) \
-                else (None, "No Gemini key.")
+            reply, err = None, None
+            fast_ok = not self.deep and not needs_tools(text)
+            try:
+                have = connected_ais() if fast_ok else []
+            except Exception:
+                have = []
+            if fast_ok and ("groq" in have or "openrouter" in have):
+                # speed race: the first good answer wins, nobody waits for the slowest AI
+                import queue
+                q = queue.Queue()
+                racers = []
+                if os.path.exists(KEY_FILE):
+                    racers.append(lambda: agent_reply(text, ui, False)[0])
+                for prov in ("groq", "openrouter"):
+                    if prov in have:
+                        racers.append(lambda prov=prov: other_ai(prov, text, convo=history))
+
+                def run(fn):
+                    try:
+                        q.put(fn())
+                    except Exception:
+                        q.put(None)
+                for fn in racers:
+                    threading.Thread(target=run, args=(fn,), daemon=True).start()
+                for _ in racers:
+                    try:
+                        r_ = q.get(timeout=45)
+                    except Exception:
+                        break
+                    if r_ and r_.strip():
+                        reply = r_
+                        break
+            if not reply:
+                reply, err = agent_reply(text, ui, self.deep) if os.path.exists(KEY_FILE) \
+                    else (None, "No Gemini key.")
             if not reply:                       # backup AIs
                 for prov in ("groq", "openrouter"):
                     reply = other_ai(prov, text, convo=history)
