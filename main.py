@@ -2301,6 +2301,20 @@ def ask_all(question):
                        sorted(results.items(), key=lambda x: x[1][1]))
 
 
+def genius_mind(question):
+    """Genius Mind: plan, ask every AI, cross-check with live web search, critique, then one best answer."""
+    plan = ask_gemini("Break this question into the key sub-questions and facts needed. Short list only.\n\n" + question,
+                      300) or ""
+    views = ask_all(question + "\n\nThink step by step. Key points only.")
+    draft = ask_gemini(f"Question: {question}\n\nPlan:\n{plan}\n\nAnswers from several AIs:\n{views}\n\n"
+                       "Combine the best reasoning, check facts with web search, fix mistakes, and write the best answer.",
+                       1200, search=True) or views
+    final = ask_gemini(f"Question: {question}\n\nDraft answer:\n{draft}\n\nAct as a strict expert reviewer. Find any "
+                       "error, missing step, weak logic or outdated fact, then rewrite the final answer: correct, clear, "
+                       "practical, with a short 'Confidence:' line (high/medium/low) and what to verify.", 1200, search=True)
+    return "\U0001F9E0 Genius Mind\n" + (final or draft)
+
+
 # ================= ATTACH: the + button (pictures and files) =================
 TEXT_EXTS = (".txt", ".md", ".py", ".json", ".csv", ".html", ".htm", ".xml", ".log", ".kv", ".spec", ".yml", ".yaml")
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic")
@@ -6032,6 +6046,10 @@ class ChatScreen(BoxLayout):
                 except Exception as e:
                     self.say(f"Listing apps only works on the phone: {e}")
                 return
+        if lw.startswith(("mind ", "think ", "genius mind ")):
+            q = line.split(" ", 2)[2] if lw.startswith("genius mind ") else line.split(" ", 1)[1]
+            self._bg(lambda: genius_mind(q))
+            return
         if lw in ("home", "home page", "dashboard"):
             self.app.open_home()
             return
