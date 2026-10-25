@@ -206,6 +206,7 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 - Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
+- Genius Ultra (say "ultra"): HDR, smart white balance, clarity, fine detail, vibrance and noise clean-up; applied automatically to every camera shot and zoom
 - Super zoom camera (say "camera"): live 1x-100x zoom with slider and presets, smart sharpening, "ai zoom" rebuilds detail; also zoom any photo
 - Pro camera looks (say "looks"): 12 instant iPhone-style looks (Vibrant, Warm, Rich Contrast, HDR, Cinematic, Golden Hour...) + AI flagship look; Replace (sky, background, Portrait mode, Studio Light...)
 - Banana studio (say "banana"): Nano Banana / Nano Banana Pro realistic editing, blend 2-4 photos, ultra realistic, fix hands, remove people, restore old photos, picture shape
@@ -2332,6 +2333,55 @@ def pro_look(path, look):
     return out, look + " look done."
 
 
+def ultra_process(im):
+    """Genius Ultra engine: smart white balance, HDR tone mapping, clarity, fine detail,
+    vibrance and noise clean-up. Never moves, crops or reshapes anything."""
+    from PIL import Image, ImageFilter, ImageEnhance, ImageOps, ImageStat, ImageChops
+    im = im.convert("RGB")
+    # 1. Smart white balance (gentle gray-world, so skin stays natural)
+    r, g, b = ImageStat.Stat(im).mean
+    avg = (r + g + b) / 3 or 1
+    chans = []
+    for c, m in zip(im.split(), (r, g, b)):
+        f = 1 + ((avg / (m or 1)) - 1) * 0.6
+        f = max(0.85, min(1.18, f))
+        chans.append(c.point(lambda v, f=f: min(255, int(v * f))))
+    im = Image.merge("RGB", chans)
+    # 2. Noise clean-up in dark photos
+    lum = ImageStat.Stat(im.convert("L")).mean[0]
+    if lum < 90:
+        im = Image.blend(im, im.filter(ImageFilter.MedianFilter(3)), 0.5)
+    # 3. HDR tone mapping: lift shadows, protect highlights (local, via blurred luminance mask)
+    L = im.convert("L")
+    mask = L.filter(ImageFilter.GaussianBlur(max(4, im.size[0] // 60)))
+    lift = 1.35 if lum < 110 else 1.2
+    bright = im.point(lambda v: min(255, int(255 * ((v / 255) ** (1 / lift)))))
+    shadow_mask = ImageOps.invert(mask).point(lambda v: int(v * 0.75))
+    im = Image.composite(bright, im, shadow_mask)
+    calm = im.point(lambda v: int(v if v < 200 else 200 + (v - 200) * 0.7))
+    hi_mask = mask.point(lambda v: 0 if v < 170 else min(255, (v - 170) * 3))
+    im = Image.composite(calm, im, hi_mask)
+    # 4. Clarity (local contrast) + fine detail
+    im = im.filter(ImageFilter.UnsharpMask(radius=max(8, im.size[0] // 120), percent=35, threshold=3))
+    im = im.filter(ImageFilter.UnsharpMask(radius=1.4, percent=90, threshold=2))
+    # 5. Vibrance: boost muted colours more than strong ones, keep skin natural
+    sat = ImageEnhance.Color(im).enhance(1.22)
+    s_chan = im.convert("HSV").split()[1]
+    v_mask = ImageOps.invert(s_chan).point(lambda v: int(v * 0.8))
+    im = Image.composite(sat, im, v_mask)
+    # 6. Final polish: depth contrast, true blacks
+    im = ImageOps.autocontrast(im, cutoff=0.4)
+    im = ImageEnhance.Contrast(im).enhance(1.06)
+    return im
+
+
+def ultra_hd(path):
+    im = _open_rgb(path)
+    out = fun_out("ultra")
+    ultra_process(im).save(out, quality=97, subsampling=0)
+    return out, "Genius Ultra done: HDR, true colour, clarity and fine detail - same photo, just better."
+
+
 def super_zoom(path, zoom, cx=0.5, cy=0.5):
     """Digital zoom 1x-100x with smart sharpening: crop the centre, upscale cleanly, remove noise."""
     from PIL import Image, ImageFilter, ImageEnhance, ImageOps
@@ -2352,9 +2402,9 @@ def super_zoom(path, zoom, cx=0.5, cy=0.5):
         big = big.filter(ImageFilter.UnsharpMask(2, 60, 2))
     big = big.resize((tw, th), Image.LANCZOS)
     big = big.filter(ImageFilter.UnsharpMask(3, 110 if zoom < 10 else 150, 2))
-    big = ImageEnhance.Contrast(ImageOps.autocontrast(big, cutoff=0.3)).enhance(1.05)
+    big = ultra_process(big)
     out = fun_out(f"zoom{int(zoom)}x")
-    big.save(out, quality=95)
+    big.save(out, quality=97, subsampling=0)
     return out, f"{zoom:g}x zoom done."
 
 
@@ -3674,6 +3724,7 @@ class ChatScreen(BoxLayout):
             ("Banana studio (realistic AI editing)", self.banana_studio, GOLD),
             ("Super zoom camera (1x-100x)", self.zoom_camera, GOLD),
             ("Zoom a photo", self.zoom_photo_menu, BLUE),
+            ("Genius Ultra (best photo quality)", self.ultra_photo, GOLD),
             ("Pro camera looks (iPhone style)", self.looks_menu, GOLD),
             ("Replace something", lambda: self.ai_menu("Replace", REPLACE), GOLD),
             ("Change clothes", lambda: self.ai_menu("Change clothes", OUTFITS), GOLD),
@@ -3831,7 +3882,11 @@ class ChatScreen(BoxLayout):
                 if st["rot"]:
                     im = im.rotate(st["rot"], expand=True)
                 raw = os.path.join(genius_dl("camera"), f"photo_{time.strftime('%Y%m%d_%H%M%S')}.jpg")
-                im.save(raw, quality=95)
+                try:
+                    im = ultra_process(im)          # every shot gets the Genius Ultra engine
+                except Exception as e:
+                    log(f"ULTRA: {e}")
+                im.save(raw, quality=97, subsampling=0)
             except Exception as e:
                 log(f"CAMERA shoot: {e}")
                 self.say("I couldn't take the picture. Try again.")
@@ -3879,6 +3934,30 @@ class ChatScreen(BoxLayout):
                     if z >= 10:
                         self.say("At high zoom, say 'ai zoom' and Nano Banana will rebuild sharp detail "
                                  "without changing what's in the photo.")
+                else:
+                    self.say(msg)
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=d, daemon=True).start()
+
+    def ultra_photo(self, *_):
+        src = self._edit_src()
+        if not src:
+            self.say("Add a photo with + first, then say 'ultra'.")
+            return
+        self.busy = True
+        self.say("Genius Ultra is working: HDR, true colour, clarity, fine detail...")
+
+        def d(*_):
+            try:
+                out, msg = ultra_hd(src)
+            except Exception as e:
+                out, msg = None, f"Ultra didn't work: {e}"
+
+            def done(*_):
+                self.busy = False
+                if out:
+                    remember_image(out, "Genius Ultra photo")
+                    self.show_image(out, msg)
                 else:
                     self.say(msg)
             Clock.schedule_once(done, 0)
@@ -4588,6 +4667,9 @@ class ChatScreen(BoxLayout):
             return
         if lw in ("camera", "zoom camera", "super zoom", "zoom", "open camera"):
             self.zoom_camera()
+            return
+        if lw in ("ultra", "genius ultra", "ultra hd", "best quality", "make it better", "enhance"):
+            self.ultra_photo()
             return
         if lw in ("zoom photo", "zoom picture", "zoom a photo"):
             self.zoom_photo_menu()
