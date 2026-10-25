@@ -1,4 +1,4 @@
-# my_ai_app.py - private phone AI with buttons and voice (Kivy). Only ssalimuto can use it.
+# my_ai_app.py - private phone AI with buttons and voice (Kivy). Owner ssalimuto, plus private guest accounts.
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
@@ -31,11 +31,14 @@ HINT     = (0.55, 0.58, 0.66, 1)
 Window.clearcolor = BG
 
 OWNER = "ssalimuto"
+ROOT = os.path.abspath(os.getcwd())           # owner's home; guests live in ROOT/users/<name>
+ACCOUNTS_FILE = os.path.join(ROOT, "accounts.json")
+CURRENT = {"name": OWNER, "owner": True}
 OWNER_SALT = "cbdcd2493aa83fd739f4492eec2b2f01"
 OWNER_HASH = "fb78aea9063acb75346bf8fbd20adc8db0efc2e9a6048b95c62300b016e7ae99"
-STATE_FILE = "owner_state.json"
+STATE_FILE = os.path.join(ROOT, "owner_state.json")
 LOG_FILE = "ai_log.txt"
-KEY_FILE = "gemini_key.txt"
+KEY_FILE = os.path.join(ROOT, "gemini_key.txt")
 FAST_MODELS = ("gemini-2.5-flash-lite", "gemini-flash-lite-latest", "gemini-flash-latest")
 DEEP_MODELS = ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro")
 MEMORY_FILE = "chat_memory.json"
@@ -135,6 +138,7 @@ LIFE_ACTIONS = ("life", "study", "subjects", "exam", "quiz", "explain", "studypl
                 "freelance", "skills", "cv", "proposal", "gigs", "price",
                 "build", "myapps", "showapp", "hotspot", "makeai", "myais", "ask", "backup")
 NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
+OWNER_ONLY = ("upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
 ABOUT_TEXT = """Genius 102.0
@@ -201,6 +205,7 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 - Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
+- Accounts: anyone can tap "Create an account" (name, hidden password, hidden code) and gets their own private Genius. Owner manages them in Menu > Accounts
 - Login: password + hidden secret code (4-8 digits). Change it in Menu or say "change code"
 - My storage: a private 200 MB space for pictures, files and notes. Say "storage", "save this" or "save note ..."
 - + button: add a picture or a file (PDF, text) from your phone, or your newest photo/file.
@@ -288,7 +293,7 @@ def load_state():
 
 
 LOCKOUT_STEPS = (300, 900, 3600)      # 5 min, 15 min, 1 hour
-INTRUDER_FILE = "intruders.json"
+INTRUDER_FILE = os.path.join(ROOT, "intruders.json")
 
 
 def intruder_log(event, detail=""):
@@ -307,6 +312,90 @@ def intruder_data():
         return json.load(open(INTRUDER_FILE))
     except Exception:
         return {"events": [], "seen": 0}
+
+
+# ---------------- accounts: other people get their own private Genius ----------------
+_RULE_NAMES = ("FAST_RULES", "DEEP_RULES", "AGENT_RULES")
+_RULE_ORIG = {}
+
+
+def accounts_load():
+    try:
+        return json.load(open(ACCOUNTS_FILE))
+    except Exception:
+        return {}
+
+
+def accounts_save(a):
+    json.dump(a, open(ACCOUNTS_FILE, "w"))
+
+
+def valid_username(n):
+    return bool(re.fullmatch(r"[a-z0-9_]{3,20}", n))
+
+
+def create_account(name, pw, code):
+    name = name.strip().lower()
+    if not valid_username(name):
+        return "Name must be 3-20 letters, numbers or _ (no spaces)."
+    a = accounts_load()
+    if name == OWNER or name in a:
+        return "That name is taken. Choose another."
+    if len(pw) < 6:
+        return "Password must be at least 6 characters."
+    if not code.isdigit() or not (4 <= len(code) <= 8):
+        return "Secret code must be 4 to 8 digits."
+    if len(set(code)) == 1 or code in "0123456789" or code in "9876543210":
+        return "Secret code is too easy to guess."
+    ps, cs = os.urandom(16), os.urandom(16)
+    a[name] = {"pw_salt": ps.hex(), "pw_hash": hash_pw(pw, ps), "code_salt": cs.hex(),
+               "code_hash": hash_pw(code, cs), "created": time.strftime("%Y-%m-%d %H:%M")}
+    accounts_save(a)
+    log(f"ACCOUNT CREATED: {name}")
+    return ""
+
+
+def account_ok(name, pw, code):
+    acc = accounts_load().get(name.strip().lower())
+    if not acc:
+        hash_pw(pw or "x", b"0" * 16)        # same time cost, so a hacker can't tell if the name exists
+        return False
+    a = hmac.compare_digest(hash_pw(pw.strip(), bytes.fromhex(acc["pw_salt"])), acc["pw_hash"])
+    b = hmac.compare_digest(hash_pw(code.strip(), bytes.fromhex(acc["code_salt"])), acc["code_hash"])
+    return a and b
+
+
+def delete_account(name):
+    import shutil
+    a = accounts_load()
+    if name not in a:
+        return False
+    del a[name]
+    accounts_save(a)
+    shutil.rmtree(os.path.join(ROOT, "users", name), ignore_errors=True)
+    log(f"ACCOUNT DELETED: {name}")
+    return True
+
+
+def switch_user(name):
+    """Move Genius into this person's own private space: own chats, notes, money, memory."""
+    owner = name == OWNER
+    CURRENT.update(name=name, owner=owner)
+    home = ROOT if owner else os.path.join(ROOT, "users", name)
+    os.makedirs(home, exist_ok=True)
+    os.chdir(home)
+    g = globals()
+    for k in _RULE_NAMES:
+        if k in g:
+            _RULE_ORIG.setdefault(k, g[k])
+            g[k] = _RULE_ORIG[k] if owner else _RULE_ORIG[k].replace("ssalimuto", name)
+    history.clear()
+    history.extend(load_memory())
+    try:
+        LAST_IMAGE.update(path=None, time=0, prompt="")
+        IMAGE_STACK.clear()
+    except Exception:
+        pass
 
 
 def pin_is_set():
@@ -342,14 +431,18 @@ def check_login(name, pw, code=""):
     if data["device"] != this_device():
         intruder_log("other device -> decoy", f"name={who}")
         return False, "DECOY"
-    ok = name.strip().lower() == OWNER and hmac.compare_digest(
-        hash_pw(pw.strip(), bytes.fromhex(OWNER_SALT)), OWNER_HASH)
-    ok = pin_ok(code) and ok          # wrong code looks exactly like a wrong password
+    uname = name.strip().lower()
+    if uname == OWNER:
+        ok = hmac.compare_digest(hash_pw(pw.strip(), bytes.fromhex(OWNER_SALT)), OWNER_HASH)
+        ok = pin_ok(code) and ok          # wrong code looks exactly like a wrong password
+    else:
+        ok = account_ok(uname, pw, code)
     log(f"LOGIN {'OK' if ok else 'FAILED'}: name={who}")
     if ok:
         data["fails"] = 0
         data["strikes"] = 0
-        msg = "Welcome ssalimuto."
+        msg = f"Welcome {uname}."
+        switch_user(uname)
     else:
         data["fails"] += 1
         intruder_log("wrong password", f"name={who}")
@@ -430,7 +523,7 @@ def _start_android_tts():
 
 
 # ---- real Luganda voice from Sunbird AI (Ugandan, native speakers) ----
-SUNBIRD_KEY_FILE = "sunbird_key.txt"
+SUNBIRD_KEY_FILE = os.path.join(ROOT, "sunbird_key.txt")
 SUNBIRD_URL = "https://api.sunbird.ai/tasks/audio/speech"
 SUNBIRD_VOICES = "https://api.sunbird.ai/tasks/voice/speakers?language=lug"
 _luganda = {"voice": None, "sound": None, "lock": threading.Lock(), "n": 0}
@@ -704,6 +797,20 @@ def realistic_prompt(prompt):
 ME_WORDS = re.compile(r"\b(me|my face|myself|my photo|like me|of me)\b", re.I)
 
 
+def genius_dl(sub=""):
+    """Download/Genius for the owner, Download/Genius/users/<name> for other accounts."""
+    base = "/storage/emulated/0/Download/Genius" if os.path.isdir("/storage/emulated/0") else os.path.join(ROOT, "genius_files")
+    if not CURRENT["owner"]:
+        base = os.path.join(base, "users", CURRENT["name"])
+    d = os.path.join(base, sub) if sub else base
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        d = os.path.abspath(sub or ".")
+        os.makedirs(d, exist_ok=True)
+    return d
+
+
 def set_my_photo(src=None):
     """Save a face photo as Download/Genius/me.jpg: the given file, or the newest photo/screenshot on the phone."""
     if not src:
@@ -723,8 +830,7 @@ def set_my_photo(src=None):
         src = best
     if not src or not os.path.exists(src):
         return None
-    d = "/storage/emulated/0/Download/Genius" if os.path.isdir("/storage/emulated/0") else "."
-    os.makedirs(d, exist_ok=True)
+    d = genius_dl()
     out = os.path.join(d, "me.png" if src.lower().endswith(".png") else "me.jpg")
     for n in ("me.jpg", "me.jpeg", "me.png"):
         try:
@@ -738,7 +844,7 @@ def set_my_photo(src=None):
 
 def my_photo():
     """The user's own reference photo: Download/Genius/me.jpg (or .png)."""
-    for d in ("/storage/emulated/0/Download/Genius", "/sdcard/Download/Genius", "."):
+    for d in (genius_dl(), "."):
         for n in ("me.jpg", "me.jpeg", "me.png"):
             f = os.path.join(d, n)
             if os.path.exists(f):
@@ -1232,7 +1338,7 @@ def _ask_gemini_only(prompt, max_tokens=600, json_mode=False, search=False, syst
     if search:
         return _search_web(key, prompt)
     me = about_me()
-    sys_txt = system or ("You help ssalimuto, a young person in Uganda. Use simple, clear English and "
+    sys_txt = system or ("You help " + CURRENT["name"] + ", a young person in Uganda. Use simple, clear English and "
                "Ugandan examples (UGX, Kampala, boda bodas, MTN/Airtel money) where useful."
                + ("\nAbout them:\n" + me if me else ""))
     cfg = {"maxOutputTokens": max_tokens, "temperature": 0.7}
@@ -1366,7 +1472,7 @@ def build_brief(with_news=True):
     d = life_load()
     hour = time.localtime().tm_hour
     hi = "Good morning" if hour < 12 else ("Good afternoon" if hour < 17 else "Good evening")
-    parts = [f"{hi}, ssalimuto. It's {time.strftime('%A %d %B')}."]
+    parts = [f"{hi}, {CURRENT['name']}. It's {time.strftime('%A %d %B')}."]
     w = weather_report(d["brief"].get("city") or "Kampala")
     if not w.startswith("I couldn't"):
         parts.append(w)
@@ -1554,7 +1660,7 @@ BACKUP_ITEMS = ("life_data.json", "notes.txt", "chat_memory.json", "about_me.txt
 
 
 def backup_dir():
-    for d in ("/storage/emulated/0/Download/Genius", "/sdcard/Download/Genius"):
+    for d in (genius_dl(),):
         try:
             os.makedirs(d, exist_ok=True)
             test = os.path.join(d, ".w")
@@ -1706,7 +1812,7 @@ def plan_text(n, plan):
 
 
 # ================= SELF-UPGRADE (safe) =================
-INTEGRITY_FILE = "integrity.json"
+INTEGRITY_FILE = os.path.join(ROOT, "integrity.json")
 
 
 def own_file():
@@ -1811,7 +1917,7 @@ def rollback():
 
 
 # ================= DISTRACTION FIREWALL: decoy + tripwires =================
-TRIPWIRE_FILE = "tripwires.json"
+TRIPWIRE_FILE = os.path.join(ROOT, "tripwires.json")
 DECOY_NOTES = ["2026-10-01 | buy exercise books", "2026-10-03 | football practice Saturday",
                "2026-10-08 | return library book", "2026-10-12 | call grandma"]
 
@@ -1854,8 +1960,8 @@ def security_report():
 
 
 # ================= MANY AIs: Groq (very fast) + OpenRouter (many models) =================
-GROQ_KEY_FILE = "groq_key.txt"
-ROUTER_KEY_FILE = "openrouter_key.txt"
+GROQ_KEY_FILE = os.path.join(ROOT, "groq_key.txt")
+ROUTER_KEY_FILE = os.path.join(ROOT, "openrouter_key.txt")
 PROVIDERS = {
     "groq": {"file": GROQ_KEY_FILE, "base": "https://api.groq.com/openai/v1",
              "prefer": ("gpt-oss-120b", "llama-3.3-70b", "llama-4", "qwen", "gpt-oss", "llama", "gemma")},
@@ -1900,7 +2006,7 @@ def other_ai(name, text, system=None, convo=None, max_tokens=700):
     if not key:
         return None
     msgs = [{"role": "system", "content": system or (
-        "You are Genius, the private assistant of ssalimuto, a young person in Uganda, made by "
+        "You are Genius, the private assistant of " + CURRENT["name"] + ", a young person in Uganda, made by "
         "Ssali Muto. Answer in clear, simple English, briefly and accurately. Say when you are "
         "unsure. You can't see the time, weather or internet in this mode.")}]
     for m in (convo or [])[-8:]:
@@ -1972,26 +2078,14 @@ IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic")
 
 
 def attach_dir():
-    d = "/storage/emulated/0/Download/Genius/attached" if os.path.isdir("/storage/emulated/0") else "attached"
-    try:
-        os.makedirs(d, exist_ok=True)
-    except Exception:
-        d = "attached"
-        os.makedirs(d, exist_ok=True)
-    return d
+    return genius_dl("attached")
 
 
 STORAGE_LIMIT_MB = 200
 
 
 def storage_dir():
-    d = "/storage/emulated/0/Download/Genius/storage" if os.path.isdir("/storage/emulated/0") else "genius_storage"
-    try:
-        os.makedirs(d, exist_ok=True)
-    except Exception:
-        d = "genius_storage"
-        os.makedirs(d, exist_ok=True)
-    return d
+    return genius_dl("storage")
 
 
 def storage_files():
@@ -2127,7 +2221,7 @@ def ask_gemini(prompt, max_tokens=600, json_mode=False, search=False, system=Non
     if r and not (search and r.startswith("Search failed")):
         return r
     for prov in ("groq", "openrouter"):
-        sys_txt = system or ("You help ssalimuto, a young person in Uganda. Simple, clear English."
+        sys_txt = system or ("You help " + CURRENT["name"] + ", a young person in Uganda. Simple, clear English."
                              + (" Reply with only valid JSON." if json_mode else ""))
         t = other_ai(prov, prompt, system=sys_txt, max_tokens=max(max_tokens, 400))
         if t:
@@ -2598,6 +2692,57 @@ def code_setup_popup(on_done=None, first=False):
     pop.open()
 
 
+def signup_popup(login_screen):
+    """Anyone can make their own account: name, hidden password, hidden secret code."""
+    box = BoxLayout(orientation="vertical", spacing=8, padding=14)
+    pop = Popup(title="Create your Genius account", content=box, size_hint=(0.94, 0.86),
+                separator_color=GOLD, title_color=GOLD)
+
+    def field(h, pw=False, digits=False):
+        t = style_input(TextInput(hint_text=h, password=pw, password_mask="*", multiline=False,
+                                  input_filter="int" if digits else None,
+                                  size_hint_y=None, height="50dp", font_size="18sp"))
+        box.add_widget(t)
+        return t
+    name = field("Choose a name (letters, numbers, _)")
+    pw1 = field("Password (6+ characters)", pw=True)
+    pw2 = field("Password again", pw=True)
+    c1 = field("Secret code (4-8 digits)", pw=True, digits=True)
+    c2 = field("Secret code again", pw=True, digits=True)
+    msg = Label(text="Your chats, notes and files stay private to you.", color=HINT,
+                font_size="14sp", size_hint_y=None, height="30dp")
+    box.add_widget(msg)
+    row = BoxLayout(size_hint_y=None, height="52dp", spacing=8)
+    ok = RoundButton(text="Create", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), bold=True)
+    cancel = RoundButton(text="Cancel", bg=GREY, fg=TEXTCOL, bold=True)
+
+    def do(*_):
+        msg.color = (1, 0.45, 0.45, 1)
+        if pw1.text != pw2.text:
+            msg.text = "The passwords don't match."
+        elif c1.text != c2.text:
+            msg.text = "The secret codes don't match."
+        else:
+            err = create_account(name.text, pw1.text, c1.text)
+            if err:
+                msg.text = err
+            else:
+                n = name.text.strip().lower()
+                pop.dismiss()
+                login_screen.name_in.text = n
+                login_screen.msg.color = (0.5, 0.9, 0.6, 1)
+                login_screen.msg.text = "Account made. Sign in with your password and code."
+                return
+        for t in (pw1, pw2, c1, c2):
+            t.text = ""
+    ok.bind(on_press=do)
+    cancel.bind(on_press=pop.dismiss)
+    row.add_widget(cancel)
+    row.add_widget(ok)
+    box.add_widget(row)
+    pop.open()
+
+
 class LoginScreen(BoxLayout):
     def __init__(self, app, **kw):
         super().__init__(orientation="vertical", padding=28, spacing=0, **kw)
@@ -2605,12 +2750,12 @@ class LoginScreen(BoxLayout):
         self.add_widget(Widget(size_hint_y=0.2))
 
         card = Panel(orientation="vertical", padding=26, spacing=18,
-                     size_hint=(1, None), height="450dp")
+                     size_hint=(1, None), height="520dp")
         card.add_widget(Label(text="[b]Genius[/b]", markup=True, font_size="34sp",
                               color=GOLD, size_hint_y=None, height="50dp"))
-        card.add_widget(Label(text="Owner access only", font_size="16sp",
+        card.add_widget(Label(text="Sign in to your own Genius", font_size="16sp",
                               color=HINT, size_hint_y=None, height="26dp"))
-        self.name_in = style_input(TextInput(hint_text="Commander name", multiline=False,
+        self.name_in = style_input(TextInput(hint_text="Your name", multiline=False,
                                    size_hint_y=None, height="54dp", font_size="19sp"))
         self.pw_in = style_input(TextInput(hint_text="Password", password=True,
                                  multiline=False, size_hint_y=None, height="54dp",
@@ -2627,7 +2772,10 @@ class LoginScreen(BoxLayout):
         btn = RoundButton(text="Unlock", bg=GOLD, fg=(0.1, 0.1, 0.1, 1),
                           size_hint_y=None, height="58dp", font_size="22sp", bold=True)
         btn.bind(on_press=self.try_login)
-        for w in (self.name_in, self.pw_in, self.code_in, self.msg, btn):
+        new_btn = RoundButton(text="Create an account", bg=GREY, fg=TEXTCOL,
+                              size_hint_y=None, height="48dp", font_size="17sp")
+        new_btn.bind(on_press=lambda *_: signup_popup(self))
+        for w in (self.name_in, self.pw_in, self.code_in, self.msg, btn, new_btn):
             card.add_widget(w)
         self.add_widget(card)
         self.add_widget(Widget())
@@ -2638,7 +2786,7 @@ class LoginScreen(BoxLayout):
         self.pw_in.text = ""
         self.code_in.text = ""
         if ok:
-            if pin_is_set():
+            if pin_is_set() or not CURRENT["owner"]:
                 self.app.open_chat()
             else:
                 code_setup_popup(lambda: self.app.open_chat(), first=True)
@@ -2728,7 +2876,7 @@ class ChatScreen(BoxLayout):
         row.add_widget(send)
         self.add_widget(row)
 
-        self.say("Welcome ssalimuto. You are in command. Tap Speak to talk to me.")
+        self.say(f"Welcome {CURRENT['name']}. You are in command. Tap Speak to talk to me.")
 
     # ---------- listening: hear you, answer, speak back ----------
     SPEECH_CODE = 7777
@@ -3038,14 +3186,15 @@ class ChatScreen(BoxLayout):
     # ---------- header: Menu (options) and Find (search) ----------
     def options_menu(self, *_):
         box = BoxLayout(orientation="vertical", spacing=10, padding=12)
-        pop = Popup(title="Options", content=box, size_hint=(0.9, 0.86),
+        pop = Popup(title="Options", content=box, size_hint=(0.9, 0.94),
                     separator_color=GOLD, title_color=GOLD)
         opts = [("My creations (pictures)", self.creations, BLUE),
                 ("My storage", self.storage_box, BLUE),
                 ("Add a picture or file", self.attach_menu, BLUE),
                 ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
                 ("Help (all commands)", lambda: self.handle("help"), GREY),
-                ("Change secret code", lambda: code_setup_popup(lambda: self.say("Secret code saved.")), GREY),
+                ("Change secret code", lambda: self.handle("change code"), GREY),
+                ("Accounts", self.accounts_box, GREY),
                 ("Lock Genius", self.app.build_login, GREY),
                 ("Exit Genius", self.exit_app, RED)]
         for label, fn, col in opts:
@@ -3063,9 +3212,46 @@ class ChatScreen(BoxLayout):
         box.add_widget(close)
         pop.open()
 
+    def accounts_box(self, *_):
+        if not CURRENT["owner"]:
+            self.say(f"You are signed in as {CURRENT['name']}. Your chats and files are private to you. "
+                     "Tap Lock Genius to sign out.")
+            return
+        a = accounts_load()
+        box = BoxLayout(orientation="vertical", spacing=8, padding=10)
+        pop = Popup(title="Accounts", content=box, size_hint=(0.94, 0.8),
+                    separator_color=GOLD, title_color=GOLD)
+        box.add_widget(Label(text=f"Owner: {OWNER}  |  {len(a)} other account(s)", color=HINT,
+                             size_hint_y=None, height="30dp"))
+        grid = GridLayout(cols=1, spacing=6, size_hint_y=None)
+        grid.bind(minimum_height=grid.setter("height"))
+        sv = ScrollView()
+        sv.add_widget(grid)
+        box.add_widget(sv)
+        for n, info in sorted(a.items()):
+            line = BoxLayout(size_hint_y=None, height="50dp", spacing=6)
+            line.add_widget(Label(text=f"{n}  (since {info.get('created', '?')})", color=TEXTCOL))
+            db = RoundButton(text="Delete", bg=RED, fg=TEXTCOL, size_hint_x=0.32)
+
+            def kill(btn, n=n):
+                pop.dismiss()
+                Clock.schedule_once(lambda *_: self.say(
+                    f"Deleted the account {n} and all its data." if delete_account(n) else "Couldn't delete it."), 0.1)
+            db.bind(on_press=kill)
+            line.add_widget(db)
+            grid.add_widget(line)
+        if not a:
+            grid.add_widget(Label(text="No other accounts yet. People tap 'Create an account' on the sign-in screen.",
+                                  color=HINT, size_hint_y=None, height="60dp"))
+        close = RoundButton(text="Close", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), size_hint_y=None,
+                            height="48dp", bold=True)
+        close.bind(on_press=pop.dismiss)
+        box.add_widget(close)
+        pop.open()
+
     def exit_app(self):
         log("EXIT by menu")
-        self.say("Goodbye ssalimuto.")
+        self.say(f"Goodbye {CURRENT['name']}.")
         Clock.schedule_once(lambda *_: self.app.stop(), 1.5)
 
     def creation_files(self):
@@ -3534,7 +3720,16 @@ class ChatScreen(BoxLayout):
             self.say("Saved your face. Now say 'make me ...' and every picture keeps it." if f
                      else "I couldn't find a photo. Take a clear selfie first, then say setme.")
             return
+        if not CURRENT["owner"] and (action in OWNER_ONLY or low.startswith(("setkey", "setgroq", "setrouter", "setvoice", "setsunbird"))):
+            self.say("Only the owner of this phone can do that.")
+            return
+        if low.strip(" .!") in ("accounts", "users", "manage accounts"):
+            self.accounts_box()
+            return
         if low.strip(" .!") in ("change code", "set code", "secret code", "new code", "setcode"):
+            if not CURRENT["owner"]:
+                self.say("To change your code, ask the owner to delete your account, then make a new one.")
+                return
             code_setup_popup(lambda: self.say("Secret code saved. You'll need it with your password to unlock."))
             return
         if low.strip(" .!") in ("storage", "my storage", "open storage", "show storage"):
@@ -3604,7 +3799,7 @@ class ChatScreen(BoxLayout):
             return
         if action == "stop":
             log("STOP by ssalimuto")
-            self.say("Shutting down. Goodbye ssalimuto.")
+            self.say(f"Shutting down. Goodbye {CURRENT['name']}.")
             Clock.schedule_once(lambda *_: self.app.stop(), 2.5)
             return
         if action == "deep":
@@ -4495,6 +4690,10 @@ class GeniusApp(App):
         return self.root_box
 
     def build_login(self):
+        try:
+            switch_user(OWNER)          # leave the guest's space; next sign-in picks the account
+        except Exception:
+            pass
         self.root_box.clear_widgets()
         self.root_box.add_widget(LoginScreen(self))
 
