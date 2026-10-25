@@ -67,6 +67,7 @@ ALLOWED = MappingProxyType({
     "log": "Show the log",
     "setkey": "setkey YOURKEY - lets me answer anything",
     "help": "List commands",
+    "change code": "Create or change your hidden secret code for login",
     "storage": "Open My storage (200 MB for pictures, files, notes). Also: save this, save note ...",
     "life": "Study coach, money, morning brief and freelancing commands",
     "study": "Study progress and exam countdown",
@@ -200,6 +201,7 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 - Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
+- Login: password + hidden secret code (4-8 digits). Change it in Menu or say "change code"
 - My storage: a private 200 MB space for pictures, files and notes. Say "storage", "save this" or "save note ..."
 - + button: add a picture or a file (PDF, text) from your phone, or your newest photo/file.
   Then ask about it ('summarize', 'what is this?') or change the picture ('make me near a building')
@@ -307,7 +309,28 @@ def intruder_data():
         return {"events": [], "seen": 0}
 
 
-def check_login(name, pw):
+def pin_is_set():
+    d = load_state()
+    return bool(d.get("pin_hash"))
+
+
+def set_pin(code):
+    d = load_state()
+    salt = os.urandom(16)
+    d["pin_salt"] = salt.hex()
+    d["pin_hash"] = hash_pw(code.strip(), salt)
+    json.dump(d, open(STATE_FILE, "w"))
+    log("SECRET CODE SET")
+
+
+def pin_ok(code):
+    d = load_state()
+    if not d.get("pin_hash"):
+        return True
+    return hmac.compare_digest(hash_pw(code.strip(), bytes.fromhex(d["pin_salt"])), d["pin_hash"])
+
+
+def check_login(name, pw, code=""):
     """FIREWALL: name + password + same device. Wrong tries escalate the lock,
     and an attacker is quietly sent into the decoy (returns ok=False, msg='DECOY')."""
     data = load_state()
@@ -321,6 +344,7 @@ def check_login(name, pw):
         return False, "DECOY"
     ok = name.strip().lower() == OWNER and hmac.compare_digest(
         hash_pw(pw.strip(), bytes.fromhex(OWNER_SALT)), OWNER_HASH)
+    ok = pin_ok(code) and ok          # wrong code looks exactly like a wrong password
     log(f"LOGIN {'OK' if ok else 'FAILED'}: name={who}")
     if ok:
         data["fails"] = 0
@@ -2522,6 +2546,58 @@ def style_input(ti):
     return ti
 
 
+def code_setup_popup(on_done=None, first=False):
+    """Create or change the hidden secret code (4-8 digits, typed twice, never shown)."""
+    box = BoxLayout(orientation="vertical", spacing=10, padding=14)
+    pop = Popup(title="Create your secret code" if first else "Change secret code", content=box,
+                size_hint=(0.92, 0.66), separator_color=GOLD, title_color=GOLD, auto_dismiss=False)
+    box.add_widget(Label(text="4 to 8 digits. You'll need it with your password every time.",
+                         color=HINT, font_size="14sp", size_hint_y=None, height="40dp",
+                         halign="center", text_size=(Window.width * 0.8, None)))
+    fields = []
+    hints = (["Old code"] if pin_is_set() and not first else []) + ["New code", "Type it again"]
+    for h in hints:
+        t = style_input(TextInput(hint_text=h, password=True, password_mask="*", input_filter="int",
+                                  multiline=False, size_hint_y=None, height="52dp", font_size="19sp"))
+        fields.append(t)
+        box.add_widget(t)
+    msg = Label(text="", color=(1, 0.45, 0.45, 1), size_hint_y=None, height="26dp")
+    box.add_widget(msg)
+    row = BoxLayout(size_hint_y=None, height="52dp", spacing=8)
+    save = RoundButton(text="Save code", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), bold=True)
+
+    def do(*_):
+        vals = [f.text.strip() for f in fields]
+        for f in fields:
+            f.text = ""
+        if len(vals) == 3 and not pin_ok(vals[0]):
+            msg.text = "Old code is wrong."
+            intruder_log("wrong old secret code")
+            return
+        new, again = vals[-2], vals[-1]
+        if not (4 <= len(new) <= 8):
+            msg.text = "Use 4 to 8 digits."
+            return
+        if new != again:
+            msg.text = "The two codes don't match."
+            return
+        if len(set(new)) == 1 or new in "0123456789" or new in "9876543210":
+            msg.text = "Too easy to guess. Try another."
+            return
+        set_pin(new)
+        pop.dismiss()
+        if on_done:
+            on_done()
+    save.bind(on_press=do)
+    row.add_widget(save)
+    if not first:
+        cancel = RoundButton(text="Cancel", bg=GREY, fg=TEXTCOL, bold=True)
+        cancel.bind(on_press=pop.dismiss)
+        row.add_widget(cancel)
+    box.add_widget(row)
+    pop.open()
+
+
 class LoginScreen(BoxLayout):
     def __init__(self, app, **kw):
         super().__init__(orientation="vertical", padding=28, spacing=0, **kw)
@@ -2529,7 +2605,7 @@ class LoginScreen(BoxLayout):
         self.add_widget(Widget(size_hint_y=0.2))
 
         card = Panel(orientation="vertical", padding=26, spacing=18,
-                     size_hint=(1, None), height="380dp")
+                     size_hint=(1, None), height="450dp")
         card.add_widget(Label(text="[b]Genius[/b]", markup=True, font_size="34sp",
                               color=GOLD, size_hint_y=None, height="50dp"))
         card.add_widget(Label(text="Owner access only", font_size="16sp",
@@ -2539,23 +2615,33 @@ class LoginScreen(BoxLayout):
         self.pw_in = style_input(TextInput(hint_text="Password", password=True,
                                  multiline=False, size_hint_y=None, height="54dp",
                                  font_size="19sp"))
+        self.code_in = style_input(TextInput(hint_text="Secret code" if pin_is_set() else "Secret code (set after unlock)",
+                                   password=True, password_mask="*", input_filter="int",
+                                   multiline=False, size_hint_y=None, height="54dp",
+                                   font_size="19sp"))
+        self.pw_in.password_mask = "*"
+        self.pw_in.bind(on_text_validate=lambda *_: setattr(self.code_in, "focus", True))
+        self.code_in.bind(on_text_validate=self.try_login)
         self.msg = Label(text="", font_size="16sp", color=(1, 0.45, 0.45, 1),
                          size_hint_y=None, height="30dp")
         btn = RoundButton(text="Unlock", bg=GOLD, fg=(0.1, 0.1, 0.1, 1),
                           size_hint_y=None, height="58dp", font_size="22sp", bold=True)
         btn.bind(on_press=self.try_login)
-        self.pw_in.bind(on_text_validate=self.try_login)
-        for w in (self.name_in, self.pw_in, self.msg, btn):
+        for w in (self.name_in, self.pw_in, self.code_in, self.msg, btn):
             card.add_widget(w)
         self.add_widget(card)
         self.add_widget(Widget())
 
     def try_login(self, *_):
         tried = self.name_in.text
-        ok, msg = check_login(self.name_in.text, self.pw_in.text)
+        ok, msg = check_login(self.name_in.text, self.pw_in.text, self.code_in.text)
         self.pw_in.text = ""
+        self.code_in.text = ""
         if ok:
-            self.app.open_chat()
+            if pin_is_set():
+                self.app.open_chat()
+            else:
+                code_setup_popup(lambda: self.app.open_chat(), first=True)
         elif msg == "DECOY":
             self.app.open_decoy(tried)
         else:
@@ -2952,13 +3038,14 @@ class ChatScreen(BoxLayout):
     # ---------- header: Menu (options) and Find (search) ----------
     def options_menu(self, *_):
         box = BoxLayout(orientation="vertical", spacing=10, padding=12)
-        pop = Popup(title="Options", content=box, size_hint=(0.9, 0.78),
+        pop = Popup(title="Options", content=box, size_hint=(0.9, 0.86),
                     separator_color=GOLD, title_color=GOLD)
         opts = [("My creations (pictures)", self.creations, BLUE),
                 ("My storage", self.storage_box, BLUE),
                 ("Add a picture or file", self.attach_menu, BLUE),
                 ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
                 ("Help (all commands)", lambda: self.handle("help"), GREY),
+                ("Change secret code", lambda: code_setup_popup(lambda: self.say("Secret code saved.")), GREY),
                 ("Lock Genius", self.app.build_login, GREY),
                 ("Exit Genius", self.exit_app, RED)]
         for label, fn, col in opts:
@@ -3446,6 +3533,9 @@ class ChatScreen(BoxLayout):
             f = set_my_photo(src)
             self.say("Saved your face. Now say 'make me ...' and every picture keeps it." if f
                      else "I couldn't find a photo. Take a clear selfie first, then say setme.")
+            return
+        if low.strip(" .!") in ("change code", "set code", "secret code", "new code", "setcode"):
+            code_setup_popup(lambda: self.say("Secret code saved. You'll need it with your password to unlock."))
             return
         if low.strip(" .!") in ("storage", "my storage", "open storage", "show storage"):
             self.storage_box()
