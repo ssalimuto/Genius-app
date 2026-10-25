@@ -3696,6 +3696,54 @@ def share_genius(target=None):
     return True
 
 
+_APPS_CACHE = {}
+
+
+def phone_apps(refresh=False):
+    """Every app on this phone that can be opened: {label: package}. Owner only."""
+    if _APPS_CACHE and not refresh:
+        return _APPS_CACHE
+    from jnius import autoclass
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    Intent = autoclass("android.content.Intent")
+    pm = act.getPackageManager()
+    i = Intent(Intent.ACTION_MAIN)
+    i.addCategory(Intent.CATEGORY_LAUNCHER)
+    lst = pm.queryIntentActivities(i, 0)
+    _APPS_CACHE.clear()
+    for k in range(lst.size()):
+        info = lst.get(k).activityInfo
+        try:
+            label = str(lst.get(k).loadLabel(pm))
+        except Exception:
+            label = info.packageName
+        _APPS_CACHE[label] = info.packageName
+    return _APPS_CACHE
+
+
+def find_phone_app(name):
+    name = name.lower().strip()
+    apps = phone_apps()
+    for label, pkg in apps.items():
+        if label.lower() == name:
+            return label, pkg
+    for label, pkg in apps.items():
+        if label.lower().startswith(name) or name in label.lower() or name in pkg.lower():
+            return label, pkg
+    return None, None
+
+
+def open_phone_app(pkg):
+    from jnius import autoclass
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    it = act.getPackageManager().getLaunchIntentForPackage(pkg)
+    if it is None:
+        return False
+    it.addFlags(autoclass("android.content.Intent").FLAG_ACTIVITY_NEW_TASK)
+    act.startActivity(it)
+    return True
+
+
 def intent_action(intent=None):
     try:
         from jnius import autoclass
@@ -5618,6 +5666,30 @@ class ChatScreen(BoxLayout):
             self.say("Only the owner of this phone can do that.")
             return
         lw = low.strip(" .!")
+        # Free access to the phone's apps: owner only, never other users
+        if lw in ("apps", "my phone apps", "phone apps", "list apps") or lw.startswith(("open ", "launch ", "start ")):
+            if not CURRENT["owner"]:
+                self.say("Only the owner of this phone can open its apps through Genius.")
+                return
+            if lw.startswith(("open ", "launch ", "start ")):
+                target = lw.split(" ", 1)[1].strip()
+                if target and target not in ("camera", "music", "studio"):
+                    try:
+                        label, pkg = find_phone_app(target)
+                        if pkg and open_phone_app(pkg):
+                            self.say(f"Opening {label}.")
+                        else:
+                            self.say(f"I couldn't find an app called {target}. Say apps to see them all.")
+                    except Exception as e:
+                        self.say(f"Opening apps only works on the phone: {e}")
+                    return
+            else:
+                try:
+                    names = sorted(phone_apps(refresh=True), key=str.lower)
+                    self.say(f"You have {len(names)} apps. Say open and a name, e.g. open WhatsApp.\n" + ", ".join(names))
+                except Exception as e:
+                    self.say(f"Listing apps only works on the phone: {e}")
+                return
         if lw in ("share", "share genius", "share app", "invite", "invite friends"):
             self.share_menu()
             return
