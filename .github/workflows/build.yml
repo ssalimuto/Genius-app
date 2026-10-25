@@ -24,6 +24,12 @@ jobs:
           pip install buildozer cython==0.29.36
       - name: Build APK
         run: yes | buildozer android debug
+      - name: Prepare quiet update files
+        run: |
+          VER=$(grep -m1 '^VERSION = ' main.py | cut -d'"' -f2)
+          echo "VER=$VER" >> $GITHUB_ENV
+          cp main.py bin/genius_live.py
+          (cd bin && sha256sum genius_live.py > genius_live.sha256)
       - uses: actions/upload-artifact@v4
         with:
           name: Genius-APK
@@ -31,6 +37,9 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v104.0-build${{ github.run_number }}
-          name: Genius 101.0 (build ${{ github.run_number }})
-          files: bin/*.apk
+          tag_name: v${{ env.VER }}-build${{ github.run_number }}
+          name: Genius ${{ env.VER }} (build ${{ github.run_number }})
+          files: |
+            bin/*.apk
+            bin/genius_live.py
+            bin/genius_live.sha256
