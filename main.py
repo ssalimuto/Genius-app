@@ -206,6 +206,7 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 - Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
+- Pro camera looks (say "looks"): 12 instant iPhone-style looks (Vibrant, Warm, Rich Contrast, HDR, Cinematic, Golden Hour...) + AI flagship look; Replace (sky, background, Portrait mode, Studio Light...)
 - Banana studio (say "banana"): Nano Banana / Nano Banana Pro realistic editing, blend 2-4 photos, ultra realistic, fix hands, remove people, restore old photos, picture shape
 - Fun studio (Menu or say "fun"): change clothes (12 outfits), change place (14 places), beautiful photo, photo collages, 14 instant effects + AI styles, video slideshows, fun videos
 - Accounts: anyone can tap "Create an account" (name, email, hidden password, hidden code; sign in with name or email) and gets their own private Genius. Owner manages them in Menu > Accounts
@@ -2211,12 +2212,127 @@ PLACES = (("Beach", "put the person on a beautiful sunny beach with blue sea"),
           ("Safari", "put the person on a safari in Queen Elizabeth park with animals far behind"),
           ("Night city", "put the person in a city at night with beautiful lights"),
           ("Studio portrait", "put the person in a professional photo studio with a plain soft background"))
+REPLACE = (("Replace sky (blue)", "replace the sky with a clear beautiful blue sky with soft clouds"),
+           ("Replace sky (sunset)", "replace the sky with a dramatic orange and pink sunset"),
+           ("Replace background", "replace the background with a beautiful blurred modern city street"),
+           ("Portrait mode", "make it look like iPhone Portrait mode: person razor sharp, background beautifully blurred with soft bokeh"),
+           ("Studio light", "relight the person like iPhone Studio Light portrait lighting, bright and flattering"),
+           ("Replace shoes", "replace the shoes with clean white sneakers"),
+           ("Replace phone", "replace the phone in the hand with a new premium smartphone"),
+           ("Replace car", "replace the car with a shiny modern luxury car"),
+           ("Night to day", "make it bright daytime with natural sunlight"),
+           ("Day to night", "make it night with beautiful lights and a dark blue sky"))
 BEAUTY = (("Make it beautiful", "make this a beautiful professional photo: better light, sharp, rich colours, clean background"),
           ("Clear skin", "gently clear the skin and remove spots while keeping it natural"),
           ("Better lighting", "improve the lighting to soft, flattering golden light"),
           ("Blur background", "blur the background like a professional camera, keep the person sharp"),
           ("Smile", "give the person a natural, happy smile"),
           ("Neat hair", "make the hair neat and well styled"))
+
+
+PRO_LOOKS = ("iPhone Vibrant", "iPhone Warm", "iPhone Cool", "Rich Contrast", "Luminous", "HDR Pop",
+             "Cinematic", "Golden Hour", "Moody Film", "Clean Portrait", "Soft Pastel", "Dramatic B&W")
+
+
+def _curve(im, lift=0, gamma=1.0, gain=1.0):
+    lut = [max(0, min(255, int(lift + (255 - lift) * ((i / 255.0) ** gamma) * gain))) for i in range(256)]
+    return im.point(lut * 3)
+
+
+def _vignette(im, strength=0.35):
+    from PIL import Image, ImageDraw, ImageFilter
+    w, h = im.size
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).ellipse((-w * 0.15, -h * 0.15, w * 1.15, h * 1.15), fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(min(w, h) // 6))
+    dark = Image.eval(im, lambda x: int(x * (1 - strength)))
+    return Image.composite(im, dark, mask)
+
+
+def _tint(im, r=1.0, g=1.0, b=1.0):
+    from PIL import Image
+    R, G, B = im.split()
+    return Image.merge("RGB", (R.point(lambda x: min(255, int(x * r))), G.point(lambda x: min(255, int(x * g))),
+                               B.point(lambda x: min(255, int(x * b)))))
+
+
+def _local_contrast(im, amount=0.6):
+    from PIL import Image, ImageFilter, ImageChops
+    blur = im.filter(ImageFilter.GaussianBlur(max(im.size) // 40 or 2))
+    detail = ImageChops.subtract(im, blur, scale=1, offset=128)
+    return ImageChops.add(im, Image.eval(detail, lambda x: int((x - 128) * amount)), scale=1, offset=0) \
+        if False else im.filter(ImageFilter.UnsharpMask(max(im.size) // 60 or 2, int(80 * amount + 40), 2))
+
+
+def pro_look(path, look):
+    """Phone-camera style looks (like iPhone Photographic Styles) done on the phone, instant."""
+    from PIL import ImageOps, ImageEnhance, ImageFilter, Image
+    im = _open_rgb(path)
+    im.thumbnail((2400, 2400))
+    im = ImageOps.autocontrast(im, cutoff=0.5)
+    L = look.lower()
+    if "vibrant" in L:
+        im = ImageEnhance.Color(im).enhance(1.35)
+        im = _curve(im, 0, 0.92, 1.0)
+        im = _local_contrast(im, 0.5)
+    elif "warm" in L and "golden" not in L:
+        im = _tint(ImageEnhance.Color(im).enhance(1.12), 1.06, 1.01, 0.92)
+        im = _curve(im, 4, 0.95)
+    elif "cool" in L:
+        im = _tint(ImageEnhance.Color(im).enhance(1.08), 0.94, 1.0, 1.07)
+        im = _curve(im, 2, 0.97)
+    elif "rich" in L:
+        im = ImageEnhance.Contrast(im).enhance(1.28)
+        im = ImageEnhance.Color(im).enhance(1.12)
+        im = _curve(im, 0, 1.08)
+        im = _local_contrast(im, 0.7)
+    elif "luminous" in L:
+        im = _curve(im, 14, 0.85)
+        im = Image.blend(im, im.filter(ImageFilter.GaussianBlur(8)), 0.18)
+        im = ImageEnhance.Color(im).enhance(1.1)
+    elif "hdr" in L:
+        im = _local_contrast(im, 1.0)
+        im = _curve(im, 10, 0.88)
+        im = ImageEnhance.Color(im).enhance(1.25)
+        im = ImageEnhance.Sharpness(im).enhance(1.4)
+    elif "cinematic" in L:
+        im = ImageEnhance.Contrast(im).enhance(1.15)
+        sh = _tint(im, 0.92, 1.0, 1.08)          # teal shadows, orange highlights
+        hi = _tint(im, 1.08, 1.0, 0.9)
+        im = Image.composite(hi, sh, ImageOps.grayscale(im))
+        im = _vignette(ImageEnhance.Color(im).enhance(0.92), 0.3)
+        w, h = im.size
+        bar = int(h * 0.06)
+        canvas = Image.new("RGB", (w, h), (0, 0, 0))
+        canvas.paste(im.crop((0, bar, w, h - bar)), (0, bar))
+        im = canvas
+    elif "golden" in L:
+        im = _tint(im, 1.12, 1.03, 0.85)
+        im = _curve(im, 8, 0.9)
+        im = _vignette(ImageEnhance.Color(im).enhance(1.15), 0.22)
+    elif "film" in L:
+        im = _curve(im, 22, 1.0, 0.94)            # faded blacks
+        im = _tint(ImageEnhance.Color(im).enhance(0.8), 1.02, 1.0, 0.95)
+        im = _vignette(im, 0.3)
+    elif "portrait" in L:
+        im = Image.blend(im, im.filter(ImageFilter.SMOOTH_MORE), 0.45)
+        im = _curve(im, 6, 0.92)
+        im = ImageEnhance.Color(_tint(im, 1.03, 1.0, 0.97)).enhance(1.08)
+        im = _vignette(im, 0.15)
+    elif "pastel" in L:
+        im = _curve(im, 30, 0.85, 0.95)
+        im = ImageEnhance.Color(im).enhance(0.75)
+        im = _tint(im, 1.03, 1.0, 1.05)
+    elif "b&w" in L or "dramatic" in L:
+        g = ImageOps.grayscale(im)
+        g = ImageEnhance.Contrast(g).enhance(1.45)
+        im = _vignette(g.convert("RGB"), 0.35)
+    else:
+        return None, "I don't know that look."
+    im = im.filter(ImageFilter.UnsharpMask(2, 70, 3))
+    out = fun_out("look_" + re.sub(r"\W+", "", L)[:12])
+    im.save(out, quality=95)
+    return out, look + " look done."
 
 
 def beautify(path):
@@ -3533,6 +3649,8 @@ class ChatScreen(BoxLayout):
     def fun_studio(self, *_):
         self._buttons_popup("Fun studio", [
             ("Banana studio (realistic AI editing)", self.banana_studio, GOLD),
+            ("Pro camera looks (iPhone style)", self.looks_menu, GOLD),
+            ("Replace something", lambda: self.ai_menu("Replace", REPLACE), GOLD),
             ("Change clothes", lambda: self.ai_menu("Change clothes", OUTFITS), GOLD),
             ("Change place", lambda: self.ai_menu("Change place", PLACES), GOLD),
             ("Beautiful photo", self.beauty_menu, GOLD),
@@ -3594,6 +3712,17 @@ class ChatScreen(BoxLayout):
             ("Effect: vivid colours", lambda: setv(effect="Vivid colours"), GREY),
             ("Effect: soft glow", lambda: setv(effect="Soft glow"), GREY)], cols=2,
             hint=f"Now: {o['seconds']} s per picture, effect {o['effect'] or 'none'}")
+
+    def looks_menu(self, *_):
+        src = self._edit_src()
+        if not src:
+            self.say("Add a photo with + first, then choose a look.")
+            return
+        opts = [(lk, lambda lk=lk: self.fun_transform(src, "LOOK:" + lk), BLUE) for lk in PRO_LOOKS]
+        opts.append(("AI: flagship camera photo", lambda: self.banana_quick(
+            "make it look like it was shot on the newest flagship phone camera: crisp detail, perfect exposure, "
+            "rich true colours, natural skin, smooth background blur, HDR highlights"), GOLD))
+        self._buttons_popup("Pro camera looks", opts, cols=2, hint="Instant looks. Gold = AI (Nano Banana)")
 
     def banana_studio(self, *_):
         def setb(**k):
@@ -3786,7 +3915,10 @@ class ChatScreen(BoxLayout):
 
         def d(*_):
             try:
-                out, msg = beautify(src) if style == "Beautify" else transform_image(src, style)
+                if style.startswith("LOOK:"):
+                    out, msg = pro_look(src, style[5:])
+                else:
+                    out, msg = beautify(src) if style == "Beautify" else transform_image(src, style)
             except ImportError:
                 out, msg = None, "The picture tools aren't installed in this version."
             except Exception as e:
@@ -4279,6 +4411,12 @@ class ChatScreen(BoxLayout):
         lw = low.strip(" .!")
         if lw in ("fun", "fun studio", "studio", "have fun"):
             self.fun_studio()
+            return
+        if lw in ("looks", "pro looks", "iphone", "iphone look", "camera looks", "iphone effect"):
+            self.looks_menu()
+            return
+        if lw in ("replace", "replace something"):
+            self.ai_menu("Replace", REPLACE)
             return
         if lw in ("banana", "banana studio", "nano banana", "banana creator"):
             self.banana_studio()
