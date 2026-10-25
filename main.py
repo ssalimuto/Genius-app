@@ -273,6 +273,7 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 - Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
+- Music maker (say "sound", or "sound happy afrobeat about ..."): AI producer picks style, key, tempo, chords, melody and instruments, then mixes a full song with reverb and mastering
 - Genius Ultra (say "ultra"): HDR, smart white balance, clarity, fine detail, vibrance and noise clean-up; applied automatically to every camera shot and zoom
 - Super zoom camera (say "camera"): live 1x-100x zoom with slider and presets, smart sharpening, "ai zoom" rebuilds detail; also zoom any photo
 - Pro camera looks (say "looks"): 12 instant iPhone-style looks (Vibrant, Warm, Rich Contrast, HDR, Cinematic, Golden Hour...) + AI flagship look; Replace (sky, background, Portrait mode, Studio Light...)
@@ -2400,6 +2401,303 @@ def pro_look(path, look):
     return out, look + " look done."
 
 
+# ================= Genius Music Maker =================
+import math as _m, random as _r, struct as _st, wave as _wave
+
+SR = 22050
+_NOTE = {"C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3, "E": 4, "F": 5, "F#": 6, "GB": 6,
+         "G": 7, "G#": 8, "AB": 8, "A": 9, "A#": 10, "BB": 10, "B": 11}
+_SCALES = {"major": [0, 2, 4, 5, 7, 9, 11], "minor": [0, 2, 3, 5, 7, 8, 10]}
+_STYLES = {
+    "afrobeat":  dict(bpm=104, drums="afro", inst=["epiano", "bass", "pluck", "pad", "shaker"], prog=[6, 4, 1, 5], scale="minor"),
+    "amapiano":  dict(bpm=112, drums="amapiano", inst=["epiano", "logdrum", "pad", "shaker"], prog=[2, 5, 1, 6], scale="minor"),
+    "pop":       dict(bpm=110, drums="pop", inst=["piano", "bass", "pad", "pluck"], prog=[1, 5, 6, 4], scale="major"),
+    "lofi":      dict(bpm=78, drums="lofi", inst=["epiano", "bass", "pad"], prog=[2, 5, 1, 6], scale="major"),
+    "gospel":    dict(bpm=76, drums="halftime", inst=["piano", "strings", "bass"], prog=[1, 4, 6, 5], scale="major"),
+    "cinematic": dict(bpm=70, drums="none", inst=["strings", "piano", "pad", "bass"], prog=[6, 4, 1, 5], scale="minor"),
+    "hiphop":    dict(bpm=88, drums="trap", inst=["piano", "bass", "pad"], prog=[1, 6, 4, 5], scale="minor"),
+    "ballad":    dict(bpm=72, drums="halftime", inst=["piano", "strings", "bass"], prog=[1, 5, 6, 4], scale="major"),
+    "dance":     dict(bpm=124, drums="pop", inst=["pluck", "bass", "pad", "piano"], prog=[6, 4, 1, 5], scale="minor"),
+    "kids":      dict(bpm=116, drums="pop", inst=["marimba", "bass", "pluck"], prog=[1, 4, 5, 1], scale="major"),
+}
+_PATTERNS = {  # 16 steps per bar: kick, snare/clap, hat
+    "pop":      ("x...x...x...x...", "....x.......x...", "x.x.x.x.x.x.x.x."),
+    "afro":     ("x..x..x...x..x..", "....x.......x..x", "xxx.xxx.xxx.xxx."),
+    "amapiano": ("x...x...x...x...", "....x.......x...", ".x.x.x.x.x.x.x.x"),
+    "lofi":     ("x......x..x.....", "....x.......x...", "x.x.x.x.x.x.x.x."),
+    "trap":     ("x......x..x.....", "........x.......", "xxxxxxxxxxxxxxxx"),
+    "halftime": ("x.........x.....", "........x.......", "x...x...x...x..."),
+    "none":     ("................", "................", "................"),
+}
+
+
+def _freq(midi):
+    return 440.0 * 2 ** ((midi - 69) / 12)
+
+
+def _env(n, a, rel=0.08, decay=None):
+    A, R = max(1, int(a * SR)), max(1, int(rel * SR))
+    out = []
+    for i in range(n):
+        e = min(1.0, i / A)
+        if decay:
+            e *= _m.exp(-i / (decay * SR))
+        if i > n - R:
+            e *= max(0.0, (n - i) / R)
+        out.append(e)
+    return out
+
+
+_CACHE = {}
+
+
+def _voice(inst, midi, n):
+    key = (inst, midi, n)
+    if key in _CACHE:
+        return _CACHE[key]
+    f, w, out = _freq(midi), 2 * _m.pi / SR, []
+    sin = _m.sin
+    if inst == "piano":
+        env = _env(n, 0.004, 0.12)
+        hs = [(1, 1.0), (2, 0.45), (3, 0.22), (4, 0.12), (5, 0.06)]
+        for i in range(n):
+            t = i * w * f
+            s = 0.0
+            for k, a in hs:
+                s += a * sin(t * k * 1.0008 ** k) * _m.exp(-i * k / (1.3 * SR))
+            out.append(s * env[i] * 0.5)
+    elif inst == "epiano":
+        env = _env(n, 0.003, 0.15, decay=1.6)
+        for i in range(n):
+            t = i * w * f
+            out.append((sin(t + 1.2 * _m.exp(-i / (0.25 * SR)) * sin(t * 2)) + 0.15 * sin(t * 3)) * env[i] * 0.45)
+    elif inst in ("pad", "strings"):
+        att = 0.35 if inst == "pad" else 0.18
+        env = _env(n, att, 0.4)
+        det = (1.0, 1.006, 0.994)
+        for i in range(n):
+            vib = 1 + (0.003 * sin(i * w * 5.2) if inst == "strings" else 0)
+            s = 0.0
+            for d in det:
+                t = i * w * f * d * vib
+                s += sin(t) + 0.35 * sin(2 * t) + 0.15 * sin(3 * t) + 0.07 * sin(4 * t)
+            out.append(s * env[i] * 0.13)
+    elif inst == "bass":
+        env = _env(n, 0.006, 0.06, decay=1.2)
+        for i in range(n):
+            t = i * w * f
+            out.append((sin(t) + 0.25 * sin(2 * t) + 0.08 * sin(3 * t)) * env[i] * 0.6)
+    elif inst == "logdrum":
+        for i in range(min(n, int(0.5 * SR))):
+            fr = f * (1 + 0.6 * _m.exp(-i / (0.02 * SR)))
+            out.append(sin(2 * _m.pi * fr * i / SR) * _m.exp(-i / (0.22 * SR)) * 0.75)
+        out += [0.0] * (n - len(out))
+    elif inst == "marimba":
+        env = _env(n, 0.002, 0.05, decay=0.35)
+        for i in range(n):
+            t = i * w * f
+            out.append((sin(t) + 0.3 * sin(4 * t) * _m.exp(-i / (0.05 * SR))) * env[i] * 0.5)
+    elif inst == "pluck":  # Karplus-Strong string
+        p = max(2, int(SR / f))
+        buf = [_r.uniform(-1, 1) for _ in range(p)]
+        for i in range(n):
+            v = buf[i % p]
+            buf[i % p] = 0.996 * 0.5 * (v + buf[(i + 1) % p])
+            out.append(v * 0.35)
+        rel = int(0.05 * SR)
+        for i in range(max(0, n - rel), n):
+            out[i] *= (n - i) / rel
+    _CACHE[key] = out
+    return out
+
+
+def _drum(kind):
+    key = ("drum", kind)
+    if key in _CACHE:
+        return _CACHE[key]
+    out = []
+    if kind == "kick":
+        ph = 0.0
+        for i in range(int(0.35 * SR)):
+            fr = 45 + 90 * _m.exp(-i / (0.03 * SR))
+            ph += 2 * _m.pi * fr / SR
+            out.append(_m.sin(ph) * _m.exp(-i / (0.12 * SR)) * 0.95)
+    elif kind == "snare":
+        for i in range(int(0.22 * SR)):
+            out.append((_r.uniform(-1, 1) * 0.6 + 0.4 * _m.sin(2 * _m.pi * 185 * i / SR)) * _m.exp(-i / (0.05 * SR)) * 0.5)
+    elif kind == "hat":
+        prev = 0.0
+        for i in range(int(0.05 * SR)):
+            x = _r.uniform(-1, 1)
+            out.append((x - prev) * _m.exp(-i / (0.012 * SR)) * 0.18)
+            prev = x
+    elif kind == "shaker":
+        prev = 0.0
+        for i in range(int(0.07 * SR)):
+            x = _r.uniform(-1, 1)
+            e = min(1, i / (0.01 * SR)) * _m.exp(-i / (0.025 * SR))
+            out.append((x - prev) * e * 0.10)
+            prev = x
+    _CACHE[key] = out
+    return out
+
+
+def _add(buf, src, pos, gain=1.0):
+    end = min(len(buf), pos + len(src))
+    for i in range(pos, end):
+        buf[i] += src[i - pos] * gain
+
+
+def music_plan(desc):
+    """The AI acts as producer: picks style, key, tempo, chords, melody and instruments."""
+    d = (desc or "").lower()
+    style = next((s for s in _STYLES if s in d), None)
+    if not style:
+        style = ("amapiano" if "piano" in d and "ama" in d else "afrobeat" if any(w in d for w in ("afro", "uganda", "dance hall", "kadongo"))
+                 else "gospel" if any(w in d for w in ("god", "praise", "worship", "church")) else
+                 "lofi" if any(w in d for w in ("chill", "relax", "study", "sleep", "calm")) else
+                 "cinematic" if any(w in d for w in ("movie", "epic", "film", "sad")) else
+                 "kids" if any(w in d for w in ("kid", "child", "happy birthday")) else "pop")
+    plan = dict(_STYLES[style], style=style, key="C", title="Genius Song", melody=None, lyrics="")
+    try:
+        r = ask_gemini(
+            "You are a hit music producer. Plan a short instrumental for: '" + (desc or "a beautiful song") + "'. "
+            "Reply JSON only: {\"title\": str, \"style\": one of " + str(list(_STYLES)) + ", \"key\": like \"C\" or \"F#\", "
+            "\"scale\": \"major\" or \"minor\", \"bpm\": 65-128, \"progression\": 4 scale degrees 1-7, "
+            "\"melody\": 32 scale degrees (1-7, 8 = high 1, 0 = rest) as eighth notes, singable and catchy, "
+            "\"lyrics\": 4 short lines for a chorus}", max_tokens=500, json_mode=True)
+        j = json.loads(re.search(r"\{.*\}", r, re.S).group(0))
+        if j.get("style") in _STYLES:
+            plan.update(_STYLES[j["style"]], style=j["style"])
+        if str(j.get("key", "")).upper() in _NOTE:
+            plan["key"] = str(j["key"]).upper()
+        if j.get("scale") in _SCALES:
+            plan["scale"] = j["scale"]
+        if 60 <= int(j.get("bpm", 0)) <= 132:
+            plan["bpm"] = int(j["bpm"])
+        pr = [int(x) for x in j.get("progression", []) if 1 <= int(x) <= 7]
+        if len(pr) >= 4:
+            plan["prog"] = pr[:4]
+        mel = [int(x) for x in j.get("melody", []) if 0 <= int(x) <= 8]
+        if len(mel) >= 16:
+            plan["melody"] = (mel * 2)[:32]
+        plan["title"] = str(j.get("title") or plan["title"])[:60]
+        plan["lyrics"] = "\n".join(j["lyrics"]) if isinstance(j.get("lyrics"), list) else str(j.get("lyrics", ""))
+    except Exception as e:
+        log(f"MUSIC plan: {e}")
+    return plan
+
+
+def make_song(desc):
+    plan = music_plan(desc)
+    root = 48 + _NOTE.get(plan["key"], 0)            # C3 area
+    sc = _SCALES[plan["scale"]]
+    deg = lambda d, base=root: base + 12 * ((d - 1) // 7) + sc[(d - 1) % 7]
+    step = int(SR * 60 / plan["bpm"] / 4)             # one 16th note
+    bar = step * 16
+    form = [("intro", 2), ("verse", 4), ("chorus", 4), ("verse", 4), ("chorus", 4), ("outro", 2)]
+    total = bar * sum(b for _, b in form) + SR * 3
+    L, R, verb = [0.0] * total, [0.0] * total, [0.0] * total
+    inst = plan["inst"]
+    if not plan["melody"]:                            # chord-aware fallback melody
+        mel, cur = [], 5
+        for i in range(32):
+            if i % 8 == 7 or _r.random() < 0.12:
+                mel.append(0)
+                continue
+            cur = max(1, min(8, cur + _r.choice((-2, -1, -1, 0, 1, 1, 2))))
+            mel.append(cur)
+        plan["melody"] = mel
+    kick, snare, hat = _PATTERNS.get(plan["drums"], _PATTERNS["none"])
+    pos = 0
+    for part, bars in form:
+        full = part == "chorus"
+        for b in range(bars):
+            chord_deg = plan["prog"][b % 4]
+            triad = [deg(chord_deg + k, root + 12) for k in (0, 2, 4)]
+            # chords
+            for name in inst:
+                if name in ("piano", "epiano"):
+                    if name == "epiano" or part in ("intro", "outro"):
+                        for k, note in enumerate(triad):
+                            v = _voice(name, note, bar)
+                            _add(L, v, pos + k * 40, 0.55); _add(R, v, pos + k * 40 + 60, 0.55); _add(verb, v, pos, 0.3)
+                    else:
+                        for s in (0, 6, 8, 14) if full else (0, 8):
+                            for note in triad:
+                                v = _voice(name, note, step * 6)
+                                _add(L, v, pos + s * step, 0.42); _add(R, v, pos + s * step, 0.42); _add(verb, v, pos + s * step, 0.25)
+                elif name in ("pad", "strings") and (full or part in ("intro", "outro") or name == "strings"):
+                    for note in triad + [triad[0] + 12]:
+                        v = _voice(name, note, bar)
+                        _add(L, v, pos, 0.7 if full else 0.5); _add(R, v, pos + 260, 0.7 if full else 0.5); _add(verb, v, pos, 0.5)
+                elif name == "bass" and part not in ("intro",):
+                    bn = deg(chord_deg, root - 12)
+                    for s in (0, 3, 8, 11) if full else (0, 8):
+                        v = _voice("bass", bn, step * 3)
+                        _add(L, v, pos + s * step, 0.9); _add(R, v, pos + s * step, 0.9)
+                elif name == "logdrum" and part not in ("intro", "outro"):
+                    bn = deg(chord_deg, root - 12)
+                    for s in (0, 3, 7, 10, 14):
+                        v = _voice("logdrum", bn, step * 4)
+                        _add(L, v, pos + s * step, 0.8); _add(R, v, pos + s * step, 0.8)
+                elif name == "pluck" and part != "intro":
+                    for s in range(0, 16, 2):
+                        v = _voice("pluck", triad[(s // 2) % 3] + 12, step * 2)
+                        _add(L, v, pos + s * step, 0.5); _add(R, v, pos + s * step, 0.25); _add(verb, v, pos + s * step, 0.3)
+            # melody (lead): piano/marimba voice, octave up in chorus
+            if part in ("verse", "chorus"):
+                lead = "marimba" if "marimba" in inst else ("epiano" if "epiano" in inst else "piano")
+                for s in range(8):
+                    dg = plan["melody"][(b % 4) * 8 + s]
+                    if dg:
+                        note = deg(dg, root + (24 if full else 12))
+                        v = _voice(lead, note, step * 2 + step // 2)
+                        g = 0.55 if full else 0.42
+                        _add(L, v, pos + s * 2 * step, g); _add(R, v, pos + s * 2 * step + 30, g); _add(verb, v, pos + s * 2 * step, 0.45)
+            # drums
+            if part not in ("intro", "outro") or (part == "outro" and b == 0):
+                for s in range(16):
+                    p = pos + s * step
+                    if kick[s] == "x": _add(L, _drum("kick"), p, 0.9); _add(R, _drum("kick"), p, 0.9)
+                    if snare[s] == "x": _add(L, _drum("snare"), p, 0.55); _add(R, _drum("snare"), p, 0.55); _add(verb, _drum("snare"), p, 0.3)
+                    if hat[s] == "x" and (full or s % 2 == 0):
+                        hk = "shaker" if "shaker" in inst else "hat"
+                        _add(L, _drum(hk), p, 0.8 if s % 4 else 1.0); _add(R, _drum(hk), p + 90, 0.6)
+            pos += bar
+    # reverb: 3 comb filters + allpass on the send bus (hall sound)
+    rv = [0.0] * total
+    for dl, fb in ((int(0.0297 * SR), 0.80), (int(0.0371 * SR), 0.78), (int(0.0411 * SR), 0.76)):
+        c = verb[:]
+        for i in range(dl, total):
+            c[i] += c[i - dl] * fb
+        for i in range(total):
+            rv[i] += c[i]
+    ap = int(0.005 * SR)
+    y = rv[:]
+    for i in range(ap, total):
+        y[i] = -0.6 * rv[i] + rv[i - ap] + 0.6 * y[i - ap]
+    rv = y
+    # master: mix, glue, soft limiter, fades
+    peak = 1e-6
+    for i in range(total):
+        L[i] += rv[i] * 0.10
+        R[i] += rv[i - 120 if i >= 120 else i] * 0.10
+        peak = max(peak, abs(L[i]), abs(R[i]))
+    g = 1.6 / peak
+    fade_in, fade_out = int(0.5 * SR), int(3 * SR)
+    frames = bytearray()
+    th = _m.tanh
+    for i in range(total):
+        e = min(1.0, i / fade_in, (total - i) / fade_out)
+        frames += _st.pack("<hh", int(th(L[i] * g) * 0.89 * e * 32767), int(th(R[i] * g) * 0.89 * e * 32767))
+    _CACHE.clear()
+    out = os.path.join(genius_dl("music"), re.sub(r"[^A-Za-z0-9]+", "_", plan["title"])[:40] + time.strftime("_%H%M%S") + ".wav")
+    with _wave.open(out, "wb") as w:
+        w.setnchannels(2); w.setsampwidth(2); w.setframerate(SR); w.writeframes(bytes(frames))
+    return out, plan
+
+
 def ultra_process(im):
     """Genius Ultra engine: smart white balance, HDR tone mapping, clarity, fine detail,
     vibrance and noise clean-up. Never moves, crops or reshapes anything."""
@@ -3856,6 +4154,7 @@ class ChatScreen(BoxLayout):
     def fun_studio(self, *_):
         self._buttons_popup("Fun studio", [
             ("Banana studio (realistic AI editing)", self.banana_studio, GOLD),
+            ("Music maker (AI songs)", self.music_menu, GOLD),
             ("Super zoom camera (1x-100x)", self.zoom_camera, GOLD),
             ("Zoom a photo", self.zoom_photo_menu, BLUE),
             ("Genius Ultra (best photo quality)", self.ultra_photo, GOLD),
@@ -4070,6 +4369,46 @@ class ChatScreen(BoxLayout):
                                  "without changing what's in the photo.")
                 else:
                     self.say(msg)
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=d, daemon=True).start()
+
+    # ---------- Music maker ----------
+    def music_menu(self, *_):
+        opts = [("Afrobeat", "afrobeat"), ("Amapiano", "amapiano"), ("Pop hit", "pop"), ("Gospel", "gospel"),
+                ("Lo-fi chill", "lofi"), ("Hip hop", "hiphop"), ("Love ballad", "ballad"), ("Cinematic", "cinematic"),
+                ("Dance", "dance"), ("Kids song", "kids")]
+        self._buttons_popup("Music maker", [(t, lambda k=k: self.make_music(k + " song"), GOLD if i < 2 else BLUE)
+                                            for i, (t, k) in enumerate(opts)] +
+                            [("Describe my own...", lambda: self.say("Say 'sound' then describe it, like: "
+                                                                     "sound happy afrobeat about my friends"), GREY)],
+                            cols=2, hint="AI picks the key, chords, melody and instruments")
+
+    def make_music(self, desc=""):
+        if self.busy:
+            self.say("One moment, I'm still finishing the last job.")
+            return
+        self.busy = True
+        self.say("Composing your song: choosing the key, chords, melody and instruments, then mixing it "
+                 "like a studio. This takes about a minute...")
+
+        def d(*_):
+            try:
+                out, plan = make_song(desc)
+                err = None
+            except Exception as e:
+                out, plan, err = None, None, str(e)
+
+            def done(*_):
+                self.busy = False
+                if not out:
+                    self.say(f"The song didn't work: {err}")
+                    return
+                _play_file(out)
+                self._last_song = out
+                lyr = f"\n\nChorus idea:\n{plan['lyrics']}" if plan.get("lyrics") else ""
+                self.show("AI", f"\u266b [b]{plan['title']}[/b]\n{plan['style'].title()} in {plan['key']} "
+                                f"{plan['scale']}, {plan['bpm']} BPM. Playing now.\nSaved in Download/Genius/music. "
+                                f"Say 'play song' again or 'stop music'.{lyr}")
             Clock.schedule_once(done, 0)
         threading.Thread(target=d, daemon=True).start()
 
@@ -4805,6 +5144,23 @@ class ChatScreen(BoxLayout):
         if lw in ("camera", "zoom camera", "super zoom", "zoom", "open camera"):
             self.zoom_camera()
             return
+        if lw in ("sound", "music", "music maker", "make music", "make a song", "song", "make song", "beat", "make a beat"):
+            self.music_menu()
+            return
+        if lw in ("stop music", "stop song"):
+            try:
+                _luganda["sound"].stop()
+            except Exception:
+                pass
+            self.say("Music stopped.")
+            return
+        if lw in ("play song", "play music", "play again") and getattr(self, "_last_song", None):
+            _play_file(self._last_song)
+            return
+        for pre in ("sound ", "music ", "make music ", "make a song ", "make song ", "song about ", "make a beat "):
+            if lw.startswith(pre) and len(lw) > len(pre) + 2:
+                self.make_music(line.strip()[len(pre):])
+                return
         if lw in ("ultra", "genius ultra", "ultra hd", "best quality", "make it better", "enhance"):
             self.ultra_photo()
             return
