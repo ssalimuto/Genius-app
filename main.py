@@ -2,6 +2,61 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
+VERSION = "109.0"
+NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
+LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
+LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
+LIVE_INFO = os.path.join(LIVE_DIR, "genius_live.json")
+SHIP_VERSION = os.environ.get("GENIUS_SHIP_VERSION") or VERSION   # version of the installed app
+
+
+def _vt(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except Exception:
+        return (0,)
+
+
+def _boot_live():
+    """Quiet updates: if a newer, verified Genius is waiting, run it instead of this copy.
+    A version that fails to start twice is dropped and this copy runs."""
+    if os.environ.get("GENIUS_LIVE"):
+        return False
+    try:
+        info = json.load(open(LIVE_INFO))
+        src = open(LIVE_CODE, "rb").read()
+        if hashlib.sha256(src).hexdigest() != info.get("sha"):
+            return False
+        if _vt(info.get("version")) <= _vt(VERSION) or _vt(info.get("needs_apk", "0")) > _vt(VERSION):
+            return False
+        if info.get("tries", 0) >= 2 and not info.get("ok"):
+            return False
+        info["tries"] = info.get("tries", 0) + 1
+        json.dump(info, open(LIVE_INFO, "w"))
+    except Exception:
+        return False
+    os.environ["GENIUS_LIVE"] = "1"
+    os.environ["GENIUS_SHIP_VERSION"] = VERSION
+    exec(compile(src, LIVE_CODE, "exec"), {"__name__": "__main__", "__file__": LIVE_CODE})
+    return True
+
+
+def live_started_ok():
+    """Called once Genius is up: marks the quiet update as good."""
+    if not os.environ.get("GENIUS_LIVE"):
+        return
+    try:
+        info = json.load(open(LIVE_INFO))
+        if not info.get("ok"):
+            info["ok"] = True
+            json.dump(info, open(LIVE_INFO, "w"))
+    except Exception:
+        pass
+
+
+if __name__ == "__main__" and _boot_live():
+    raise SystemExit(0)
+
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.window import Window
@@ -270,14 +325,13 @@ What this means
 
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
-VERSION = "108.0"
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-25"
-CHANGELOG = """Genius 108.0 (2026-10-26)
+CHANGELOG = """Genius 109.0 (2026-10-26)
 - Opens with your secret code: create it the first time, then just type it to unlock.
 - The three-bar menu at the top right holds Speak, Draw, Locker, Notes, Weather, Deep, Clear, Stop and the rest.
 - The top shows only your chat, Search and the menu.
-- Updates arrive by themselves: Genius checks every time you unlock and every hour, then you just tap Update.
+- Quiet updates: Genius fetches new versions by itself in the background and uses them the next time you open it. No downloads, no screens.
 
 Genius 107.0 (2026-10-25)
 - Updates itself: type update and Genius downloads and installs the newest version, no website needed.
@@ -1013,9 +1067,63 @@ def online_update():
                 best = (m.group(1), a.get("browser_download_url"))
     if not best:
         return None, "No Genius download is on the release page yet."
-    if _ver_tuple(best[0]) <= _ver_tuple(VERSION):
+    if _ver_tuple(best[0]) <= _ver_tuple(SHIP_VERSION):
         return None, f"You already have the newest Genius ({VERSION})."
     return best, None
+
+
+def fetch_live_update():
+    """Quietly fetch newer Genius code from the release page and keep it ready for the
+    next start. No screens, no messages. Returns 'ready', 'apk' (needs a new app), or ''."""
+    if PLAY_BUILD:
+        return ""
+    try:
+        req = urllib.request.Request(RELEASES_URL, headers={
+            "Accept": "application/vnd.github+json", "User-Agent": "Genius-app"})
+        with urllib.request.urlopen(req, timeout=20, context=ssl_context()) as r:
+            rels = json.load(r)
+        best = None
+        for rel in rels:
+            if rel.get("draft"):
+                continue
+            names = {a.get("name"): a.get("browser_download_url") for a in rel.get("assets") or []}
+            if "genius_live.py" in names and "genius_live.sha256" in names:
+                best = names
+                break
+        if not best:
+            return ""
+        def get(u):
+            rq = urllib.request.Request(u, headers={"User-Agent": "Genius-app"})
+            with urllib.request.urlopen(rq, timeout=60, context=ssl_context()) as r:
+                return r.read()
+        want = get(best["genius_live.sha256"]).decode().split()[0].strip().lower()
+        src = get(best["genius_live.py"])
+        if hashlib.sha256(src).hexdigest() != want:
+            intruder_log("quiet update rejected: fingerprint mismatch")
+            return ""
+        text = src.decode("utf-8")
+        compile(text, "genius_live.py", "exec")
+        if "class GeniusApp" not in text or "def check_login" not in text:
+            return ""
+        v = re.search(r'^VERSION\s*=\s*"([^"]+)"', text, re.M)
+        need = re.search(r'^NEEDS_APK\s*=\s*"([^"]+)"', text, re.M)
+        v = v.group(1) if v else "0"
+        need = need.group(1) if need else v
+        if _vt(v) <= _vt(VERSION):
+            return ""
+        if _vt(need) > _vt(SHIP_VERSION):
+            return "apk"                     # new parts inside the app itself: a real install is needed
+        os.makedirs(LIVE_DIR, exist_ok=True)
+        tmp = LIVE_CODE + ".part"
+        open(tmp, "wb").write(src)
+        os.replace(tmp, LIVE_CODE)
+        json.dump({"version": v, "needs_apk": need, "sha": want, "tries": 0, "ok": False},
+                  open(LIVE_INFO, "w"))
+        log(f"QUIET UPDATE ready: {v}")
+        return "ready"
+    except Exception as e:
+        log(f"quiet update skipped: {e}")
+        return ""
 
 
 def install_online_update(ver, url, tell):
@@ -7035,6 +7143,10 @@ class ChatScreen(BoxLayout):
         if action == "update":
             def work():
                 tell = lambda t: Clock.schedule_once(lambda *_: self.say(t))
+                got = fetch_live_update()
+                if got == "ready":
+                    tell("The newest Genius is ready. Close and reopen Genius to use it.")
+                    return
                 found, why = online_update()
                 if not found:
                     tell(why)
@@ -7976,6 +8088,7 @@ class GeniusApp(App):
         self.root_box.add_widget(DecoyScreen(self, tried))
 
     def on_start(self):
+        live_started_ok()
         everywhere_load()
         threading.Thread(target=lambda: brain_self_review(), daemon=True).start()
         def check_update():
@@ -7989,8 +8102,11 @@ class GeniusApp(App):
             while True:
                 if first or update_due():
                     first = False
+                    if fetch_live_update() != "apk":
+                        time.sleep(3600)
+                        continue
                     found, _ = online_update()
-                    if found and CURRENT.get("owner"):
+                    if found and _vt(found[0]) > _vt(SHIP_VERSION) and CURRENT.get("owner"):
                         def tell(t):
                             def go(*_):
                                 chat = getattr(self, "chat", None)
@@ -7999,7 +8115,6 @@ class GeniusApp(App):
                                 else:
                                     Clock.schedule_once(go, 5)
                             Clock.schedule_once(go, 1)
-                        tell(f"Genius {found[0]} is out. Getting it for you now.")
                         install_online_update(found[0], found[1], tell)
                 time.sleep(3600)
         threading.Thread(target=check_update, daemon=True).start()
