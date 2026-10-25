@@ -1,6 +1,8 @@
 name: Build Genius for Play Store
 on:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   play:
     runs-on: ubuntu-22.04
@@ -33,3 +35,11 @@ jobs:
         with:
           name: Genius-Play-unsigned
           path: bin/*.aab
+      - name: Publish Play bundle (pre-release)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: play-build${{ github.run_number }}
+          name: Genius Play bundle (build ${{ github.run_number }})
+          prerelease: true
+          make_latest: false
+          files: bin/*.aab
