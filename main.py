@@ -270,6 +270,7 @@ What this means
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
 VERSION = "107.0"
+PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-25"
 CHANGELOG = """Genius 107.0 (2026-10-25)
 - Updates itself: type update and Genius downloads and installs the newest version, no website needed.
@@ -6862,6 +6863,12 @@ class ChatScreen(BoxLayout):
                 return
             self._bg(lambda: ask_all(arg), "Asking all your AIs at once...", speak=False)
             return
+        if action == "update" and PLAY_BUILD:
+            self.say("Genius updates through the Play Store. Open Play Store, search Genius, and tap Update.")
+            return
+        if action == "upgrade" and PLAY_BUILD:
+            self.say("Genius updates through the Play Store. Open Play Store, search Genius, and tap Update.")
+            return
         if action == "update":
             def work():
                 tell = lambda t: Clock.schedule_once(lambda *_: self.say(t))
@@ -7807,6 +7814,8 @@ class GeniusApp(App):
         def check_update():
             # Auto-update: after unlock, then every 6 hours, Genius fetches the new
             # version by itself and opens Android's Update screen (one tap).
+            if PLAY_BUILD:
+                return                     # the Play Store updates this build
             while getattr(self, "chat", None) is None:
                 time.sleep(5)              # wait until the owner has unlocked Genius
             while True:
