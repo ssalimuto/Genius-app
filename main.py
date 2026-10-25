@@ -3696,6 +3696,131 @@ def share_genius(target=None):
     return True
 
 
+# ---------------- Genius Wealth bot: live prices, chart reading, wealth guide ----------------
+CRYPTO_IDS = {"btc": "bitcoin", "bitcoin": "bitcoin", "eth": "ethereum", "ethereum": "ethereum",
+              "bnb": "binancecoin", "sol": "solana", "solana": "solana", "xrp": "ripple", "usdt": "tether",
+              "doge": "dogecoin", "ada": "cardano", "trx": "tron", "ton": "the-open-network", "ltc": "litecoin"}
+FX_CODES = ("usd", "ugx", "kes", "tzs", "rwf", "eur", "gbp", "zar", "ngn", "cny", "aed", "inr")
+WEALTH_SYSTEM = ("You are Genius Wealth, a friendly, honest money coach for young people in Uganda and East Africa. "
+                 "Explain simply. Use UGX amounts. Teach budgeting, saving, emergency funds, avoiding debt and scams, "
+                 "earning more (skills, freelancing, small business), and investing for the long term: SACCOs, "
+                 "unit trusts and money market funds (e.g. regulated by Uganda's CMA), Bank of Uganda treasury bills "
+                 "and bonds, the Uganda Securities Exchange, and global index funds. For trading and crypto: explain "
+                 "risk, position size (risk at most 1-2% per trade), stop-losses, and that most traders lose money. "
+                 "Never promise profits or say 'guaranteed'. Never ask for PINs or passwords. "
+                 "Give a clear next step at the end. This is education, not licensed financial advice.")
+CHART_PROMPT = ("You are a careful technical analyst. Read this trading chart picture. Report, in simple English: "
+                "1) the asset and timeframe if visible, 2) the trend (up, down, sideways) and why, 3) key support and "
+                "resistance levels with prices read from the axis, 4) any patterns or candles (e.g. double top, "
+                "flag, engulfing) and indicators shown (RSI, MACD, moving averages, volume), 5) a bullish scenario "
+                "and a bearish scenario with the price that would confirm each, 6) a sensible risk plan: where a "
+                "stop-loss could go and why to risk only 1-2% of the account. Say clearly if the picture is too "
+                "blurry or not a chart. End with: 'This is education, not financial advice. Charts can't predict "
+                "the future.' Never say a trade is guaranteed.")
+
+
+def _get_json(url, timeout=20):
+    req = urllib.request.Request(url, headers={"User-Agent": "Genius/102", "Accept": "application/json"})
+    try:
+        r = urllib.request.urlopen(req, timeout=timeout, context=ssl_context())
+    except urllib.error.URLError as e:
+        if "CERTIFICATE" not in str(e).upper():
+            raise
+        r = urllib.request.urlopen(req, timeout=timeout, context=ssl._create_unverified_context())
+    with r:
+        return json.loads(r.read().decode("utf8", "ignore"))
+
+
+def usd_rates():
+    return _get_json("https://open.er-api.com/v6/latest/USD").get("rates", {})
+
+
+def crypto_price(sym):
+    cid = CRYPTO_IDS.get(sym.lower(), sym.lower())
+    d = _get_json(f"https://api.coingecko.com/api/v3/simple/price?ids={cid}&vs_currencies=usd,ugx"
+                  f"&include_24hr_change=true")
+    if cid not in d:
+        return None
+    x = d[cid]
+    return {"name": cid, "usd": x.get("usd"), "ugx": x.get("ugx"), "chg": x.get("usd_24h_change")}
+
+
+def stock_price(sym):
+    sym = sym.lower()
+    code = sym if "." in sym else sym + ".us"
+    req = urllib.request.Request(f"https://stooq.com/q/l/?s={code}&f=sd2t2ohlcv&h&e=csv",
+                                 headers={"User-Agent": "Genius/102"})
+    try:
+        r = urllib.request.urlopen(req, timeout=20, context=ssl_context())
+    except urllib.error.URLError:
+        r = urllib.request.urlopen(req, timeout=20, context=ssl._create_unverified_context())
+    with r:
+        rows = r.read().decode("utf8", "ignore").strip().splitlines()
+    if len(rows) < 2:
+        return None
+    head, vals = rows[0].lower().split(","), rows[1].split(",")
+    row = dict(zip(head, vals))
+    if row.get("close", "N/D") in ("N/D", ""):
+        return None
+    o, c = float(row["open"]), float(row["close"])
+    return {"symbol": sym.upper(), "date": row.get("date"), "open": o, "high": float(row["high"]),
+            "low": float(row["low"]), "close": c, "chg": (c - o) / o * 100 if o else 0}
+
+
+def market_quote(q):
+    """Real, live numbers. 'btc', 'aapl', 'usd ugx', '100 usd to ugx'."""
+    q = q.lower().replace(" to ", " ").replace("/", " ").strip()
+    words = q.split()
+    if not words:
+        return "Say market and a name, e.g. market btc, market aapl, or market 100 usd ugx."
+    amt = 1.0
+    if re.match(r"^[\d.,]+$", words[0]):
+        amt = float(words[0].replace(",", ""))
+        words = words[1:]
+    if len(words) >= 2 and words[0] in FX_CODES and words[1] in FX_CODES:
+        rates = usd_rates()
+        a, b = words[0].upper(), words[1].upper()
+        if a not in rates or b not in rates:
+            return "I couldn't get that exchange rate right now."
+        val = amt / rates[a] * rates[b]
+        return f"{amt:,.2f} {a} = {val:,.2f} {b} (live rate)."
+    sym = words[0]
+    try:
+        c = crypto_price(sym) if sym in CRYPTO_IDS else None
+        if c:
+            chg = f"{c['chg']:+.2f}% in 24h" if c.get("chg") is not None else ""
+            ugx = f" = UGX {c['ugx']:,.0f}" if c.get("ugx") else ""
+            return f"{c['name'].title()}: ${c['usd']:,.2f}{ugx}, {chg} (live)."
+        s_ = stock_price(sym)
+        if s_:
+            return (f"{s_['symbol']}: ${s_['close']:,.2f} on {s_['date']} (open {s_['open']:,.2f}, high "
+                    f"{s_['high']:,.2f}, low {s_['low']:,.2f}, {s_['chg']:+.2f}% today).")
+        c = crypto_price(sym)
+        if c:
+            return f"{c['name'].title()}: ${c['usd']:,.2f} (live)."
+    except Exception as e:
+        return f"Market data didn't load: {e}. Check your internet."
+    return f"I couldn't find a price for {sym.upper()}. Try a stock symbol like aapl or a coin like btc."
+
+
+def wealth_answer(question, profile=""):
+    live = ""
+    for w in re.findall(r"[a-zA-Z]{2,6}", question):
+        if w.lower() in CRYPTO_IDS:
+            try:
+                live += market_quote(w) + "\n"
+            except Exception:
+                pass
+    if re.search(r"\b(usd|dollar|ugx|shilling|rate)\b", question.lower()):
+        try:
+            live += market_quote("usd ugx") + "\n"
+        except Exception:
+            pass
+    prompt = (("Live data:\n" + live + "\n") if live else "") + \
+             (("About me: " + profile + "\n") if profile else "") + "Question: " + question
+    return ask_gemini(prompt, 900, search=True, system=WEALTH_SYSTEM) or "No AI answered. Check your internet."
+
+
 _APPS_CACHE = {}
 
 
@@ -4047,9 +4172,9 @@ class LoginScreen(BoxLayout):
         self.code_in.text = ""
         if ok:
             if pin_is_set() or not CURRENT["owner"]:
-                self.app.open_chat()
+                self.app.open_home()
             else:
-                code_setup_popup(lambda: self.app.open_chat(), first=True)
+                code_setup_popup(lambda: self.app.open_home(), first=True)
         elif msg == "DECOY":
             self.app.open_decoy(tried)
         else:
@@ -4454,6 +4579,86 @@ class ChatScreen(BoxLayout):
         log("CHAT CLEARED")
         self.say("Chat cleared. Fresh start.")
 
+    # ---------- Genius Wealth bot ----------
+    def _bg(self, fn):
+        self.show("AI", "[i]Working on it...[/i]")
+
+        def d():
+            try:
+                out = fn()
+            except Exception as e:
+                out = f"That didn't work: {e}"
+            Clock.schedule_once(lambda *_: self.say(out), 0)
+        threading.Thread(target=d, daemon=True).start()
+
+    def _wealth_profile(self):
+        f = "wealth_" + re.sub(r"\W+", "_", str(CURRENT.get("name") or "me")) + ".txt"
+        try:
+            return open(f, encoding="utf8").read()[:600]
+        except Exception:
+            return ""
+
+    def wealth_menu(self, *_):
+        def bot_on():
+            self.bot_mode = "wealth"
+            self.mode_lbl.text = "Wealth"
+            self.say("Genius Wealth is on. Ask me anything about money, saving, investing or trading. "
+                     "Say 'exit bot' to go back.")
+
+        def plan():
+            self.bot_mode = "wealth"
+            self.mode_lbl.text = "Wealth"
+            self._bg(lambda: wealth_answer(
+                "Build me a simple step-by-step wealth plan: budget, emergency fund, paying off debt, growing income, "
+                "and investing monthly in Uganda. Show a 12-month and a 5-year example in UGX.",
+                self._wealth_profile()))
+
+        def about_me():
+            box = BoxLayout(orientation="vertical", spacing=10, padding=12)
+            ti = TextInput(hint_text="e.g. I earn 300,000 UGX a month, spend 200,000, have 50,000 saved, goal: buy land",
+                           text=self._wealth_profile(), multiline=True)
+            box.add_widget(ti)
+            pop = Popup(title="About my money", content=box, size_hint=(0.94, 0.6),
+                        separator_color=GOLD, title_color=GOLD)
+
+            def save(*_):
+                f = "wealth_" + re.sub(r"\W+", "_", str(CURRENT.get("name") or "me")) + ".txt"
+                try:
+                    open(f, "w", encoding="utf8").write(ti.text.strip())
+                    self.say("Saved privately. Your wealth plans now fit your real numbers.")
+                except Exception as e:
+                    self.say(f"Couldn't save: {e}")
+                pop.dismiss()
+            b = RoundButton(text="Save", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), size_hint_y=None, height="52dp", bold=True)
+            b.bind(on_press=save)
+            box.add_widget(b)
+            pop.open()
+
+        self._buttons_popup("Genius Wealth", [
+            ("Talk to Genius Wealth bot", bot_on, GOLD),
+            ("Read a trading chart (picture)", self.chart_pick, GOLD),
+            ("Make my wealth plan", plan, BLUE),
+            ("About my money (private)", about_me, BLUE),
+            ("Live prices: Bitcoin", lambda: self._bg(lambda: market_quote("btc")), GREY),
+            ("Live dollar rate (USD to UGX)", lambda: self._bg(lambda: market_quote("usd ugx")), GREY),
+            ("Saving & investing in Uganda", lambda: self._bg(lambda: wealth_answer(
+                "Explain the safest ways to save and invest in Uganda, from small amounts: SACCOs, money market and "
+                "unit trust funds, treasury bills and bonds, and the stock exchange. Risks and how to start.")), GREY),
+            ("Spot money scams", lambda: self._bg(lambda: wealth_answer(
+                "How do I spot investment, crypto and forex scams in Uganda? Give clear warning signs.")), GREY)],
+            hint="Real prices, chart reading and a step-by-step wealth guide")
+
+    def chart_pick(self, *_):
+        self._chart_mode = True
+        self.say("Pick a screenshot of the trading chart. I'll read the trend, levels and risk for you.")
+        self.pick_file("image/*")
+
+    def chart_read(self, path):
+        def go():
+            ans = ask_about_file(path, "image", CHART_PROMPT)
+            return "\U0001F4C8 Chart reading\n" + ans
+        self._bg(go)
+
     # ---------- profile drawer: slides in from the left ----------
     def profile_drawer(self, *_):
         name = str(CURRENT.get("name") or "")
@@ -4487,7 +4692,9 @@ class ChatScreen(BoxLayout):
             else:
                 self.say("Take a selfie or add a picture first, then tap 'Use last picture as my photo'.")
 
-        opts = [("Use last picture as my photo", set_photo, GOLD),
+        opts = [("Home", self.app.open_home, GOLD),
+                ("Genius Wealth (trading & money)", self.wealth_menu, GOLD),
+                ("Use last picture as my photo", set_photo, BLUE),
                 ("Take a selfie", self.zoom_camera, BLUE),
                 ("My plan (Premium)", self.premium_popup, BLUE),
                 ("My storage", self.storage_box, BLUE),
@@ -4610,6 +4817,8 @@ class ChatScreen(BoxLayout):
     def fun_studio(self, *_):
         self._buttons_popup("Fun studio", [
             ("Banana studio (realistic AI editing)", self.banana_studio, GOLD),
+            ("Home page", self.app.open_home, GOLD),
+            ("Genius Wealth (charts, prices, wealth plan)", self.wealth_menu, GOLD),
             ("Share Genius (WhatsApp, TikTok...)", self.share_menu, GOLD),
             ("Genius everywhere (bubble, Hey Genius)", self.everywhere_menu, GOLD),
             ("Genius Premium", self.premium_popup, GOLD),
@@ -5593,6 +5802,11 @@ class ChatScreen(BoxLayout):
         except Exception as e:
             err = "I couldn't open that file. Try another one."
             log(f"PICK error: {e}")
+        if path and getattr(self, "_chart_mode", False):
+            self._chart_mode = False
+            Clock.schedule_once(lambda *_: self.chart_read(path), 0)
+            return
+        self._chart_mode = False
         to_store = getattr(self, "_to_storage", False)
         self._to_storage = False
         if path and to_store:
@@ -5788,6 +6002,28 @@ class ChatScreen(BoxLayout):
                 except Exception as e:
                     self.say(f"Listing apps only works on the phone: {e}")
                 return
+        if lw in ("home", "home page", "dashboard"):
+            self.app.open_home()
+            return
+        if lw in ("wealth", "wealth bot", "genius wealth", "money bot", "trading bot", "trade bot", "invest"):
+            self.wealth_menu()
+            return
+        if lw in ("chart", "read chart", "trading chart", "analyse chart", "analyze chart"):
+            self.chart_pick()
+            return
+        if lw.startswith(("market ", "live ", "rate ")) or lw in ("dollar rate", "usd rate"):
+            q = "usd ugx" if lw in ("dollar rate", "usd rate") else lw.split(" ", 1)[1]
+            self._bg(lambda: market_quote(q))
+            return
+        if getattr(self, "bot_mode", None) == "wealth":
+            if lw in ("exit bot", "leave bot", "stop bot", "normal", "exit wealth"):
+                self.bot_mode = None
+                self.mode_lbl.text = "Fast"
+                self.say("Back to normal Genius.")
+                return
+            q = line
+            self._bg(lambda: wealth_answer(q, self._wealth_profile()))
+            return
         if lw in ("profile", "my profile", "account", "me"):
             self.profile_drawer()
             return
@@ -6762,6 +6998,77 @@ class ChatScreen(BoxLayout):
 
 
 
+class HomeScreen(BoxLayout):
+    """Genius home page: greeting, profile, and big tiles for every feature."""
+    def __init__(self, app, **kw):
+        super().__init__(orientation="vertical", padding=0, spacing=0, **kw)
+        self.app = app
+        add_gradient_bg(self)
+        header = Panel(bg=HEADER, radius=0, orientation="horizontal", size_hint_y=None, height="64dp",
+                       padding=[12, 0, 18, 0], spacing=10)
+        pbox = BoxLayout(size_hint_x=None, width="46dp", padding=[0, 11, 0, 11])
+        chip = ProfileChip()
+        chip.bind(on_press=lambda *_: self.go("profile"))
+        pbox.add_widget(chip)
+        header.add_widget(pbox)
+        hr = time.localtime().tm_hour
+        hello = "Good morning" if hr < 12 else "Good afternoon" if hr < 17 else "Good evening"
+        name = str(CURRENT.get("name") or "")
+        t = Label(text=f"[b]{hello}, {name.title()}[/b]\n[size=12sp][color=9aa0c0]What shall we do today?[/color][/size]",
+                  markup=True, color=TEXTCOL, font_size="19sp", halign="left", valign="middle")
+        t.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        header.add_widget(t)
+        self.add_widget(header)
+
+        sv = ScrollView()
+        col = BoxLayout(orientation="vertical", size_hint_y=None, padding=[14, 14, 14, 20], spacing=14)
+        col.bind(minimum_height=col.setter("height"))
+        self.rate_lbl = Label(text="[color=9aa0c0]Loading live prices...[/color]", markup=True, font_size="14sp",
+                              size_hint_y=None, height="44dp", halign="left", valign="middle")
+        self.rate_lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        col.add_widget(self.rate_lbl)
+        grid = GridLayout(cols=2, spacing=12, size_hint_y=None)
+        grid.bind(minimum_height=grid.setter("height"))
+        tiles = [("Chat with Genius", None, GOLD), ("Talk (voice)", "talk", BLUE),
+                 ("Genius Wealth", "wealth", GOLD), ("Read a trading chart", "chart", GOLD2),
+                 ("Make music", "sound", BLUE2), ("Photo studio", "fun", BLUE),
+                 ("Super zoom camera", "camera", BLUE2), ("Genius Ultra photo", "ultra", BLUE),
+                 ("My storage", "storage", GREY), ("Genius everywhere", "everywhere", GREY),
+                 ("Share Genius", "share", GREY), ("My plan", "premium", GREY)]
+        for label, act, c in tiles:
+            b = RoundButton(text=label, bg=c, fg=(0.1, 0.08, 0.02, 1) if c in (GOLD, GOLD2) else TEXTCOL,
+                            size_hint_y=None, height="88dp", font_size="16sp", bold=True)
+            b.bind(on_press=lambda _b, a=act: self.go(a))
+            grid.add_widget(b)
+        col.add_widget(grid)
+        col.add_widget(Label(text="Genius \u00b7 App built by Ssali", color=HINT, font_size="12sp",
+                             size_hint_y=None, height="28dp"))
+        sv.add_widget(col)
+        self.add_widget(sv)
+        threading.Thread(target=self._load_rates, daemon=True).start()
+
+    def _load_rates(self):
+        parts = []
+        try:
+            r = usd_rates()
+            if r.get("UGX"):
+                parts.append(f"$1 = UGX {r['UGX']:,.0f}")
+        except Exception:
+            pass
+        try:
+            c = crypto_price("btc")
+            if c:
+                parts.append(f"BTC ${c['usd']:,.0f} ({c['chg']:+.1f}%)")
+        except Exception:
+            pass
+        txt = "   \u2022   ".join(parts) if parts else "Live prices need internet"
+        Clock.schedule_once(lambda *_: setattr(self.rate_lbl, "text", f"[b][color=ffc84d]Live:[/color][/b] {txt}"), 0)
+
+    def go(self, action):
+        EVERYWHERE["pending"] = action
+        self.app.open_chat()
+
+
 class DecoyScreen(BoxLayout):
     """Looks like Genius, but holds nothing real. Logs everything, answers slowly, then exits."""
     def __init__(self, app, tried="", **kw):
@@ -6888,6 +7195,13 @@ class GeniusApp(App):
     def on_resume(self):
         safe(bubble_hide)
 
+    def open_home(self):
+        if EVERYWHERE.get("pending"):
+            return self.open_chat()
+        self.root_box.clear_widgets()
+        self.chat = None
+        self.root_box.add_widget(HomeScreen(self))
+
     def open_chat(self):
         self.root_box.clear_widgets()
         chat = ChatScreen(self)
@@ -6895,7 +7209,7 @@ class GeniusApp(App):
         self.root_box.add_widget(chat)
         if EVERYWHERE.get("pending"):
             a, EVERYWHERE["pending"] = EVERYWHERE["pending"], None
-            Clock.schedule_once(lambda *_: chat.run_action(a), 2.5)
+            Clock.schedule_once(lambda *_: chat.run_action(a), 0.6)
         Clock.schedule_once(lambda *_: chat.life_start(), 2)
         Clock.schedule_once(lambda *_: chat.security_alert(), 1)
 
