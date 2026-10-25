@@ -1,0 +1,35 @@
+name: Build Genius for Play Store
+on:
+  workflow_dispatch:
+jobs:
+  play:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev automake
+          pip install --upgrade pip
+          pip install buildozer cython==0.29.36
+      - name: Make the Play Store version
+        run: |
+          sed -i 's/^PLAY_BUILD = False/PLAY_BUILD = True/' main.py
+          grep -n '^PLAY_BUILD' main.py
+          sed -i 's/^android.permissions = .*/android.permissions = INTERNET,CAMERA,RECORD_AUDIO,VIBRATE,POST_NOTIFICATIONS,READ_MEDIA_IMAGES,SYSTEM_ALERT_WINDOW/' buildozer.spec
+          sed -i 's/^android.api = .*/android.api = 35/' buildozer.spec
+          sed -i '/^\[buildozer\]/i android.release_artifact = aab' buildozer.spec
+          cat buildozer.spec
+      - name: Build AAB
+        run: yes | buildozer android release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Genius-Play-unsigned
+          path: bin/*.aab
