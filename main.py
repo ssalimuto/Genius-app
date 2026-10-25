@@ -205,7 +205,7 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 - Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
-- Accounts: anyone can tap "Create an account" (name, hidden password, hidden code) and gets their own private Genius. Owner manages them in Menu > Accounts
+- Accounts: anyone can tap "Create an account" (name, email, hidden password, hidden code; sign in with name or email) and gets their own private Genius. Owner manages them in Menu > Accounts
 - Login: password + hidden secret code (4-8 digits). Change it in Menu or say "change code"
 - My storage: a private 200 MB space for pictures, files and notes. Say "storage", "save this" or "save note ..."
 - + button: add a picture or a file (PDF, text) from your phone, or your newest photo/file.
@@ -334,13 +334,18 @@ def valid_username(n):
     return bool(re.fullmatch(r"[a-z0-9_]{3,20}", n))
 
 
-def create_account(name, pw, code):
+def create_account(name, pw, code, email=""):
     name = name.strip().lower()
+    email = email.strip().lower()
     if not valid_username(name):
         return "Name must be 3-20 letters, numbers or _ (no spaces)."
     a = accounts_load()
     if name == OWNER or name in a:
         return "That name is taken. Choose another."
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[a-z]{2,}", email):
+        return "Enter a real email address, like name@gmail.com."
+    if any(v.get("email") == email for v in a.values()):
+        return "That email already has an account."
     if len(pw) < 6:
         return "Password must be at least 6 characters."
     if not code.isdigit() or not (4 <= len(code) <= 8):
@@ -349,10 +354,20 @@ def create_account(name, pw, code):
         return "Secret code is too easy to guess."
     ps, cs = os.urandom(16), os.urandom(16)
     a[name] = {"pw_salt": ps.hex(), "pw_hash": hash_pw(pw, ps), "code_salt": cs.hex(),
-               "code_hash": hash_pw(code, cs), "created": time.strftime("%Y-%m-%d %H:%M")}
+               "code_hash": hash_pw(code, cs), "email": email, "created": time.strftime("%Y-%m-%d %H:%M")}
     accounts_save(a)
     log(f"ACCOUNT CREATED: {name}")
     return ""
+
+
+def name_for(login):
+    """Sign in with your name or your email."""
+    login = login.strip().lower()
+    if "@" in login:
+        for n, v in accounts_load().items():
+            if v.get("email") == login:
+                return n
+    return login
 
 
 def account_ok(name, pw, code):
@@ -431,7 +446,7 @@ def check_login(name, pw, code=""):
     if data["device"] != this_device():
         intruder_log("other device -> decoy", f"name={who}")
         return False, "DECOY"
-    uname = name.strip().lower()
+    uname = name_for(name)
     if uname == OWNER:
         ok = hmac.compare_digest(hash_pw(pw.strip(), bytes.fromhex(OWNER_SALT)), OWNER_HASH)
         ok = pin_ok(code) and ok          # wrong code looks exactly like a wrong password
@@ -2695,7 +2710,7 @@ def code_setup_popup(on_done=None, first=False):
 def signup_popup(login_screen):
     """Anyone can make their own account: name, hidden password, hidden secret code."""
     box = BoxLayout(orientation="vertical", spacing=8, padding=14)
-    pop = Popup(title="Create your Genius account", content=box, size_hint=(0.94, 0.86),
+    pop = Popup(title="Create your Genius account", content=box, size_hint=(0.95, 0.94),
                 separator_color=GOLD, title_color=GOLD)
 
     def field(h, pw=False, digits=False):
@@ -2705,6 +2720,8 @@ def signup_popup(login_screen):
         box.add_widget(t)
         return t
     name = field("Choose a name (letters, numbers, _)")
+    email = field("Email address")
+    email.input_type = "mail"
     pw1 = field("Password (6+ characters)", pw=True)
     pw2 = field("Password again", pw=True)
     c1 = field("Secret code (4-8 digits)", pw=True, digits=True)
@@ -2723,7 +2740,7 @@ def signup_popup(login_screen):
         elif c1.text != c2.text:
             msg.text = "The secret codes don't match."
         else:
-            err = create_account(name.text, pw1.text, c1.text)
+            err = create_account(name.text, pw1.text, c1.text, email.text)
             if err:
                 msg.text = err
             else:
@@ -2755,7 +2772,7 @@ class LoginScreen(BoxLayout):
                               color=GOLD, size_hint_y=None, height="50dp"))
         card.add_widget(Label(text="Sign in to your own Genius", font_size="16sp",
                               color=HINT, size_hint_y=None, height="26dp"))
-        self.name_in = style_input(TextInput(hint_text="Your name", multiline=False,
+        self.name_in = style_input(TextInput(hint_text="Name or email", multiline=False,
                                    size_hint_y=None, height="54dp", font_size="19sp"))
         self.pw_in = style_input(TextInput(hint_text="Password", password=True,
                                  multiline=False, size_hint_y=None, height="54dp",
@@ -3230,7 +3247,8 @@ class ChatScreen(BoxLayout):
         box.add_widget(sv)
         for n, info in sorted(a.items()):
             line = BoxLayout(size_hint_y=None, height="50dp", spacing=6)
-            line.add_widget(Label(text=f"{n}  (since {info.get('created', '?')})", color=TEXTCOL))
+            line.add_widget(Label(text=f"{n}  {info.get('email', '')}\nsince {info.get('created', '?')}",
+                                  color=TEXTCOL, font_size="13sp", halign="center"))
             db = RoundButton(text="Delete", bg=RED, fg=TEXTCOL, size_hint_x=0.32)
 
             def kill(btn, n=n):
