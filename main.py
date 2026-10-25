@@ -275,7 +275,7 @@ VERSION_DATE = "2026-10-25"
 CHANGELOG = """Genius 108.0 (2026-10-26)
 - Opens with your secret code: create it the first time, then just type it to unlock.
 - One \u2022\u2022\u2022 button holds Speak, Draw, Locker, Notes, Weather, Deep, Clear, Stop and the rest.
-- The top shows only your chat and Search.
+- The top shows only \u2022\u2022\u2022 on the left, your chat, and Search on the right.
 
 Genius 107.0 (2026-10-25)
 - Updates itself: type update and Genius downloads and installs the newest version, no website needed.
@@ -4782,10 +4782,13 @@ class ChatScreen(BoxLayout):
         # header bar: profile on the left
         header = Panel(bg=HEADER, radius=0, orientation="horizontal",
                        size_hint_y=None, height="60dp", padding=[12, 0, 18, 0], spacing=10)
-        pbox = BoxLayout(size_hint_x=None, width="46dp", padding=[0, 9, 0, 9])
-        self.profile_chip = ProfileChip()
+        pbox = BoxLayout(size_hint_x=None, width="58dp", padding=[0, 9, 0, 9])
+        self.profile_chip = ProfileChip()          # not shown; Profile is inside the ••• menu
         self.profile_chip.bind(on_press=self.profile_drawer)
-        pbox.add_widget(self.profile_chip)
+        plus = RoundButton(text="\u2022\u2022\u2022", bg=BLUE, fg=TEXTCOL, font_size="20sp", bold=True)
+        plus.bind(on_press=self.tools_menu)
+        self.speak_btn = plus          # shows "Listening" while Genius hears you; tap to stop
+        pbox.add_widget(plus)
         header.add_widget(pbox)
         title = Label(text="[b][color=ffc84d]Gen[/color][color=c79bff]ius[/color][/b]  [size=12sp][color=5ee6a0]\u25cf[/color] [color=9aa0c0]online[/color][/size]",
                       markup=True, font_size="25sp", halign="left", valign="middle")
@@ -4826,11 +4829,6 @@ class ChatScreen(BoxLayout):
         send = RoundButton(text="Send", bg=GOLD, fg=(0.1, 0.1, 0.1, 1),
                            size_hint_x=None, width="96dp", font_size="18sp", bold=True)
         send.bind(on_press=self.send)
-        plus = RoundButton(text="\u2022\u2022\u2022", bg=BLUE, fg=TEXTCOL, size_hint_x=None, width="60dp",
-                           font_size="20sp", bold=True)
-        plus.bind(on_press=self.tools_menu)
-        self.speak_btn = plus          # shows "Listening" while Genius hears you; tap to stop
-        row.add_widget(plus)
         row.add_widget(self.inp)
         row.add_widget(send)
         self.add_widget(row)
@@ -4848,7 +4846,7 @@ class ChatScreen(BoxLayout):
             return
         self.talking = True
         self.misses = 0
-        self.speak_btn.text = "Listening"
+        self.speak_btn.text = "Stop"
         self.speak_btn.set_bg(RED)
         self.speak_btn.color = TEXTCOL
         self.listen_now()
@@ -5315,7 +5313,8 @@ class ChatScreen(BoxLayout):
         sv = ScrollView()
         lst = BoxLayout(orientation="vertical", spacing=8, size_hint_y=None)
         lst.bind(minimum_height=lst.setter("height"))
-        more = [("Fun studio (collage, effects, video)", self.fun_studio, GOLD),
+        more = [("Profile", self.profile_drawer, BLUE),
+                ("Fun studio (collage, effects, video)", self.fun_studio, GOLD),
                 ("My creations (pictures)", self.creations, BLUE),
                 ("My storage", self.storage_box, BLUE),
                 ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
