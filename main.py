@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "109.0"
+VERSION = "109.1"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -301,8 +301,8 @@ Safety
 
 Limits
 - I only listen while the app is open and the screen is on.
-- I need internet for Gemini, weather, web search, and Google speech.
-- Gemini can make mistakes. Check anything important."""
+- I need internet for answers, weather, web search, and Google speech.
+- Genius can make mistakes. Check anything important."""
 
 LICENSES_TEXT = """Open-source licenses
 
@@ -356,7 +356,7 @@ Genius 103.0 Brain (2026-10-25)
 
 Genius 102.0 Doodle (2026-10-25)
 - New look: dark doodle wallpaper of game icons behind every screen
-- Picture chat like Gemini: after a picture, say 'make me near a building', 'change it to night'
+- Picture chat like the best apps: after a picture, say 'make me near a building', 'change it to night'
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 - Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
@@ -373,10 +373,10 @@ Genius 102.0 Doodle (2026-10-25)
 - + button: add a picture or a file (PDF, text) from your phone, or your newest photo/file.
   Then ask about it ('summarize', 'what is this?') or change the picture ('make me near a building')
 - setme: take a selfie, type setme, and your face is saved for 'make me ...' pictures
-- Better photos: golden light, blurred background, natural pose, and Gemini's newest picture model
+- Better photos: golden light, blurred background, natural pose, and the newest picture engine
 
 Genius 101.0 Guardian (2026-10-24)
-- Drawing fixed: if Gemini's free plan can't draw, Genius uses a free picture maker instead
+- Drawing fixed: if the free picture engine can't draw, Genius uses a free picture maker instead
 - Same face: save your selfie as Download/Genius/me.jpg, then "draw me ..." keeps your real face
 - Real photos only: every picture is photo-realistic, never a cartoon. Cartoon words are removed,
   an AI describes the scene like a photographer, and camera detail is added
@@ -405,14 +405,14 @@ Genius 100.0 Personal (2026-10-24)
 - myphone: your number is added to SOS messages
 
 Genius 100.0 (2026-10-24)
-- Many AIs: Gemini + Groq (very fast) + OpenRouter (many models)
+- Many AIs: several smart engines, including a very fast one
 - Turbo mode: simple questions go to the fastest AI
 - Instant repeat answers (remembers answers to the same question)
-- Backup AI: if Gemini fails, another AI answers
+- Backup AI: if one fails, another AI answers
 - askall: ask every AI at once and compare (fastest first)
 - ais: see which AIs are connected
 - think: several AIs answer, then Genius cross-checks them into one best answer
-- Study, freelance and builder tools work with any connected AI, not only Gemini
+- Study, freelance and builder tools work with any connected AI, not only one
 
 Genius 2.0, renamed from My AI
 - Study coach: subjects, exam countdown, quizzes, weak topics, study plan
@@ -426,7 +426,7 @@ Genius 2.0, renamed from My AI
 - Licenses updated: AndroidX and Firebase (Apache 2.0)
 
 Genius 1.x - My AI
-- Chat with Gemini (fast and deep), tools, memory, notes, reminders
+- Smart chat (fast and deep), tools, memory, notes, reminders
 - Weather, battery, notifications, drawing, locker, Luganda voice, wake mode"""
 
 FORBIDDEN = ("copy_self", "disable_stop", "edit_rules", "delete_files", "open_network")
