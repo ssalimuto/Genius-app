@@ -71,6 +71,7 @@ ALLOWED = MappingProxyType({
     "setkey": "setkey YOURKEY - lets me answer anything",
     "help": "List commands",
     "change code": "Create or change your hidden secret code for login",
+    "fun": "Fun studio: collage, transform (effects), slideshow (video), fun videos",
     "storage": "Open My storage (200 MB for pictures, files, notes). Also: save this, save note ...",
     "life": "Study coach, money, morning brief and freelancing commands",
     "study": "Study progress and exam countdown",
@@ -205,6 +206,7 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 - Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
+- Fun studio (Menu or say "fun"): photo collages, 14 instant effects + AI styles, video slideshows, fun videos
 - Accounts: anyone can tap "Create an account" (name, email, hidden password, hidden code; sign in with name or email) and gets their own private Genius. Owner manages them in Menu > Accounts
 - Login: password + hidden secret code (4-8 digits). Change it in Menu or say "change code"
 - My storage: a private 200 MB space for pictures, files and notes. Say "storage", "save this" or "save note ..."
@@ -2149,6 +2151,157 @@ def storage_note(text):
     return f
 
 
+# ---------------- Fun studio: collage, picture transformations, video slideshow ----------------
+FUN_STYLES = ("Black & white", "Vintage", "Pencil sketch", "Vivid colours", "Soft glow",
+              "Mirror", "Rotate", "Blur", "Sharpen", "Negative", "Pixel art", "Poster", "Emboss", "Bright")
+AI_STYLES = (("Oil painting", "turn it into a realistic oil painting"),
+             ("Watercolour", "turn it into a soft watercolour painting"),
+             ("Old 1950s photo", "make it look like an old 1950s photograph"),
+             ("Sunset", "change the light to a golden sunset"),
+             ("Night city", "change it to night with city lights"),
+             ("Rainy day", "make it a rainy day with wet reflections"))
+
+
+def fun_out(prefix, ext=".jpg"):
+    return os.path.join(genius_dl("fun"), f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}{ext}")
+
+
+def _open_rgb(path):
+    from PIL import Image, ImageOps
+    im = Image.open(path)
+    try:
+        im = ImageOps.exif_transpose(im)
+    except Exception:
+        pass
+    return im.convert("RGB")
+
+
+def make_collage(paths):
+    """Put 2-12 pictures together in a neat grid and save it."""
+    from PIL import Image, ImageOps
+    paths = [p for p in paths if p and os.path.exists(p)][:12]
+    if len(paths) < 2:
+        return None, "Choose at least 2 pictures for a collage."
+    n = len(paths)
+    cols = 2 if n <= 4 else 3
+    rows = (n + cols - 1) // cols
+    tile, gap = 540, 12
+    W, H = cols * tile + (cols + 1) * gap, rows * tile + (rows + 1) * gap
+    canvas = Image.new("RGB", (W, H), (18, 20, 28))
+    for i, p in enumerate(paths):
+        try:
+            im = ImageOps.fit(_open_rgb(p), (tile, tile))
+        except Exception:
+            continue
+        r, c = divmod(i, cols)
+        if r == rows - 1 and n % cols:            # centre the last short row
+            c += (cols - n % cols) / 2.0
+        canvas.paste(im, (int(gap + c * (tile + gap)), gap + r * (tile + gap)))
+    out = fun_out("collage")
+    canvas.save(out, quality=90)
+    return out, f"Collage of {n} pictures made."
+
+
+def transform_image(path, style):
+    from PIL import Image, ImageOps, ImageFilter, ImageEnhance, ImageChops
+    im = _open_rgb(path)
+    im.thumbnail((1600, 1600))
+    st = style.lower()
+    if "black" in st:
+        im = ImageOps.grayscale(im).convert("RGB")
+    elif "vintage" in st:
+        g = ImageOps.grayscale(im)
+        im = ImageOps.colorize(g, (60, 35, 15), (245, 225, 180))
+        im = ImageEnhance.Contrast(im).enhance(0.9)
+    elif "sketch" in st:
+        g = ImageOps.grayscale(im).filter(ImageFilter.SMOOTH_MORE)
+        edges = ImageOps.invert(g.filter(ImageFilter.FIND_EDGES))
+        edges = ImageEnhance.Contrast(edges).enhance(2.2)
+        im = Image.blend(edges.convert("RGB"), ImageOps.autocontrast(g).convert("RGB").point(lambda x: 160 + x * 95 // 255), 0.25)
+    elif "vivid" in st:
+        im = ImageEnhance.Contrast(ImageEnhance.Color(im).enhance(1.7)).enhance(1.15)
+    elif "glow" in st:
+        im = Image.blend(im, im.filter(ImageFilter.GaussianBlur(10)), 0.4)
+        im = ImageEnhance.Brightness(im).enhance(1.08)
+    elif "mirror" in st:
+        im = ImageOps.mirror(im)
+    elif "rotate" in st:
+        im = im.rotate(-90, expand=True)
+    elif "blur" in st:
+        im = im.filter(ImageFilter.GaussianBlur(6))
+    elif "sharpen" in st:
+        im = im.filter(ImageFilter.UnsharpMask(3, 160, 2))
+    elif "negative" in st:
+        im = ImageOps.invert(im)
+    elif "pixel" in st:
+        w, h = im.size
+        im = im.resize((max(1, w // 24), max(1, h // 24)), Image.NEAREST).resize((w, h), Image.NEAREST)
+    elif "poster" in st:
+        im = ImageOps.posterize(im, 3)
+    elif "emboss" in st:
+        im = im.filter(ImageFilter.EMBOSS)
+    elif "bright" in st:
+        im = ImageEnhance.Brightness(im).enhance(1.35)
+    else:
+        return None, "I don't know that effect."
+    out = fun_out("fx_" + re.sub(r"\W+", "", st)[:10])
+    im.save(out, quality=92)
+    return out, f"{style} done."
+
+
+def make_slideshow(paths, seconds=2):
+    """A little video: pictures fade into each other, saved as an animated GIF that plays anywhere."""
+    from PIL import Image, ImageOps
+    paths = [p for p in paths if p and os.path.exists(p)][:12]
+    if len(paths) < 2:
+        return None, "Choose at least 2 pictures for a video."
+    size = (480, 480)
+    imgs = []
+    for p in paths:
+        try:
+            imgs.append(ImageOps.fit(_open_rgb(p), size))
+        except Exception:
+            pass
+    frames, durs = [], []
+    for i, im in enumerate(imgs):
+        frames.append(im)
+        durs.append(int(seconds * 1000))
+        nxt = imgs[(i + 1) % len(imgs)]
+        for k in (0.2, 0.4, 0.6, 0.8):
+            frames.append(Image.blend(im, nxt, k))
+            durs.append(90)
+    out = fun_out("video", ".gif")
+    pal = [f.convert("P", palette=Image.ADAPTIVE, colors=200) for f in frames]
+    pal[0].save(out, save_all=True, append_images=pal[1:], duration=durs, loop=0, optimize=False)
+    return out, f"Video slideshow of {len(imgs)} pictures made. It loops forever."
+
+
+def open_url(url):
+    try:
+        from jnius import autoclass
+        Intent = autoclass("android.content.Intent")
+        Uri = autoclass("android.net.Uri")
+        PA = autoclass("org.kivy.android.PythonActivity")
+        PA.mActivity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    except Exception:
+        import webbrowser
+        webbrowser.open(url)
+
+
+def newest_photos(n=6):
+    found = []
+    for d in ("/storage/emulated/0/DCIM/Camera", "/storage/emulated/0/Pictures",
+              "/storage/emulated/0/Download", "/storage/emulated/0/Pictures/Screenshots", genius_dl("fun"), "."):
+        try:
+            for x in os.listdir(d):
+                if x.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                    found.append(os.path.join(d, x))
+        except Exception:
+            pass
+    found = sorted(set(found), key=lambda f: os.path.getmtime(f), reverse=True)
+    return found[:n]
+
+
 def file_kind(path, mime=""):
     low = path.lower()
     if mime.startswith("image") or low.endswith(IMG_EXTS):
@@ -3205,7 +3358,8 @@ class ChatScreen(BoxLayout):
         box = BoxLayout(orientation="vertical", spacing=10, padding=12)
         pop = Popup(title="Options", content=box, size_hint=(0.9, 0.94),
                     separator_color=GOLD, title_color=GOLD)
-        opts = [("My creations (pictures)", self.creations, BLUE),
+        opts = [("Fun studio (collage, effects, video)", self.fun_studio, GOLD),
+                ("My creations (pictures)", self.creations, BLUE),
                 ("My storage", self.storage_box, BLUE),
                 ("Add a picture or file", self.attach_menu, BLUE),
                 ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
@@ -3267,6 +3421,155 @@ class ChatScreen(BoxLayout):
         box.add_widget(close)
         pop.open()
 
+    # ---------- Fun studio ----------
+    PICK_MULTI = 7781
+
+    def _buttons_popup(self, title, opts, cols=1, hint=""):
+        box = BoxLayout(orientation="vertical", spacing=8, padding=12)
+        pop = Popup(title=title, content=box, size_hint=(0.94, 0.88), separator_color=GOLD, title_color=GOLD)
+        if hint:
+            box.add_widget(Label(text=hint, color=HINT, font_size="14sp", size_hint_y=None, height="34dp"))
+        grid = GridLayout(cols=cols, spacing=8, size_hint_y=None)
+        grid.bind(minimum_height=grid.setter("height"))
+        sv = ScrollView()
+        sv.add_widget(grid)
+        box.add_widget(sv)
+        for label, fn, col in opts:
+            b = RoundButton(text=label, bg=col, fg=TEXTCOL if col != GOLD else (0.1, 0.1, 0.1, 1),
+                            size_hint_y=None, height="54dp", font_size="16sp", bold=True)
+
+            def go(btn, fn=fn):
+                pop.dismiss()
+                Clock.schedule_once(lambda *_: fn(), 0.1)
+            b.bind(on_press=go)
+            grid.add_widget(b)
+        close = RoundButton(text="Close", bg=GREY, fg=TEXTCOL, size_hint_y=None, height="48dp", bold=True)
+        close.bind(on_press=pop.dismiss)
+        box.add_widget(close)
+        pop.open()
+
+    def fun_studio(self, *_):
+        self._buttons_popup("Fun studio", [
+            ("Make a collage", lambda: self.fun_pick("collage"), BLUE),
+            ("Transform a picture", self.transform_menu, BLUE),
+            ("Make a video slideshow", lambda: self.fun_pick("video"), BLUE),
+            ("Collage of my newest 6 photos", lambda: self.fun_run("collage", newest_photos(6)), GREY),
+            ("Video of my newest 6 photos", lambda: self.fun_run("video", newest_photos(6)), GREY),
+            ("Watch fun videos", self.fun_videos, GOLD)], hint="Pick pictures and have fun")
+
+    def fun_videos(self):
+        self._buttons_popup("Watch fun videos", [
+            (t, lambda q=q: (open_url("https://www.youtube.com/results?search_query=" + urllib.parse.quote(q)),
+                             self.say("Opening " + q + " on YouTube. Enjoy!")), BLUE)
+            for t, q in (("Funny animals", "funny animals compilation"),
+                         ("Ugandan comedy", "Ugandan comedy skits"),
+                         ("Amazing science", "amazing science experiments"),
+                         ("Football skills", "best football skills and goals"),
+                         ("Music videos", "latest Ugandan music videos"),
+                         ("Magic tricks", "magic tricks revealed"),
+                         ("Space and planets", "NASA space amazing videos"))])
+
+    def fun_pick(self, job):
+        """Let the person choose several pictures from the phone."""
+        self._fun_job = job
+        try:
+            from jnius import autoclass
+            from android import activity
+            Intent = autoclass("android.content.Intent")
+            PA = autoclass("org.kivy.android.PythonActivity")
+            if not getattr(self, "_multi_bound", False):
+                activity.bind(on_activity_result=self._on_multi_result)
+                self._multi_bound = True
+            it = Intent(Intent.ACTION_GET_CONTENT)
+            it.setType("image/*")
+            it.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, True)
+            it.addCategory(Intent.CATEGORY_OPENABLE)
+            PA.mActivity.startActivityForResult(Intent.createChooser(it, "Choose pictures (hold to pick many)"),
+                                                self.PICK_MULTI)
+            self.say("Choose 2 to 12 pictures. Press and hold to pick more than one.")
+        except Exception as e:
+            log(f"MULTI PICK: {e}")
+            self.fun_run(job, newest_photos(6))
+
+    def _on_multi_result(self, request, result, intent):
+        if request != self.PICK_MULTI:
+            return
+        paths = []
+        try:
+            if result == -1 and intent is not None:
+                clip = intent.getClipData()
+                if clip is not None:
+                    for i in range(min(clip.getItemCount(), 12)):
+                        paths.append(self._copy_uri(clip.getItemAt(i).getUri()))
+                elif intent.getData() is not None:
+                    paths.append(self._copy_uri(intent.getData()))
+        except Exception as e:
+            log(f"MULTI PICK error: {e}")
+        job = getattr(self, "_fun_job", "collage")
+        Clock.schedule_once(lambda *_: self.fun_run(job, paths) if paths else self.say("Okay, nothing chosen."), 0)
+
+    def fun_run(self, job, paths):
+        if len(paths) < 2:
+            self.say("I need at least 2 pictures. Allow Genius to see photos, or choose them yourself.")
+            return
+        self.busy = True
+        self.say("Making your " + ("collage" if job == "collage" else "video") + "...")
+
+        def d(*_):
+            try:
+                out, msg = (make_collage if job == "collage" else make_slideshow)(paths)
+            except ImportError:
+                out, msg = None, "The picture tools aren't installed in this version."
+            except Exception as e:
+                out, msg = None, f"That didn't work: {e}"
+
+            def done(*_):
+                self.busy = False
+                if out:
+                    remember_image(out, job)
+                    self.show_image(out, msg + "\nSaved in Download/Genius/fun")
+                    self.say(msg + " Saved in Download/Genius/fun." +
+                             (" Say 'transform' to add an effect." if job == "collage" else ""))
+                else:
+                    self.say(msg)
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=d, daemon=True).start()
+
+    def transform_menu(self, *_):
+        src = LAST_IMAGE.get("path")
+        if not src or not os.path.exists(src):
+            ph = newest_photos(1)
+            src = ph[0] if ph else None
+        if not src:
+            self.say("Add a picture first with +, then tap Transform.")
+            return
+        opts = [(st, lambda st=st: self.fun_transform(src, st), BLUE) for st in FUN_STYLES]
+        opts += [("AI: " + t, lambda ins=ins: (remember_image(src, "picture to transform"), self.do_edit(ins)), GOLD)
+                 for t, ins in AI_STYLES]
+        self._buttons_popup("Transform: " + os.path.basename(src)[:24], opts, cols=2,
+                            hint="Blue = instant. Gold = AI (needs internet)")
+
+    def fun_transform(self, src, style):
+        self.busy = True
+
+        def d(*_):
+            try:
+                out, msg = transform_image(src, style)
+            except ImportError:
+                out, msg = None, "The picture tools aren't installed in this version."
+            except Exception as e:
+                out, msg = None, f"That effect didn't work: {e}"
+
+            def done(*_):
+                self.busy = False
+                if out:
+                    remember_image(out, style)
+                    self.show_image(out, msg + " Say 'undo picture' to go back.")
+                else:
+                    self.say(msg)
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=d, daemon=True).start()
+
     def exit_app(self):
         log("EXIT by menu")
         self.say(f"Goodbye {CURRENT['name']}.")
@@ -3274,7 +3577,7 @@ class ChatScreen(BoxLayout):
 
     def creation_files(self):
         found = []
-        for d in (".", attach_dir()):
+        for d in (".", attach_dir(), genius_dl("fun")):
             try:
                 for n in os.listdir(d):
                     if n.lower().endswith(IMG_EXTS) and (n.startswith("drawing_") or d != "."):
@@ -3740,6 +4043,22 @@ class ChatScreen(BoxLayout):
             return
         if not CURRENT["owner"] and (action in OWNER_ONLY or low.startswith(("setkey", "setgroq", "setrouter", "setvoice", "setsunbird"))):
             self.say("Only the owner of this phone can do that.")
+            return
+        lw = low.strip(" .!")
+        if lw in ("fun", "fun studio", "studio", "have fun"):
+            self.fun_studio()
+            return
+        if lw in ("collage", "make a collage", "make collage"):
+            self.fun_pick("collage")
+            return
+        if lw in ("slideshow", "make a video", "make video", "video slideshow"):
+            self.fun_pick("video")
+            return
+        if lw in ("transform", "effects", "filters", "transform picture"):
+            self.transform_menu()
+            return
+        if lw in ("fun videos", "watch videos", "funny videos"):
+            self.fun_videos()
             return
         if low.strip(" .!") in ("accounts", "users", "manage accounts"):
             self.accounts_box()

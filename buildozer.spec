@@ -6,7 +6,7 @@ source.dir = .
 source.include_exts = py,png,jpg,json,txt
 source.exclude_dirs = .github,bin,.buildozer
 version = 102.0
-requirements = python3,kivy==2.3.0,plyer,pyjnius,certifi,android
+requirements = python3,kivy==2.3.0,plyer,pyjnius,certifi,android,pillow
 icon.filename = %(source.dir)s/icon.png
 presplash.filename = %(source.dir)s/presplash.png
 orientation = portrait
