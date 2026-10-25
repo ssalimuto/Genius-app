@@ -19,16 +19,83 @@ from kivy.graphics import Color, RoundedRectangle, Rectangle
 Window.softinput_mode = "below_target"   # keyboard doesn't cover the text box
 
 # ---- theme colours ----
-BG       = (0.06, 0.07, 0.11, 1)
-HEADER   = (0.12, 0.14, 0.24, 1)
-PANEL    = (0.10, 0.12, 0.18, 1)
-GOLD     = (0.96, 0.76, 0.26, 1)
-BLUE     = (0.20, 0.45, 0.75, 1)
-GREY     = (0.20, 0.22, 0.30, 1)
-RED      = (0.70, 0.25, 0.28, 1)
-TEXTCOL  = (0.93, 0.94, 0.97, 1)
-HINT     = (0.55, 0.58, 0.66, 1)
+# Genius Luxe theme: midnight glass, liquid gold, electric violet
+BG       = (0.035, 0.04, 0.08, 1)
+BG_TOP   = (0.10, 0.07, 0.22, 1)
+BG_BOT   = (0.02, 0.03, 0.07, 1)
+HEADER   = (0.09, 0.08, 0.20, 0.92)
+PANEL    = (1, 1, 1, 0.06)
+GOLD     = (1.00, 0.78, 0.30, 1)
+GOLD2    = (0.95, 0.52, 0.18, 1)
+BLUE     = (0.33, 0.42, 1.00, 1)
+BLUE2    = (0.62, 0.30, 0.98, 1)
+GREY     = (1, 1, 1, 0.10)
+RED      = (0.95, 0.30, 0.42, 1)
+RED2     = (0.75, 0.15, 0.38, 1)
+TEXTCOL  = (0.96, 0.96, 1.00, 1)
+HINT     = (0.62, 0.64, 0.78, 1)
 Window.clearcolor = BG
+
+from kivy.graphics.texture import Texture
+from kivy.graphics import Line
+from kivy.animation import Animation
+from kivy.lang import Builder
+
+
+_TEX_CACHE = {}
+
+
+def gradient_texture(top, bottom, steps=64, horizontal=False):
+    key = (tuple(top), tuple(bottom), steps, horizontal)
+    if key in _TEX_CACHE:
+        return _TEX_CACHE[key]
+    tex = Texture.create(size=(steps, 1) if horizontal else (1, steps), colorfmt="rgba")
+    buf = bytearray()
+    for i in range(steps):
+        t = i / (steps - 1)
+        a, b = (top, bottom) if horizontal else (bottom, top)   # textures start at the bottom
+        buf += bytes(int(255 * (a[k] + (b[k] - a[k]) * t)) for k in range(4))
+    tex.blit_buffer(bytes(buf), colorfmt="rgba", bufferfmt="ubyte")
+    tex.wrap = "clamp_to_edge"
+    _TEX_CACHE[key] = tex
+    return tex
+
+
+def add_gradient_bg(widget, top=BG_TOP, bottom=BG_BOT):
+    """Paint a smooth gradient plus soft glowing orbs behind a whole screen."""
+    with widget.canvas.before:
+        Color(1, 1, 1, 1)
+        r = Rectangle(texture=gradient_texture(top, bottom))
+        Color(0.62, 0.30, 0.98, 0.10)
+        from kivy.graphics import Ellipse
+        o1 = Ellipse()
+        Color(1.0, 0.70, 0.25, 0.07)
+        o2 = Ellipse()
+
+    def sync(*_):
+        r.pos, r.size = widget.pos, widget.size
+        d = widget.width * 1.1
+        o1.size = (d, d)
+        o1.pos = (widget.x - d * 0.45, widget.top - d * 0.55)
+        o2.size = (d * 0.9, d * 0.9)
+        o2.pos = (widget.right - d * 0.45, widget.y - d * 0.25)
+    widget.bind(pos=sync, size=sync)
+
+
+# Gradient partner for each solid colour, so every button glows like glass
+_PAIRS = {GOLD: GOLD2, BLUE: BLUE2, RED: RED2}
+
+# Popups: frosted dark glass with gold titles everywhere
+Builder.load_string('''
+<Popup>:
+    background: ""
+    background_color: 0.07, 0.065, 0.15, 0.97
+    title_size: "19sp"
+    title_align: "center"
+    separator_height: "2dp"
+<ModalView>:
+    overlay_color: 0.01, 0.01, 0.04, 0.72
+''')
 
 OWNER = "ssalimuto"
 ROOT = os.path.abspath(os.getcwd())           # owner's home; guests live in ROOT/users/<name>
@@ -3035,47 +3102,107 @@ def native_stop():
 
 # ---------------- screens ----------------
 class RoundButton(Button):
-    """A flat, rounded, coloured button."""
+    """A glossy rounded button: gradient fill, soft shadow, shine, press animation."""
     def __init__(self, bg=GREY, fg=TEXTCOL, **kw):
         super().__init__(background_normal="", background_down="",
                          background_color=(0, 0, 0, 0), color=fg, **kw)
         self._bg = bg
         with self.canvas.before:
-            self._col = Color(*bg)
-            self._rect = RoundedRectangle(radius=[18])
+            self._shadow_col = Color(0, 0, 0, 0.35)
+            self._shadow = RoundedRectangle(radius=[20])
+            self._col = Color(1, 1, 1, 1)
+            self._rect = RoundedRectangle(radius=[20])
+            self._shine_col = Color(1, 1, 1, 0.10)
+            self._shine = RoundedRectangle(radius=[20, 20, 6, 6])
+            self._edge_col = Color(1, 1, 1, 0.14)
+            self._edge = Line(width=1.0)
+        self._paint(bg)
         self.bind(pos=self._sync, size=self._sync)
+
+    def _paint(self, bg):
+        pair = _PAIRS.get(tuple(bg))
+        if pair:
+            self._rect.texture = gradient_texture(bg, pair, horizontal=True)
+            self._col.rgba = (1, 1, 1, 1)
+            self._shadow_col.rgba = (bg[0], bg[1], bg[2], 0.28)   # coloured glow
+        else:
+            self._rect.texture = None
+            self._col.rgba = bg
+            self._shadow_col.rgba = (0, 0, 0, 0.30)
 
     def _sync(self, *_):
         self._rect.pos = self.pos
         self._rect.size = self.size
+        self._shadow.pos = (self.x + 1, self.y - 3)
+        self._shadow.size = self.size
+        self._shine.pos = (self.x + 2, self.y + self.height * 0.52)
+        self._shine.size = (max(0, self.width - 4), self.height * 0.46)
+        self._edge.rounded_rectangle = (self.x, self.y, self.width, self.height, 20)
+
+    def on_press(self):
+        self._shine_col.a = 0.30
+        self._shadow_col.a = 0.10
+
+        def fade(dt, c=self._shine_col, sh=self._shadow_col):
+            c.a = max(0.10, c.a - 0.04)
+            sh.a = min(0.30, sh.a + 0.04)
+            return c.a > 0.10 or sh.a < 0.30
+        Clock.schedule_interval(fade, 1 / 30)
 
     def set_bg(self, bg):
         self._bg = bg
-        self._col.rgba = bg
+        self._paint(bg)
 
 
 class Panel(BoxLayout):
-    """A BoxLayout with a rounded coloured background."""
+    """A frosted-glass card: translucent fill, light edge, soft shadow."""
     def __init__(self, bg=PANEL, radius=22, **kw):
         super().__init__(**kw)
+        self._radius = radius
         with self.canvas.before:
+            Color(0, 0, 0, 0.25 if radius else 0)
+            self._shadow = RoundedRectangle(radius=[radius])
             self._col = Color(*bg)
             self._rect = RoundedRectangle(radius=[radius])
+            Color(1, 1, 1, 0.10 if radius else 0)
+            self._edge = Line(width=1.0)
+            Color(*(GOLD[:3] + (0.55 if not radius else 0,)))
+            self._gold_line = Rectangle()
         self.bind(pos=self._sync, size=self._sync)
 
     def _sync(self, *_):
         self._rect.pos = self.pos
         self._rect.size = self.size
+        self._shadow.pos = (self.x, self.y - 4)
+        self._shadow.size = self.size
+        self._edge.rounded_rectangle = (self.x, self.y, self.width, self.height, max(1, self._radius))
+        self._gold_line.pos = self.pos                      # thin gold underline on header bars
+        self._gold_line.size = (self.width, 1.5)
 
 
 def style_input(ti):
     ti.background_normal = ""
     ti.background_active = ""
-    ti.background_color = (0.15, 0.17, 0.25, 1)
+    ti.background_color = (0, 0, 0, 0)
     ti.foreground_color = TEXTCOL
     ti.cursor_color = GOLD
+    ti.cursor_width = "2dp"
+    ti.selection_color = (1.0, 0.78, 0.30, 0.35)
     ti.hint_text_color = HINT
-    ti.padding = [16, 14, 16, 14]
+    ti.padding = [18, 14, 18, 14]
+    with ti.canvas.before:
+        Color(1, 1, 1, 0.07)
+        bgr = RoundedRectangle(radius=[18])
+        edge_col = Color(1, 1, 1, 0.16)
+        edge = Line(width=1.1)
+
+    def sync(*_):
+        bgr.pos, bgr.size = ti.pos, ti.size
+        edge.rounded_rectangle = (ti.x, ti.y, ti.width, ti.height, 18)
+
+    def glow(_, focused):
+        edge_col.rgba = (1.0, 0.78, 0.30, 0.85) if focused else (1, 1, 1, 0.16)
+    ti.bind(pos=sync, size=sync, focus=glow)
     return ti
 
 
@@ -3188,12 +3315,13 @@ class LoginScreen(BoxLayout):
     def __init__(self, app, **kw):
         super().__init__(orientation="vertical", padding=28, spacing=0, **kw)
         self.app = app
+        add_gradient_bg(self)
         self.add_widget(Widget(size_hint_y=0.2))
 
         card = Panel(orientation="vertical", padding=26, spacing=18,
                      size_hint=(1, None), height="520dp")
-        card.add_widget(Label(text="[b]Genius[/b]", markup=True, font_size="34sp",
-                              color=GOLD, size_hint_y=None, height="50dp"))
+        card.add_widget(Label(text="[b][color=ffc84d]Gen[/color][color=c79bff]ius[/color][/b]", markup=True,
+                              font_size="40sp", size_hint_y=None, height="56dp"))
         card.add_widget(Label(text="Sign in to your own Genius", font_size="16sp",
                               color=HINT, size_hint_y=None, height="26dp"))
         self.name_in = style_input(TextInput(hint_text="Name or email", multiline=False,
@@ -3246,12 +3374,15 @@ class ChatScreen(BoxLayout):
         super().__init__(orientation="vertical", padding=0, spacing=0, **kw)
         self.app = app
         self.deep = False
+        add_gradient_bg(self)
 
         # header bar
         header = Panel(bg=HEADER, radius=0, orientation="horizontal",
                        size_hint_y=None, height="60dp", padding=[18, 0, 18, 0])
-        header.add_widget(Label(text="[b]Genius[/b]", markup=True, font_size="23sp",
-                                color=GOLD, halign="left"))
+        title = Label(text="[b][color=ffc84d]Gen[/color][color=c79bff]ius[/color][/b]  [size=12sp][color=5ee6a0]\u25cf[/color] [color=9aa0c0]online[/color][/size]",
+                      markup=True, font_size="25sp", halign="left", valign="middle")
+        title.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        header.add_widget(title)
         self.mode_lbl = Label(text="Fast", font_size="15sp", color=HINT,
                               halign="right", size_hint_x=None, width="60dp")
         header.add_widget(self.mode_lbl)
@@ -3266,15 +3397,18 @@ class ChatScreen(BoxLayout):
         self.add_widget(header)
 
         # chat area
-        body = BoxLayout(orientation="vertical", padding=10, spacing=8)
-        self.scroll = ScrollView()
+        body = Panel(orientation="vertical", padding=[10, 8, 10, 8], spacing=8,
+                     bg=(1, 1, 1, 0.045), radius=26)
+        outer = BoxLayout(padding=[10, 10, 10, 8])
+        self.scroll = ScrollView(bar_color=(1.0, 0.78, 0.30, 0.7), bar_width="3dp")
         self.out = Label(text="", markup=True, font_size="18sp", size_hint_y=None,
                          halign="left", valign="top", color=TEXTCOL, padding=(8, 8))
         self.out.bind(width=lambda *a: setattr(self.out, "text_size", (self.out.width, None)),
                       texture_size=lambda *a: setattr(self.out, "height", self.out.texture_size[1]))
         self.scroll.add_widget(self.out)
         body.add_widget(self.scroll)
-        self.add_widget(body)
+        outer.add_widget(body)
+        self.add_widget(outer)
 
         # button grid
         grid = GridLayout(cols=4, size_hint_y=None, height="110dp", spacing=8,
@@ -4614,8 +4748,11 @@ class ChatScreen(BoxLayout):
 
     # output
     def show(self, who, text):
-        color = "f2c033" if who == "AI" else "6fb7ff"
-        self.out.text += f"[b][color={color}]{who}[/color][/b]\n{text}\n\n"
+        if who == "AI":
+            head = "[b][color=ffc84d]\u2726 Genius[/color][/b]"
+        else:
+            head = f"[b][color=9db4ff]{who}[/color][/b]"
+        self.out.text += f"{head}\n{text}\n[size=6sp] [/size]\n"
         Clock.schedule_once(lambda *_: setattr(self.scroll, "scroll_y", 0), 0.1)
 
     def say(self, text):
@@ -5603,6 +5740,7 @@ class DecoyScreen(BoxLayout):
     def __init__(self, app, tried="", **kw):
         super().__init__(orientation="vertical", **kw)
         self.app = app
+        add_gradient_bg(self)
         intruder_log("entered decoy", f"name={tried or '(blank)'}")
         header = Panel(bg=HEADER, radius=0, orientation="horizontal",
                        size_hint_y=None, height="60dp", padding=[18, 0, 18, 0])
