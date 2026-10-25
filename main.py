@@ -121,6 +121,9 @@ ALLOWED = MappingProxyType({
     "notify": "Send a notification",
     "remind": "Reminder, e.g. remind 5 drink water",
     "calc": "Do math, e.g. calc 12*8+5",
+    "do": "Genius Agent plans and finishes a whole job, e.g. do compare 3 phones under 800k",
+    "run": "Run a skill you taught, e.g. run news (teach skill news: step; step)",
+    "skillbook": "See the skills you taught Genius",
     "note": "Save a note, e.g. note buy airtime",
     "notes": "Show your saved notes",
     "weather": "Weather, e.g. weather Kampala",
@@ -209,7 +212,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 103.0
+ABOUT_TEXT = """Genius 104.0
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -265,9 +268,14 @@ What this means
 
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
-VERSION = "103.0"
+VERSION = "104.0"
 VERSION_DATE = "2026-10-25"
-CHANGELOG = """Genius 103.0 Brain (2026-10-25)
+CHANGELOG = """Genius 104.0 Agent (2026-10-25)
+- Genius Agent: "do <job>" plans the job, does each step with live search, checks itself and saves the result.
+- Teach a skill once: "teach skill news: step; step", then "run news" forever. "skillbook" lists them.
+- Daily self-review: Genius merges and sharpens its own lessons ("improve yourself" runs it now).
+
+Genius 103.0 Brain (2026-10-25)
 - Genius learns: after every new question it writes itself a lesson and uses it next time.
 - Correct it with "better: ...", teach it with "teach ...", rate with "good" or "bad".
 - "what have you learned" shows its lessons; "forget lessons" clears them.
@@ -2442,6 +2450,100 @@ def genius_mind(question):
                        "error, missing step, weak logic or outdated fact, then rewrite the final answer: correct, clear, "
                        "practical, with a short 'Confidence:' line (high/medium/low) and what to verify.", 1200, search=True)
     return "\U0001F9E0 Genius Mind\n" + (final or draft)
+
+
+
+
+# ================= Genius Agent, Skills and nightly self-review =================
+SKILLBOOK_FILE = "genius_skillbook.json"
+
+
+def _ai_text(prompt, tokens=900, search=False):
+    r = None
+    try:
+        r = ask_gemini(prompt, tokens, search=search)
+    except Exception as e:
+        log(f"agent gemini failed: {e}")
+    if not r:
+        for prov in ("groq", "openrouter"):
+            r = other_ai(prov, prompt, max_tokens=tokens)
+            if r:
+                break
+    return r or ""
+
+
+def genius_agent(task, steps=None):
+    """Plans a job, does each step (with web search), checks itself, and saves the result."""
+    if not steps:
+        raw = _ai_text("Plan this job as 3 to 6 short, concrete steps an assistant can do with thinking and "
+                       "web search only (no payments, no sending messages). Reply ONLY a JSON list of strings.\n\n"
+                       "Job: " + task, 300)
+        try:
+            steps = json.loads(raw[raw.index("["): raw.rindex("]") + 1])
+        except Exception:
+            steps = [l.strip(" -*0123456789.") for l in raw.splitlines() if l.strip()][:6]
+    steps = [str(x) for x in steps if str(x).strip()][:6] or [task]
+    notes = []
+    for i, st in enumerate(steps, 1):
+        done = "\n".join(f"Step {j}: {n[:700]}" for j, n in enumerate(notes, 1))
+        out = _ai_text(f"Overall job: {task}\nResults so far:\n{done or 'none'}\n\nNow do step {i}: {st}\n"
+                       "Give the actual result (facts, numbers, text), not advice about how to do it.", 900, search=True)
+        notes.append(out or "(no result)")
+    body = "\n\n".join(f"Step {i}: {st}\n{n}" for i, (st, n) in enumerate(zip(steps, notes), 1))
+    final = _ai_text(f"Job: {task}\n\nWork done:\n{body[:7000]}\n\nAs a strict reviewer, fix any mistakes and write "
+                     "the finished result for the owner: clear, complete, practical. End with 'Confidence:' "
+                     "(high/medium/low).", 1500, search=True) or body
+    saved = ""
+    try:
+        name = "job_" + re.sub(r"\W+", "_", task.lower())[:40].strip("_") + ".txt"
+        with open(os.path.join(storage_dir(), name), "w") as f:
+            f.write(f"Job: {task}\n\n{final}\n\n--- Steps ---\n{body}")
+        saved = f"\n\n(Saved to your storage as {name})"
+    except Exception as e:
+        log(f"agent save failed: {e}")
+    brain_add(f"For jobs like '{task[:100]}', these steps worked: " + "; ".join(steps)[:280], q=task)
+    plan = "\n".join(f"{i}. {st}" for i, st in enumerate(steps, 1))
+    return f"\U0001F916 Genius Agent finished\nPlan:\n{plan}\n\n{final}{saved}"
+
+
+def skillbook_load():
+    try:
+        return json.load(open(SKILLBOOK_FILE))
+    except Exception:
+        return {}
+
+
+def skillbook_save(d):
+    json.dump(d, open(SKILLBOOK_FILE, "w"))
+
+
+def brain_self_review(force=False):
+    """Once a day Genius studies its lessons, merges repeats, drops weak ones and sharpens the rest."""
+    stamp = "genius_brain_review.txt"
+    try:
+        last = float(open(stamp).read())
+    except Exception:
+        last = 0
+    if not force and time.time() - last < 20 * 3600:
+        return None
+    items = brain_load()
+    keep = [it for it in items if it.get("kind") == "correction"]
+    rest = [it for it in items if it.get("kind") != "correction"]
+    open(stamp, "w").write(str(time.time()))
+    if len(rest) < 6:
+        return f"Self-review done. {len(items)} lessons, nothing to merge yet."
+    listing = "\n".join("- " + it["lesson"] for it in rest[:80])
+    raw = _ai_text("These are lessons an assistant wrote for itself. Merge duplicates, delete wrong or useless ones, "
+                   "and sharpen the rest so each is a clear, accurate, reusable rule under 30 words. "
+                   "Reply ONLY a JSON list of strings.\n\n" + listing, 1500)
+    try:
+        better = json.loads(raw[raw.index("["): raw.rindex("]") + 1])
+    except Exception:
+        return "Self-review skipped: the AI didn't reply clearly."
+    new = keep + [{"lesson": str(b)[:400], "q": "", "score": 2, "kind": "lesson", "t": time.time()}
+                  for b in better if str(b).strip()]
+    brain_save(new)
+    return f"Self-review done. {len(rest)} lessons became {len(better)} sharper ones; {len(keep)} corrections kept."
 
 
 # ================= ATTACH: the + button (pictures and files) =================
@@ -4748,7 +4850,7 @@ class ChatScreen(BoxLayout):
         self.say("Chat cleared. Fresh start.")
 
     # ---------- Genius Wealth bot ----------
-    def _bg(self, fn):
+    def _bg_simple(self, fn):
         self.show("AI", "[i]Working on it...[/i]")
 
         def d():
@@ -6142,6 +6244,41 @@ class ChatScreen(BoxLayout):
 
         # Genius Brain: it learns and improves itself
         lw = low.strip(" .!?")
+        if action in ("do", "agent", "job") and arg:
+            self._bg(lambda: genius_agent(arg), "\U0001F916 Genius Agent is planning and doing your job step by step...",
+                     speak=False)
+            return
+        if low.startswith("teach skill "):
+            name, _, steps = line[12:].partition(":")
+            name = name.strip().lower()
+            st = [x.strip() for x in re.split(r";|\n|,? then ", steps) if x.strip()]
+            if not name or not st:
+                self.say("Say it like: teach skill news: find today's Uganda news; pick the top 5; explain each simply")
+                return
+            d = skillbook_load()
+            d[name] = st
+            skillbook_save(d)
+            self.say(f"Learned the skill '{name}' ({len(st)} steps). Say 'run {name}' any time.")
+            return
+        if action == "run" and arg:
+            d = skillbook_load()
+            nm, _, extra = arg.partition(" for ")
+            st = d.get(nm.strip().lower())
+            if not st:
+                have = ", ".join(d) or "none yet"
+                self.say(f"I don't know the skill '{nm}'. My skills: {have}.")
+                return
+            task = nm + (" for " + extra if extra else "")
+            self._bg(lambda: genius_agent(task, st), f"Running your skill '{nm}'...", speak=False)
+            return
+        if lw in ("skillbook", "my genius skills", "genius skills"):
+            d = skillbook_load()
+            self.say("Skills I've learned:\n" + "\n".join(f"- {k}: {' > '.join(v)}" for k, v in d.items())
+                     if d else "No skills yet. Teach one: teach skill <name>: step one; step two")
+            return
+        if lw in ("self review", "review yourself", "improve yourself", "upgrade yourself"):
+            self._bg(lambda: brain_self_review(force=True), "Studying my lessons and sharpening them...", speak=False)
+            return
         if action in ("teach", "learn", "remember:") and arg:
             brain_add(arg, kind="correction", score=3)
             self.say("Learned. I'll use that from now on.")
@@ -6647,8 +6784,11 @@ class ChatScreen(BoxLayout):
         self.say("Reminder: " + text)
 
     # ================= life tools on screen =================
-    def _bg(self, job, wait_msg, speak=True):
+    def _bg(self, job, wait_msg=None, speak=None):
         """Run a slow job in the background, then show/speak the result."""
+        if speak is None:
+            speak = wait_msg is not None
+        wait_msg = wait_msg or "[i]Working on it...[/i]"
         if getattr(self, "busy", False):
             self.say("Still working on the last thing. One moment.")
             return
@@ -7435,6 +7575,7 @@ class GeniusApp(App):
 
     def on_start(self):
         everywhere_load()
+        threading.Thread(target=lambda: brain_self_review(), daemon=True).start()
         EVERYWHERE["pending"] = intent_action()
         try:
             from android import activity
