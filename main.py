@@ -269,10 +269,15 @@ What this means
 
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
-VERSION = "107.0"
+VERSION = "108.0"
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-25"
-CHANGELOG = """Genius 107.0 (2026-10-25)
+CHANGELOG = """Genius 108.0 (2026-10-26)
+- Opens with your secret code: create it the first time, then just type it to unlock.
+- One \u2022\u2022\u2022 button holds Speak, Draw, Locker, Notes, Weather, Deep, Clear, Stop and the rest.
+- The top shows only your chat and Search.
+
+Genius 107.0 (2026-10-25)
 - Updates itself: type update and Genius downloads and installs the newest version, no website needed.
 - Updates on its own: when a new version is out, Genius downloads it by itself and you just tap Update.
 
@@ -4598,6 +4603,117 @@ def signup_popup(login_screen):
     pop.open()
 
 
+def check_code(code):
+    """Owner unlock with the secret code only. Same firewall as before:
+    this phone only, wrong tries escalate the lock and end in the decoy."""
+    data = load_state()
+    data.setdefault("strikes", 0)
+    data.setdefault("fails", 0)
+    if time.time() < data.get("locked_until", 0):
+        intruder_log("code while locked -> decoy")
+        return False, "DECOY"
+    if data.get("device") and data["device"] != this_device():
+        intruder_log("other device -> decoy")
+        return False, "DECOY"
+    ok = pin_is_set() and len(code.strip()) >= 4 and pin_ok(code)
+    log(f"CODE UNLOCK {'OK' if ok else 'FAILED'}")
+    if ok:
+        data["fails"] = 0
+        data["strikes"] = 0
+        switch_user(OWNER)
+        msg = "Welcome."
+    else:
+        data["fails"] += 1
+        intruder_log("wrong secret code")
+        if data["fails"] >= MAX_TRIES:
+            wait = LOCKOUT_STEPS[min(data["strikes"], len(LOCKOUT_STEPS) - 1)]
+            data["strikes"] += 1
+            data["locked_until"] = time.time() + wait
+            data["fails"] = 0
+            msg = "DECOY"
+        else:
+            msg = f"Wrong code. {MAX_TRIES - data['fails']} tries left."
+    json.dump(data, open(STATE_FILE, "w"))
+    return ok, msg
+
+
+class CodeScreen(BoxLayout):
+    """Opening screen: create a secret code the first time, then unlock with it."""
+    def __init__(self, app, **kw):
+        super().__init__(orientation="vertical", padding=28, spacing=0, **kw)
+        self.app = app
+        add_gradient_bg(self)
+        self.add_widget(Widget(size_hint_y=0.22))
+        self.first = not pin_is_set()
+        card = Panel(orientation="vertical", padding=26, spacing=16,
+                     size_hint=(1, None), height="470dp" if self.first else "400dp")
+        card.add_widget(Label(text="[b][color=ffc84d]Gen[/color][color=c79bff]ius[/color][/b]", markup=True,
+                              font_size="40sp", size_hint_y=None, height="56dp"))
+        card.add_widget(Label(text="Create your secret code (4 to 8 digits)" if self.first
+                              else "Enter your secret code", font_size="16sp",
+                              color=HINT, size_hint_y=None, height="26dp"))
+        def box(h):
+            return style_input(TextInput(hint_text=h, password=True, password_mask="*", input_filter="int",
+                                         multiline=False, size_hint_y=None, height="58dp", font_size="24sp",
+                                         halign="center"))
+        self.code_in = box("New secret code" if self.first else "Secret code")
+        card.add_widget(self.code_in)
+        self.again_in = None
+        if self.first:
+            self.again_in = box("Type it again")
+            self.code_in.bind(on_text_validate=lambda *_: setattr(self.again_in, "focus", True))
+            self.again_in.bind(on_text_validate=self.go)
+            card.add_widget(self.again_in)
+        else:
+            self.code_in.bind(on_text_validate=self.go)
+        self.msg = Label(text="", font_size="16sp", color=(1, 0.45, 0.45, 1),
+                         size_hint_y=None, height="30dp")
+        card.add_widget(self.msg)
+        btn = RoundButton(text="Create code" if self.first else "Unlock", bg=GOLD, fg=(0.1, 0.1, 0.1, 1),
+                          size_hint_y=None, height="58dp", font_size="22sp", bold=True)
+        btn.bind(on_press=self.go)
+        card.add_widget(btn)
+        other = RoundButton(text="Other account", bg=GREY, fg=TEXTCOL,
+                            size_hint_y=None, height="46dp", font_size="16sp")
+        other.bind(on_press=lambda *_: self.app.open_account_login())
+        card.add_widget(other)
+        self.add_widget(card)
+        self.add_widget(Widget())
+        Clock.schedule_once(lambda *_: setattr(self.code_in, "focus", True), 0.4)
+
+    def go(self, *_):
+        code = self.code_in.text.strip()
+        if self.first:
+            again = self.again_in.text.strip()
+            self.code_in.text = self.again_in.text = ""
+            if not (4 <= len(code) <= 8):
+                self.msg.text = "Use 4 to 8 digits."
+                return
+            if code != again:
+                self.msg.text = "The two codes don't match."
+                return
+            if len(set(code)) == 1 or code in "0123456789" or code in "9876543210":
+                self.msg.text = "Too easy to guess. Try another."
+                return
+            data = load_state()
+            if not data.get("device"):
+                data["device"] = this_device()
+                json.dump(data, open(STATE_FILE, "w"))
+            set_pin(code)
+            switch_user(OWNER)
+            self.app.open_home()
+            return
+        self.code_in.text = ""
+        ok, msg = check_code(code)
+        if ok:
+            self.app.open_home()
+        elif msg == "DECOY":
+            self.app.open_decoy("code")
+        else:
+            self.msg.text = msg
+            tts(msg)
+
+
 class LoginScreen(BoxLayout):
     def __init__(self, app, **kw):
         super().__init__(orientation="vertical", padding=28, spacing=0, **kw)
@@ -4678,12 +4794,9 @@ class ChatScreen(BoxLayout):
         self.mode_lbl = Label(text="Fast", font_size="15sp", color=HINT,
                               halign="right", size_hint_x=None, width="60dp")
         header.add_widget(self.mode_lbl)
-        hb = BoxLayout(size_hint_x=None, width="104dp", spacing=8, padding=[0, 9, 0, 9])
-        menu_btn = RoundButton(text="Menu", bg=GREY, fg=TEXTCOL, font_size="13sp", bold=True)
-        menu_btn.bind(on_press=self.options_menu)
-        find_btn = RoundButton(text="Find", bg=BLUE, fg=TEXTCOL, font_size="13sp", bold=True)
+        hb = BoxLayout(size_hint_x=None, width="70dp", padding=[0, 9, 0, 9])
+        find_btn = RoundButton(text="Search", bg=BLUE, fg=TEXTCOL, font_size="13sp", bold=True)
         find_btn.bind(on_press=self.search_box)
-        hb.add_widget(menu_btn)
         hb.add_widget(find_btn)
         header.add_widget(hb)
         self.add_widget(header)
@@ -4702,48 +4815,27 @@ class ChatScreen(BoxLayout):
         outer.add_widget(body)
         self.add_widget(outer)
 
-        # button grid
-        grid = GridLayout(cols=4, size_hint_y=None, height="110dp", spacing=8,
-                          padding=[10, 0, 10, 0])
-        buttons = [("Speak", "speak", GOLD), ("Draw", "draw", BLUE),
-                   ("Locker", "locker", GREY), ("Notes", "notes", GREY),
-                   ("Weather", "weather", GREY), ("Deep", "deep", GREY),
-                   ("Clear", "clear", GREY), ("Stop", "stop", RED)]
-        for label, key, col in buttons:
-            fg = (0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL
-            b = RoundButton(text=label, bg=col, fg=fg, font_size="16sp", bold=True)
-            if key == "speak":
-                self.speak_btn = b
-                b.bind(on_press=self.speak_input)
-            elif key == "locker":
-                b.bind(on_press=lambda btn: self.handle("secrets"))
-            elif key == "deep":
-                self.deep_btn = b
-                b.bind(on_press=self.toggle_deep)
-            elif key == "clear":
-                b.bind(on_press=self.clear_chat)
-            else:
-                b.bind(on_press=lambda btn, n=key: self.handle("tell me a joke" if n == "joke" else n))
-            grid.add_widget(b)
-        self.add_widget(grid)
+        # every tool now lives in one place: the Tools button by the typing box
+        self.deep_btn = RoundButton(text="Deep", bg=GREY, fg=TEXTCOL)   # not shown; keeps Deep's state
 
         # input row
         row = BoxLayout(size_hint_y=None, height="62dp", spacing=8, padding=[10, 4, 10, 10])
-        self.inp = style_input(TextInput(hint_text="Type, or tap Speak...",
+        self.inp = style_input(TextInput(hint_text="Type, or tap \u2022\u2022\u2022 for Speak and more...",
                                multiline=False, font_size="18sp"))
         self.inp.bind(on_text_validate=self.send)
         send = RoundButton(text="Send", bg=GOLD, fg=(0.1, 0.1, 0.1, 1),
                            size_hint_x=None, width="96dp", font_size="18sp", bold=True)
         send.bind(on_press=self.send)
-        plus = RoundButton(text="+", bg=BLUE, fg=TEXTCOL, size_hint_x=None, width="52dp",
-                           font_size="28sp", bold=True)
-        plus.bind(on_press=self.attach_menu)
+        plus = RoundButton(text="\u2022\u2022\u2022", bg=BLUE, fg=TEXTCOL, size_hint_x=None, width="60dp",
+                           font_size="20sp", bold=True)
+        plus.bind(on_press=self.tools_menu)
+        self.speak_btn = plus          # shows "Listening" while Genius hears you; tap to stop
         row.add_widget(plus)
         row.add_widget(self.inp)
         row.add_widget(send)
         self.add_widget(row)
 
-        self.say(f"Welcome {CURRENT['name']}. You are in command. Tap Speak to talk to me.")
+        self.say(f"Welcome {CURRENT['name']}. You are in command. Tap \u2022\u2022\u2022 for Speak and everything else.")
 
     # ---------- listening: hear you, answer, speak back ----------
     SPEECH_CODE = 7777
@@ -4763,9 +4855,9 @@ class ChatScreen(BoxLayout):
 
     def end_talk(self, msg=None):
         self.talking = False
-        self.speak_btn.text = "Speak"
-        self.speak_btn.set_bg(GOLD)
-        self.speak_btn.color = (0.1, 0.1, 0.1, 1)
+        self.speak_btn.text = "\u2022\u2022\u2022"
+        self.speak_btn.set_bg(BLUE)
+        self.speak_btn.color = TEXTCOL
         if msg:
             self.say(msg)
 
@@ -5195,8 +5287,57 @@ class ChatScreen(BoxLayout):
         box.add_widget(Label(text="Genius · App built by Ssali", color=HINT, font_size="12sp", size_hint_y=None, height="24dp"))
         pop.open()
 
-    # ---------- header: Menu (options) and Find (search) ----------
+    # ---------- Tools: every button in one place ----------
+    def tools_menu(self, *_):
+        if getattr(self, "talking", False):
+            return self.speak_input()          # tapping while listening stops it
+        box = BoxLayout(orientation="vertical", spacing=8, padding=10)
+        pop = Popup(title="Tools", content=box, size_hint=(0.94, 0.94),
+                    separator_color=GOLD, title_color=GOLD)
+        grid = GridLayout(cols=3, size_hint_y=None, height="230dp", spacing=8)
+        quick = [("Speak", self.speak_input, GOLD), ("Draw", lambda: self.handle("draw"), BLUE),
+                 ("Add file", self.attach_menu, BLUE),
+                 ("Locker", lambda: self.handle("secrets"), GREY), ("Notes", lambda: self.handle("notes"), GREY),
+                 ("Weather", lambda: self.handle("weather"), GREY),
+                 ("Deep: " + ("on" if self.deep else "off"), self.toggle_deep, GOLD if self.deep else GREY),
+                 ("Clear", self.clear_chat, GREY), ("Stop", lambda: self.handle("stop"), RED)]
+        def go_btn(label, fn, col, h=None):
+            b = RoundButton(text=label, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
+                            font_size="15sp", bold=True, **({"size_hint_y": None, "height": h} if h else {}))
+            def go(btn, fn=fn):
+                pop.dismiss()
+                Clock.schedule_once(lambda *_: fn(), 0.1)
+            b.bind(on_press=go)
+            return b
+        for label, fn, col in quick:
+            grid.add_widget(go_btn(label, fn, col))
+        box.add_widget(grid)
+        sv = ScrollView()
+        lst = BoxLayout(orientation="vertical", spacing=8, size_hint_y=None)
+        lst.bind(minimum_height=lst.setter("height"))
+        more = [("Fun studio (collage, effects, video)", self.fun_studio, GOLD),
+                ("My creations (pictures)", self.creations, BLUE),
+                ("My storage", self.storage_box, BLUE),
+                ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
+                ("Help (all commands)", lambda: self.handle("help"), GREY),
+                ("Change secret code", lambda: self.handle("change code"), GREY),
+                ("Accounts", self.accounts_box, GREY),
+                ("Lock Genius", self.app.build_login, GREY),
+                ("Exit Genius", self.exit_app, RED)]
+        for label, fn, col in more:
+            lst.add_widget(go_btn(label, fn, col, "50dp"))
+        sv.add_widget(lst)
+        box.add_widget(sv)
+        close = RoundButton(text="Close", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), size_hint_y=None,
+                            height="46dp", bold=True)
+        close.bind(on_press=pop.dismiss)
+        box.add_widget(close)
+        pop.open()
+
     def options_menu(self, *_):
+        return self.tools_menu()
+
+    def _old_options_menu(self, *_):
         box = BoxLayout(orientation="vertical", spacing=10, padding=12)
         pop = Popup(title="Options", content=box, size_hint=(0.9, 0.94),
                     separator_color=GOLD, title_color=GOLD)
@@ -7791,8 +7932,12 @@ class GeniusApp(App):
                 self.root_box.bind(size=_fit, pos=_fit)
             except Exception:
                 pass
-        self.root_box.add_widget(LoginScreen(self))
+        self.root_box.add_widget(CodeScreen(self))
         return self.root_box
+
+    def open_account_login(self):
+        self.root_box.clear_widgets()
+        self.root_box.add_widget(LoginScreen(self))
 
     def build_login(self):
         self.chat = None
@@ -7802,7 +7947,7 @@ class GeniusApp(App):
         except Exception:
             pass
         self.root_box.clear_widgets()
-        self.root_box.add_widget(LoginScreen(self))
+        self.root_box.add_widget(CodeScreen(self))
 
     def open_decoy(self, tried=""):
         self.root_box.clear_widgets()
