@@ -15,6 +15,7 @@ from kivy.uix.popup import Popup
 from kivy.uix.image import Image as KivyImage
 from kivy.uix.widget import Widget
 from kivy.graphics import Color, RoundedRectangle, Rectangle
+from kivy.metrics import dp
 
 Window.softinput_mode = "below_target"   # keyboard doesn't cover the text box
 
@@ -274,8 +275,8 @@ PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates 
 VERSION_DATE = "2026-10-25"
 CHANGELOG = """Genius 108.0 (2026-10-26)
 - Opens with your secret code: create it the first time, then just type it to unlock.
-- One \u2022\u2022\u2022 button holds Speak, Draw, Locker, Notes, Weather, Deep, Clear, Stop and the rest.
-- The top shows only \u2022\u2022\u2022 on the left, your chat, and Search on the right.
+- The three-bar menu at the top right holds Speak, Draw, Locker, Notes, Weather, Deep, Clear, Stop and the rest.
+- The top shows only your chat, Search and the menu.
 
 Genius 107.0 (2026-10-25)
 - Updates itself: type update and Genius downloads and installs the newest version, no website needed.
@@ -4446,6 +4447,27 @@ class RoundButton(Button):
         self._paint(bg)
 
 
+class MenuBars(RoundButton):
+    """The three-bar menu button. Shows its bars, or a word (like Stop) when it has one."""
+    def __init__(self, **kw):
+        super().__init__(text="", **kw)
+        with self.canvas.after:
+            self._bar_col = Color(*TEXTCOL)
+            self._bars = [Rectangle() for _ in range(3)]
+        self.bind(pos=self._place, size=self._place, text=self._place)
+
+    def _place(self, *_):
+        show = not self.text
+        self._bar_col.a = 1 if show else 0
+        w = min(self.width * 0.5, dp(22))
+        h = dp(2.6)
+        gap = dp(6)
+        x = self.center_x - w / 2
+        for i, r in enumerate(self._bars):
+            r.size = (w, h)
+            r.pos = (x, self.center_y - h / 2 + (1 - i) * gap)
+
+
 class Panel(BoxLayout):
     """A frosted-glass card: translucent fill, light edge, soft shadow."""
     def __init__(self, bg=PANEL, radius=22, **kw):
@@ -4781,15 +4803,9 @@ class ChatScreen(BoxLayout):
 
         # header bar: profile on the left
         header = Panel(bg=HEADER, radius=0, orientation="horizontal",
-                       size_hint_y=None, height="60dp", padding=[12, 0, 18, 0], spacing=10)
-        pbox = BoxLayout(size_hint_x=None, width="58dp", padding=[0, 9, 0, 9])
-        self.profile_chip = ProfileChip()          # not shown; Profile is inside the ••• menu
+                       size_hint_y=None, height="60dp", padding=[18, 0, 12, 0], spacing=10)
+        self.profile_chip = ProfileChip()          # not shown; Profile is inside the menu
         self.profile_chip.bind(on_press=self.profile_drawer)
-        plus = RoundButton(text="\u2022\u2022\u2022", bg=BLUE, fg=TEXTCOL, font_size="20sp", bold=True)
-        plus.bind(on_press=self.tools_menu)
-        self.speak_btn = plus          # shows "Listening" while Genius hears you; tap to stop
-        pbox.add_widget(plus)
-        header.add_widget(pbox)
         title = Label(text="[b][color=ffc84d]Gen[/color][color=c79bff]ius[/color][/b]  [size=12sp][color=5ee6a0]\u25cf[/color] [color=9aa0c0]online[/color][/size]",
                       markup=True, font_size="25sp", halign="left", valign="middle")
         title.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
@@ -4802,6 +4818,12 @@ class ChatScreen(BoxLayout):
         find_btn.bind(on_press=self.search_box)
         hb.add_widget(find_btn)
         header.add_widget(hb)
+        mb = BoxLayout(size_hint_x=None, width="52dp", padding=[0, 9, 0, 9])
+        bars = MenuBars(bg=BLUE, fg=TEXTCOL, font_size="13sp", bold=True)
+        bars.bind(on_press=self.tools_menu)
+        self.speak_btn = bars          # shows "Stop" while Genius hears you; tap to stop
+        mb.add_widget(bars)
+        header.add_widget(mb)
         self.add_widget(header)
 
         # chat area
@@ -4823,7 +4845,7 @@ class ChatScreen(BoxLayout):
 
         # input row
         row = BoxLayout(size_hint_y=None, height="62dp", spacing=8, padding=[10, 4, 10, 10])
-        self.inp = style_input(TextInput(hint_text="Type, or tap \u2022\u2022\u2022 for Speak and more...",
+        self.inp = style_input(TextInput(hint_text="Type here, or tap the menu to speak...",
                                multiline=False, font_size="18sp"))
         self.inp.bind(on_text_validate=self.send)
         send = RoundButton(text="Send", bg=GOLD, fg=(0.1, 0.1, 0.1, 1),
@@ -4833,7 +4855,7 @@ class ChatScreen(BoxLayout):
         row.add_widget(send)
         self.add_widget(row)
 
-        self.say(f"Welcome {CURRENT['name']}. You are in command. Tap \u2022\u2022\u2022 for Speak and everything else.")
+        self.say(f"Welcome {CURRENT['name']}. You are in command. Tap the menu at the top right for Speak and everything else.")
 
     # ---------- listening: hear you, answer, speak back ----------
     SPEECH_CODE = 7777
@@ -4853,7 +4875,7 @@ class ChatScreen(BoxLayout):
 
     def end_talk(self, msg=None):
         self.talking = False
-        self.speak_btn.text = "\u2022\u2022\u2022"
+        self.speak_btn.text = ""
         self.speak_btn.set_bg(BLUE)
         self.speak_btn.color = TEXTCOL
         if msg:
