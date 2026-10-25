@@ -206,6 +206,7 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 - Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
+- Super zoom camera (say "camera"): live 1x-100x zoom with slider and presets, smart sharpening, "ai zoom" rebuilds detail; also zoom any photo
 - Pro camera looks (say "looks"): 12 instant iPhone-style looks (Vibrant, Warm, Rich Contrast, HDR, Cinematic, Golden Hour...) + AI flagship look; Replace (sky, background, Portrait mode, Studio Light...)
 - Banana studio (say "banana"): Nano Banana / Nano Banana Pro realistic editing, blend 2-4 photos, ultra realistic, fix hands, remove people, restore old photos, picture shape
 - Fun studio (Menu or say "fun"): change clothes (12 outfits), change place (14 places), beautiful photo, photo collages, 14 instant effects + AI styles, video slideshows, fun videos
@@ -2331,6 +2332,32 @@ def pro_look(path, look):
     return out, look + " look done."
 
 
+def super_zoom(path, zoom, cx=0.5, cy=0.5):
+    """Digital zoom 1x-100x with smart sharpening: crop the centre, upscale cleanly, remove noise."""
+    from PIL import Image, ImageFilter, ImageEnhance, ImageOps
+    im = _open_rgb(path)
+    zoom = max(1.0, min(100.0, float(zoom)))
+    W, H = im.size
+    cw, ch = max(8, int(W / zoom)), max(8, int(H / zoom))
+    x0 = int(min(max(cx * W - cw / 2, 0), W - cw))
+    y0 = int(min(max(cy * H - ch / 2, 0), H - ch))
+    crop = im.crop((x0, y0, x0 + cw, y0 + ch))
+    if zoom >= 4:
+        crop = crop.filter(ImageFilter.MedianFilter(3))           # clean noise before enlarging
+    tw = min(max(W, 1080), 3000)
+    th = int(tw * ch / cw)
+    big = crop
+    while big.size[0] * 2 < tw:                                   # step up gently for cleaner edges
+        big = big.resize((big.size[0] * 2, big.size[1] * 2), Image.LANCZOS)
+        big = big.filter(ImageFilter.UnsharpMask(2, 60, 2))
+    big = big.resize((tw, th), Image.LANCZOS)
+    big = big.filter(ImageFilter.UnsharpMask(3, 110 if zoom < 10 else 150, 2))
+    big = ImageEnhance.Contrast(ImageOps.autocontrast(big, cutoff=0.3)).enhance(1.05)
+    out = fun_out(f"zoom{int(zoom)}x")
+    big.save(out, quality=95)
+    return out, f"{zoom:g}x zoom done."
+
+
 def beautify(path):
     from PIL import ImageOps, ImageEnhance, ImageFilter
     im = _open_rgb(path)
@@ -3645,6 +3672,8 @@ class ChatScreen(BoxLayout):
     def fun_studio(self, *_):
         self._buttons_popup("Fun studio", [
             ("Banana studio (realistic AI editing)", self.banana_studio, GOLD),
+            ("Super zoom camera (1x-100x)", self.zoom_camera, GOLD),
+            ("Zoom a photo", self.zoom_photo_menu, BLUE),
             ("Pro camera looks (iPhone style)", self.looks_menu, GOLD),
             ("Replace something", lambda: self.ai_menu("Replace", REPLACE), GOLD),
             ("Change clothes", lambda: self.ai_menu("Change clothes", OUTFITS), GOLD),
@@ -3719,6 +3748,155 @@ class ChatScreen(BoxLayout):
             "make it look like it was shot on the newest flagship phone camera: crisp detail, perfect exposure, "
             "rich true colours, natural skin, smooth background blur, HDR highlights"), GOLD))
         self._buttons_popup("Pro camera looks", opts, cols=2, hint="Instant looks. Gold = AI (Nano Banana)")
+
+    # ---------- Super zoom camera: 1x to 100x ----------
+    def zoom_camera(self, *_):
+        try:
+            from android.permissions import request_permissions, Permission
+            request_permissions([Permission.CAMERA])
+        except Exception:
+            pass
+        Clock.schedule_once(lambda *_: self._open_camera(), 0.8)
+
+    def _open_camera(self, index=0):
+        from kivy.uix.camera import Camera
+        from kivy.uix.slider import Slider
+        from kivy.uix.stencilview import StencilView
+        from kivy.uix.floatlayout import FloatLayout
+        from kivy.graphics import PushMatrix, PopMatrix, Rotate
+        try:
+            cam = Camera(index=index, resolution=(1920, 1080), play=True, allow_stretch=True, keep_ratio=True)
+        except Exception as e:
+            log(f"CAMERA: {e}")
+            self.say("I couldn't open the camera. Allow camera permission, or use 'Zoom a photo' instead.")
+            return
+        st = {"zoom": 1.0, "rot": -90 if os.path.isdir("/storage/emulated/0") else 0, "index": index}
+        stencil = StencilView()
+        holder = FloatLayout()
+        stencil.add_widget(holder)
+        holder.add_widget(cam)
+        with cam.canvas.before:
+            PushMatrix()
+            rot = Rotate(angle=st["rot"], origin=cam.center)
+        with cam.canvas.after:
+            PopMatrix()
+
+        def layout(*_):
+            z = st["zoom"]
+            holder.size, holder.pos = stencil.size, stencil.pos
+            w, h = stencil.width * z, stencil.height * z
+            if st["rot"] in (90, -90):
+                w, h = h, w
+            cam.size_hint = (None, None)
+            cam.size = (w, h)
+            cam.center = stencil.center
+            rot.origin = cam.center
+            rot.angle = st["rot"]
+        stencil.bind(size=layout, pos=layout)
+        box = BoxLayout(orientation="vertical", spacing=6, padding=6)
+        box.add_widget(stencil)
+        lbl = Label(text="1.0x", size_hint_y=None, height="34dp", color=GOLD, font_size="22sp", bold=True)
+        box.add_widget(lbl)
+        sl = Slider(min=0, max=2, value=0, size_hint_y=None, height="44dp")   # log scale: 10**0..10**2
+
+        def on_zoom(*_):
+            st["zoom"] = round(10 ** sl.value, 1)
+            lbl.text = f"{st['zoom']:g}x" + ("  (AI super zoom)" if st["zoom"] >= 10 else "")
+            layout()
+        sl.bind(value=on_zoom)
+        box.add_widget(sl)
+        presets = BoxLayout(size_hint_y=None, height="46dp", spacing=4)
+        import math
+        for z in (1, 2, 5, 10, 30, 100):
+            b = RoundButton(text=f"{z}x", bg=GREY, fg=TEXTCOL, font_size="15sp", bold=True)
+            b.bind(on_press=lambda btn, z=z: setattr(sl, "value", math.log10(z)))
+            presets.add_widget(b)
+        box.add_widget(presets)
+        row = BoxLayout(size_hint_y=None, height="56dp", spacing=6)
+        pop = Popup(title="Super zoom camera", content=box, size_hint=(1, 1),
+                    separator_color=GOLD, title_color=GOLD, auto_dismiss=False)
+
+        def close(*_):
+            try:
+                cam.play = False
+            except Exception:
+                pass
+            pop.dismiss()
+
+        def shoot(*_):
+            try:
+                from PIL import Image
+                tex = cam.texture
+                im = Image.frombytes("RGBA", tex.size, tex.pixels).transpose(Image.FLIP_TOP_BOTTOM).convert("RGB")
+                if st["rot"]:
+                    im = im.rotate(st["rot"], expand=True)
+                raw = os.path.join(genius_dl("camera"), f"photo_{time.strftime('%Y%m%d_%H%M%S')}.jpg")
+                im.save(raw, quality=95)
+            except Exception as e:
+                log(f"CAMERA shoot: {e}")
+                self.say("I couldn't take the picture. Try again.")
+                return
+            z = st["zoom"]
+            close()
+            if z <= 1.05:
+                remember_image(raw, "camera photo")
+                self.show_image(raw, "Photo taken")
+                return
+            self._zoom_and_show(raw, z)
+
+        def rotate(*_):
+            st["rot"] = {0: -90, -90: 90, 90: 180, 180: 0}[st["rot"]]
+            layout()
+
+        def switch(*_):
+            close()
+            Clock.schedule_once(lambda *_: self._open_camera(1 - st["index"]), 0.4)
+        for t, fn, col in (("Close", close, RED), ("Turn", rotate, GREY), ("Flip cam", switch, GREY),
+                           ("Take photo", shoot, GOLD)):
+            b = RoundButton(text=t, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
+                            font_size="16sp", bold=True)
+            b.bind(on_press=fn)
+            row.add_widget(b)
+        box.add_widget(row)
+        pop.open()
+        Clock.schedule_once(layout, 0.2)
+
+    def _zoom_and_show(self, src, z):
+        self.busy = True
+        self.say(f"Zooming {z:g}x and sharpening...")
+
+        def d(*_):
+            try:
+                out, msg = super_zoom(src, z)
+            except Exception as e:
+                out, msg = None, f"Zoom didn't work: {e}"
+
+            def done(*_):
+                self.busy = False
+                if out:
+                    remember_image(out, f"{z:g}x zoom photo")
+                    self.show_image(out, msg + (" Say 'ai zoom' to rebuild fine detail with AI." if z >= 4 else ""))
+                    if z >= 10:
+                        self.say("At high zoom, say 'ai zoom' and Nano Banana will rebuild sharp detail "
+                                 "without changing what's in the photo.")
+                else:
+                    self.say(msg)
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=d, daemon=True).start()
+
+    def zoom_photo_menu(self, *_):
+        src = self._edit_src()
+        if not src:
+            self.say("Add a photo with + first, then choose a zoom.")
+            return
+        self._buttons_popup("Zoom a photo", [(f"{z}x", lambda z=z: self._zoom_and_show(src, z), BLUE)
+                                             for z in (2, 3, 5, 10, 20, 30, 50, 100)] +
+                            [("AI super detail", self.ai_zoom, GOLD)], cols=2, hint="Zooms into the centre")
+
+    def ai_zoom(self, *_):
+        self.banana_quick("enhance this zoomed-in photo into a real high-resolution photo: recover fine sharp "
+                          "detail and clean edges, remove blur, noise and blocky pixels, like a top phone camera's "
+                          "AI super zoom. Do not add, remove or move anything")
 
     def banana_studio(self, *_):
         def setb(**k):
@@ -4407,6 +4585,15 @@ class ChatScreen(BoxLayout):
         lw = low.strip(" .!")
         if lw in ("fun", "fun studio", "studio", "have fun"):
             self.fun_studio()
+            return
+        if lw in ("camera", "zoom camera", "super zoom", "zoom", "open camera"):
+            self.zoom_camera()
+            return
+        if lw in ("zoom photo", "zoom picture", "zoom a photo"):
+            self.zoom_photo_menu()
+            return
+        if lw in ("ai zoom", "super detail", "enhance zoom"):
+            self.ai_zoom()
             return
         if lw in ("looks", "pro looks", "iphone", "iphone look", "camera looks", "iphone effect"):
             self.looks_menu()
