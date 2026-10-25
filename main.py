@@ -273,6 +273,7 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 - Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
+- Genius everywhere (say "everywhere"): floating G bubble over other apps, "Hey Genius" wake word while open, home-screen buttons for Talk, Camera, Music, Ultra
 - Music maker (say "sound", or "sound happy afrobeat about ..."): AI producer picks style, key, tempo, chords, melody and instruments, then mixes a full song with reverb and mastering
 - Genius Ultra (say "ultra"): HDR, smart white balance, clarity, fine detail, vibrance and noise clean-up; applied automatically to every camera shot and zoom
 - Super zoom camera (say "camera"): live 1x-100x zoom with slider and presets, smart sharpening, "ai zoom" rebuilds detail; also zoom any photo
@@ -3517,6 +3518,170 @@ def native_stop():
             _mic["rec"].cancel()
     safe(lambda: _ui(stop))
 
+
+# ================= Genius everywhere: bubble, home-screen shortcuts, "Hey Genius" =================
+EVERYWHERE = {"bubble": None, "bubble_on": True, "pending": None, "keep": []}
+_SET_FILE = os.path.join(ROOT, "everywhere.json")
+
+
+def everywhere_load():
+    try:
+        EVERYWHERE.update(json.load(open(_SET_FILE)))
+    except Exception:
+        pass
+
+
+def everywhere_save():
+    try:
+        json.dump({"bubble_on": EVERYWHERE["bubble_on"]}, open(_SET_FILE, "w"))
+    except Exception:
+        pass
+
+
+def can_draw_overlay():
+    from jnius import autoclass
+    Settings = autoclass("android.provider.Settings")
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    return bool(Settings.canDrawOverlays(act))
+
+
+def ask_overlay_permission():
+    from jnius import autoclass
+    Intent = autoclass("android.content.Intent")
+    Settings = autoclass("android.provider.Settings")
+    Uri = autoclass("android.net.Uri")
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    i = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + act.getPackageName()))
+    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    act.startActivity(i)
+
+
+def _bring_genius_front(action=None):
+    from jnius import autoclass
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    Intent = autoclass("android.content.Intent")
+    i = Intent(act, act.getClass())
+    i.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_NEW_TASK)
+    if action:
+        i.putExtra("genius_action", action)
+    act.startActivity(i)
+
+
+def bubble_show():
+    """A round gold 'G' that floats over every other app. Tap = open Genius, drag = move it."""
+    if EVERYWHERE["bubble"] is not None or not EVERYWHERE["bubble_on"]:
+        return
+    try:
+        if not can_draw_overlay():
+            return
+    except Exception:
+        return
+    from jnius import autoclass, PythonJavaClass, java_method
+
+    def make():
+        act = autoclass("org.kivy.android.PythonActivity").mActivity
+        Context = autoclass("android.content.Context")
+        WM = autoclass("android.view.WindowManager")
+        LP = autoclass("android.view.WindowManager$LayoutParams")
+        TextView = autoclass("android.widget.TextView")
+        GD = autoclass("android.graphics.drawable.GradientDrawable")
+        GDO = autoclass("android.graphics.drawable.GradientDrawable$Orientation")
+        Gravity = autoclass("android.view.Gravity")
+        PixelFormat = autoclass("android.graphics.PixelFormat")
+        Color_ = autoclass("android.graphics.Color")
+        MotionEvent = autoclass("android.view.MotionEvent")
+        wm = act.getSystemService(Context.WINDOW_SERVICE)
+        dens = act.getResources().getDisplayMetrics().density
+        size = int(58 * dens)
+        tv = TextView(act)
+        tv.setText("G")
+        tv.setTextSize(24.0)
+        tv.setTextColor(Color_.parseColor("#1A1300"))
+        tv.setGravity(Gravity.CENTER)
+        safe(lambda: tv.getPaint().setFakeBoldText(True))
+        bg = GD(GDO.TL_BR, [Color_.parseColor("#FFD36B"), Color_.parseColor("#F08A2E")])
+        bg.setShape(GD.OVAL)
+        bg.setStroke(int(2 * dens), Color_.parseColor("#B07BFF"))
+        tv.setBackground(bg)
+        tv.setElevation(12 * dens)
+        lp = LP(size, size, LP.TYPE_APPLICATION_OVERLAY,
+                LP.FLAG_NOT_FOCUSABLE | LP.FLAG_LAYOUT_NO_LIMITS, PixelFormat.TRANSLUCENT)
+        lp.gravity = Gravity.TOP | Gravity.LEFT
+        lp.x, lp.y = int(12 * dens), int(220 * dens)
+        st = {"x": 0, "y": 0, "rx": 0.0, "ry": 0.0, "moved": False}
+
+        class _Touch(PythonJavaClass):
+            __javainterfaces__ = ["android/view/View$OnTouchListener"]
+
+            @java_method("(Landroid/view/View;Landroid/view/MotionEvent;)Z")
+            def onTouch(self, v, ev):
+                a = ev.getAction()
+                if a == MotionEvent.ACTION_DOWN:
+                    st.update(x=lp.x, y=lp.y, rx=ev.getRawX(), ry=ev.getRawY(), moved=False)
+                elif a == MotionEvent.ACTION_MOVE:
+                    dx, dy = ev.getRawX() - st["rx"], ev.getRawY() - st["ry"]
+                    if abs(dx) + abs(dy) > 12:
+                        st["moved"] = True
+                    lp.x, lp.y = int(st["x"] + dx), int(st["y"] + dy)
+                    wm.updateViewLayout(v, lp)
+                elif a == MotionEvent.ACTION_UP and not st["moved"]:
+                    _bring_genius_front("talk")
+                return True
+        t = _Touch()
+        tv.setOnTouchListener(t)
+        wm.addView(tv, lp)
+        EVERYWHERE["bubble"] = (wm, tv)
+        EVERYWHERE["keep"] = [t, lp, bg]
+    _ui(make)
+
+
+def bubble_hide():
+    b = EVERYWHERE.get("bubble")
+    if not b:
+        return
+    EVERYWHERE["bubble"] = None
+
+    def rm():
+        try:
+            b[0].removeView(b[1])
+        except Exception:
+            pass
+    _ui(rm)
+
+
+def pin_shortcut(action, label):
+    """Put a Genius button on the phone's home screen that opens straight into an action."""
+    from jnius import autoclass
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    Intent = autoclass("android.content.Intent")
+    SM = autoclass("android.content.pm.ShortcutManager")
+    SI = autoclass("android.content.pm.ShortcutInfo$Builder")
+    Icon = autoclass("android.graphics.drawable.Icon")
+    Context = autoclass("android.content.Context")
+    sm = act.getSystemService(autoclass("java.lang.Class").forName("android.content.pm.ShortcutManager"))
+    if not sm.isRequestPinShortcutSupported():
+        return False
+    i = Intent(act, act.getClass())
+    i.setAction(Intent.ACTION_MAIN)
+    i.putExtra("genius_action", action)
+    icon = Icon.createWithResource(act, act.getApplicationInfo().icon)
+    info = SI(act, "genius_" + action).setShortLabel(label).setIcon(icon).setIntent(i).build()
+    sm.requestPinShortcut(info, None)
+    return True
+
+
+def intent_action(intent=None):
+    try:
+        from jnius import autoclass
+        if intent is None:
+            intent = autoclass("org.kivy.android.PythonActivity").mActivity.getIntent()
+        a = intent.getStringExtra("genius_action")
+        if a:
+            intent.removeExtra("genius_action")
+        return a
+    except Exception:
+        return None
+
 # ---------------- screens ----------------
 class RoundButton(Button):
     """A glossy rounded button: gradient fill, soft shadow, shine, press animation."""
@@ -4273,6 +4438,7 @@ class ChatScreen(BoxLayout):
     def fun_studio(self, *_):
         self._buttons_popup("Fun studio", [
             ("Banana studio (realistic AI editing)", self.banana_studio, GOLD),
+            ("Genius everywhere (bubble, Hey Genius)", self.everywhere_menu, GOLD),
             ("Genius Premium", self.premium_popup, GOLD),
             ("Music maker (AI songs)", self.music_menu, GOLD),
             ("Super zoom camera (1x-100x)", self.zoom_camera, GOLD),
@@ -4491,6 +4657,96 @@ class ChatScreen(BoxLayout):
                     self.say(msg)
             Clock.schedule_once(done, 0)
         threading.Thread(target=d, daemon=True).start()
+
+    # ---------- Genius everywhere ----------
+    def everywhere_menu(self, *_):
+        on = EVERYWHERE["bubble_on"]
+        hey = getattr(self, "hey_on", False)
+        self._buttons_popup("Genius everywhere", [
+            ("Floating bubble: " + ("ON" if on else "OFF"), self.toggle_bubble, GOLD),
+            ('"Hey Genius" wake word: ' + ("ON" if hey else "OFF"), self.toggle_hey, GOLD),
+            ("Home-screen button: Talk", lambda: self.add_shortcut("talk", "Genius Talk"), BLUE),
+            ("Home-screen button: Camera", lambda: self.add_shortcut("camera", "Genius Camera"), BLUE),
+            ("Home-screen button: Music", lambda: self.add_shortcut("sound", "Genius Music"), BLUE),
+            ("Home-screen button: Ultra photo", lambda: self.add_shortcut("ultra", "Genius Ultra"), BLUE),
+        ], cols=1, hint="Use Genius from anywhere on your phone")
+
+    def toggle_bubble(self, *_):
+        EVERYWHERE["bubble_on"] = not EVERYWHERE["bubble_on"]
+        everywhere_save()
+        if not EVERYWHERE["bubble_on"]:
+            bubble_hide()
+            self.say("Floating bubble is off.")
+            return
+        try:
+            if not can_draw_overlay():
+                ask_overlay_permission()
+                self.say("Turn on 'Allow display over other apps' for Genius, then come back. "
+                         "When you leave Genius, a gold G bubble will float over your apps. Tap it to talk to me.")
+                return
+        except Exception as e:
+            self.say(f"The bubble needs Android 8 or newer. ({e})")
+            return
+        self.say("Bubble is on. When you leave Genius, a gold G floats over your apps. Tap it to talk, drag it to move.")
+
+    def add_shortcut(self, action, label):
+        try:
+            ok = pin_shortcut(action, label)
+        except Exception as e:
+            log(f"SHORTCUT: {e}")
+            ok = False
+        self.say(f"Tap 'Add' and the '{label}' button goes on your home screen." if ok
+                 else "Your phone's home screen doesn't allow adding buttons this way.")
+
+    def run_action(self, action):
+        if not action:
+            return
+        log(f"EVERYWHERE action: {action}")
+        if action == "talk":
+            if not getattr(self, "talking", False):
+                self.speak_input()
+        else:
+            self.handle(action)
+
+    # "Hey Genius": while Genius is open, it quietly listens for its name
+    def toggle_hey(self, *_):
+        self.hey_on = not getattr(self, "hey_on", False)
+        if self.hey_on:
+            try:
+                if not mic_permission_ok():
+                    self.hey_on = False
+                    self.say("Allow the microphone first, then turn Hey Genius on again.")
+                    return
+            except Exception:
+                pass
+            self.say("Hey Genius is on. Just say 'Hey Genius' and what you want, any time Genius is open.")
+            Clock.schedule_once(lambda *_: self._hey_listen(), 3)
+        else:
+            native_stop()
+            self.say("Hey Genius is off.")
+
+    def _hey_listen(self, *_):
+        if not getattr(self, "hey_on", False) or getattr(self, "talking", False) or self.busy:
+            if getattr(self, "hey_on", False):
+                Clock.schedule_once(self._hey_listen, 4)
+            return
+        try:
+            native_listen(self._hey_heard, lambda msg, code=0: Clock.schedule_once(self._hey_listen, 1.0))
+        except Exception as e:
+            log(f"HEY: {e}")
+            self.hey_on = False
+
+    def _hey_heard(self, words):
+        w = (words or "").lower()
+        m = re.search(r"\b(?:hey|hi|ok|okay)?\s*(?:genius|jeanious|genus|genie us)\b[\s,]*(.*)", w)
+        if m:
+            rest = m.group(1).strip(" ,.")
+            if rest:
+                self.handle(rest)
+            else:
+                tts("Yes?")
+                self.speak_input()
+        Clock.schedule_once(self._hey_listen, 1.5)
 
     # ---------- Genius Premium ----------
     def premium_popup(self, *_):
@@ -5322,6 +5578,9 @@ class ChatScreen(BoxLayout):
             self.say("Only the owner of this phone can do that.")
             return
         lw = low.strip(" .!")
+        if lw in ("everywhere", "bubble", "hey genius", "shortcuts", "widget", "home screen"):
+            self.everywhere_menu()
+            return
         if lw in ("premium", "upgrade premium", "pay", "subscribe", "trial", "my plan", "unlock premium"):
             self.premium_popup()
             return
@@ -6375,6 +6634,8 @@ class GeniusApp(App):
         return self.root_box
 
     def build_login(self):
+        self.chat = None
+        safe(bubble_hide)
         try:
             switch_user(OWNER)          # leave the guest's space; next sign-in picks the account
         except Exception:
@@ -6386,10 +6647,39 @@ class GeniusApp(App):
         self.root_box.clear_widgets()
         self.root_box.add_widget(DecoyScreen(self, tried))
 
+    def on_start(self):
+        everywhere_load()
+        EVERYWHERE["pending"] = intent_action()
+        try:
+            from android import activity
+            activity.bind(on_new_intent=self._new_intent)
+        except Exception:
+            pass
+
+    def _new_intent(self, intent):
+        a = intent_action(intent)
+        chat = getattr(self, "chat", None)
+        if a and chat is not None:
+            Clock.schedule_once(lambda *_: chat.run_action(a), 0.5)
+        elif a:
+            EVERYWHERE["pending"] = a
+
+    def on_pause(self):
+        if getattr(self, "chat", None) is not None:
+            safe(bubble_show)
+        return True
+
+    def on_resume(self):
+        safe(bubble_hide)
+
     def open_chat(self):
         self.root_box.clear_widgets()
         chat = ChatScreen(self)
+        self.chat = chat
         self.root_box.add_widget(chat)
+        if EVERYWHERE.get("pending"):
+            a, EVERYWHERE["pending"] = EVERYWHERE["pending"], None
+            Clock.schedule_once(lambda *_: chat.run_action(a), 2.5)
         Clock.schedule_once(lambda *_: chat.life_start(), 2)
         Clock.schedule_once(lambda *_: chat.security_alert(), 1)
 
