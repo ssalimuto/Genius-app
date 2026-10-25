@@ -209,7 +209,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 102.0
+ABOUT_TEXT = """Genius 103.0
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -265,9 +265,14 @@ What this means
 
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
-VERSION = "102.0"
+VERSION = "103.0"
 VERSION_DATE = "2026-10-25"
-CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
+CHANGELOG = """Genius 103.0 Brain (2026-10-25)
+- Genius learns: after every new question it writes itself a lesson and uses it next time.
+- Correct it with "better: ...", teach it with "teach ...", rate with "good" or "bad".
+- "what have you learned" shows its lessons; "forget lessons" clears them.
+
+Genius 102.0 Doodle (2026-10-25)
 - New look: dark doodle wallpaper of game icons behind every screen
 - Picture chat like Gemini: after a picture, say 'make me near a building', 'change it to night'
   or 'blur the background' and Genius edits THAT picture, keeping the same person
@@ -1456,6 +1461,91 @@ def run_tool(name, args, key, ui):
     return "Unknown tool."
 
 
+
+# ---------- Genius Brain: learns from every unique question and every correction ----------
+BRAIN_FILE = "genius_brain.json"
+LAST_QA = {"q": "", "a": ""}
+_STOP = set("the a an is are was were to of in on for and or what how why who when which do does i you me my it this that with be can please tell about".split())
+
+
+def _words(t):
+    return {w for w in re.findall(r"[a-z0-9]+", (t or "").lower()) if len(w) > 2 and w not in _STOP}
+
+
+def brain_load():
+    try:
+        return json.load(open(BRAIN_FILE))
+    except Exception:
+        return []
+
+
+def brain_save(items):
+    items = sorted(items, key=lambda x: (x.get("score", 0), x.get("t", 0)), reverse=True)[:400]
+    try:
+        json.dump(items, open(BRAIN_FILE, "w"))
+    except Exception as e:
+        log(f"brain save failed: {e}")
+
+
+def brain_add(lesson, q="", score=1, kind="lesson"):
+    lesson = (lesson or "").strip()
+    if len(lesson) < 8:
+        return
+    items = brain_load()
+    for it in items:                                   # same lesson again: make it stronger
+        if it["lesson"].lower() == lesson.lower():
+            it["score"] = it.get("score", 0) + 1
+            it["t"] = time.time()
+            brain_save(items)
+            return
+    items.append({"lesson": lesson[:400], "q": q[:200], "score": score, "kind": kind, "t": time.time()})
+    brain_save(items)
+
+
+def brain_recall(text, n=4):
+    """The lessons that best match this question, strongest first."""
+    want = _words(text)
+    if not want:
+        return ""
+    scored = []
+    for it in brain_load():
+        hit = len(want & _words(it["lesson"] + " " + it.get("q", "")))
+        if hit and it.get("score", 0) > -2:
+            scored.append((hit * 2 + it.get("score", 0) + (3 if it.get("kind") == "correction" else 0), it))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best = [it["lesson"] for _, it in scored[:n]]
+    return ("\nLessons you learned before (trust these, corrections most of all):\n- " + "\n- ".join(best)) if best else ""
+
+
+def brain_reflect(q, a):
+    """After a new kind of question, Genius writes itself one lesson for next time (in the background)."""
+    if len(q) < 12 or len(a) < 40 or needs_tools(q):
+        return
+    def go():
+        ask = ("Question: " + q[:600] + "\nAnswer given: " + a[:1500] +
+               "\n\nWrite ONE short, reusable lesson (max 30 words) that would help answer similar "
+               "questions better or faster next time: a key fact, a better method, or a mistake to avoid. "
+               "If there is nothing worth learning, reply exactly NONE.")
+        sysm = "You improve an assistant by writing short lessons for it. Be accurate; never invent facts."
+        out = None
+        for prov in ("groq", "openrouter"):
+            out = other_ai(prov, ask, system=sysm, max_tokens=80)
+            if out:
+                break
+        if out and "NONE" not in out.upper()[:8]:
+            brain_add(out.strip().strip('"'), q=q)
+    threading.Thread(target=go, daemon=True).start()
+
+
+def brain_report():
+    items = brain_load()
+    if not items:
+        return "I haven't learned anything yet. Ask me things, correct me with 'better: ...', or say 'teach ...'."
+    top = items[:8]
+    lines = [f"{i+1}. {it['lesson']}" for i, it in enumerate(top)]
+    return f"I've learned {len(items)} lessons. My strongest:\n" + "\n".join(lines)
+
+
 def agent_reply(text, ui, deep=False):
     """The AI thinks, picks tools, uses their results, and answers. Returns (reply, error)."""
     if not os.path.exists(KEY_FILE):
@@ -1471,7 +1561,7 @@ def agent_reply(text, ui, deep=False):
         try:
             for step in range(5):                     # up to 5 tool rounds
                 me = about_me()
-                rules = AGENT_RULES + ("\nWhat you know about your owner (use it to personalise answers):\n" + me if me else "")
+                rules = AGENT_RULES + ("\nWhat you know about your owner (use it to personalise answers):\n" + me if me else "") + brain_recall(text)
                 payload = {"systemInstruction": {"parts": [{"text": rules}]},
                            "contents": work, "tools": AGENT_TOOLS,
                            "generationConfig": {"maxOutputTokens": 1500 if deep else 500,
@@ -2237,7 +2327,7 @@ def other_ai(name, text, system=None, convo=None, max_tokens=700):
     msgs = [{"role": "system", "content": system or (
         "You are Genius, the private assistant of " + CURRENT["name"] + ", a young person in Uganda, made by "
         "Ssali Muto. Answer in clear, simple English, briefly and accurately. Say when you are "
-        "unsure. You can't see the time, weather or internet in this mode.")}]
+        "unsure. You can't see the time, weather or internet in this mode." + brain_recall(text))}]
     for m in (convo or [])[-8:]:
         t = " ".join(p.get("text", "") for p in m.get("parts", []))
         if t:
@@ -6050,6 +6140,42 @@ class ChatScreen(BoxLayout):
         action = LUGANDA_CMDS.get(action, action)
         action = {"whatsnew": "version", "changelog": "version", "update": "version"}.get(action, action)
 
+        # Genius Brain: it learns and improves itself
+        lw = low.strip(" .!?")
+        if action in ("teach", "learn", "remember:") and arg:
+            brain_add(arg, kind="correction", score=3)
+            self.say("Learned. I'll use that from now on.")
+            return
+        if low.startswith(("better:", "correct:", "actually:", "wrong:")):
+            fix = line.split(":", 1)[1].strip()
+            if LAST_QA["q"] and fix:
+                brain_add(f"For '{LAST_QA['q'][:120]}': {fix}", q=LAST_QA["q"], kind="correction", score=3)
+                _answer_cache.pop(LAST_QA["q"].strip().lower(), None)
+                self.say("Thanks, I've corrected myself. Next time I'll answer it the better way.")
+            else:
+                self.say("Tell me what to fix, like 'better: the capital is Kampala'.")
+            return
+        if lw in ("good", "good answer", "perfect", "correct", "thanks genius", "👍"):
+            if LAST_QA["q"]:
+                brain_add(f"This kind of answer worked well for '{LAST_QA['q'][:120]}': keep the same style.",
+                          q=LAST_QA["q"], score=1)
+            self.say("Noted. I'll keep answering like that.")
+            return
+        if lw in ("bad", "bad answer", "wrong", "not good", "👎"):
+            if LAST_QA["q"]:
+                _answer_cache.pop(LAST_QA["q"].strip().lower(), None)
+                brain_add(f"My answer to '{LAST_QA['q'][:120]}' was not good. Answer it more carefully and check facts.",
+                          q=LAST_QA["q"], score=1)
+            self.say("Sorry. Tell me the right answer with 'better: ...' and I'll learn it, or ask again and I'll think harder.")
+            return
+        if lw in ("what have you learned", "what did you learn", "brain", "my brain", "lessons", "your lessons"):
+            self.say(brain_report())
+            return
+        if lw in ("forget lessons", "reset brain", "clear brain"):
+            brain_save([])
+            self.say("Done. My learned lessons are cleared.")
+            return
+
         # picture follow-ups, like Gemini: "make me near building" edits the last picture
         if low.strip(" .!") in ("setme", "set me", "this is me", "use this face", "keep this face", "save my face"):
             src = LAST_IMAGE["path"] if low.strip(" .!") in ("use this face", "keep this face") else None
@@ -7122,6 +7248,9 @@ class ChatScreen(BoxLayout):
                         break
             if reply and not needs_tools(text):
                 _answer_cache[ck] = reply
+            if reply:
+                LAST_QA.update(q=text, a=reply)
+                brain_reflect(text, reply)        # grows smarter from every new question
             r = reply or err
 
             def done(*_):
