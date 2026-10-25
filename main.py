@@ -2564,6 +2564,9 @@ class LoginScreen(BoxLayout):
 
 
 class ChatScreen(BoxLayout):
+    attached = None
+    _to_storage = False
+
     def __init__(self, app, **kw):
         super().__init__(orientation="vertical", padding=0, spacing=0, **kw)
         self.app = app
