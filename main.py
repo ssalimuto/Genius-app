@@ -3701,7 +3701,8 @@ CRYPTO_IDS = {"btc": "bitcoin", "bitcoin": "bitcoin", "eth": "ethereum", "ethere
               "bnb": "binancecoin", "sol": "solana", "solana": "solana", "xrp": "ripple", "usdt": "tether",
               "doge": "dogecoin", "ada": "cardano", "trx": "tron", "ton": "the-open-network", "ltc": "litecoin"}
 FX_CODES = ("usd", "ugx", "kes", "tzs", "rwf", "eur", "gbp", "zar", "ngn", "cny", "aed", "inr")
-WEALTH_SYSTEM = ("You are Genius Wealth, a free trading coach for people in Uganda and East Africa who want to build "
+WEALTH_SYSTEM = ("TOP PRIORITY: protect the person's money from losses first, profits second. Before any trade idea, check: is there a stop-loss, is risk 1-2% or less, is it money they can afford to lose, is the broker regulated, is it a scam (guaranteed returns, account managers, pressure, send-money-to-double)? If any check fails, say STOP clearly and why. "
+                 "You are Genius Wealth, a free trading coach for people in Uganda and East Africa who want to build "
                  "wealth through trading (forex, stocks, crypto). Explain simply, with UGX where useful. Teach: reading "
                  "charts (trend, support/resistance, candles, RSI, MACD, moving averages), building a written trading plan, "
                  "entries and exits, stop-loss and take-profit, risking at most 1-2% of the account per trade, position "
@@ -3709,7 +3710,7 @@ WEALTH_SYSTEM = ("You are Genius Wealth, a free trading coach for people in Ugan
                  "signal-sellers, 'account managers' and scams. Use the live prices given. Be honest that most traders "
                  "lose money and growth comes from discipline over time. Never promise profits or say 'guaranteed'. "
                  "Never ask for PINs or passwords. End with one clear next step. Education, not financial advice.")
-CHART_PROMPT = ("You are a careful technical analyst. Read this trading chart picture. Report, in simple English: "
+CHART_PROMPT = ("Your first job is to protect the person's money: start with a one-line MONEY SAFETY verdict (SAFE / CAREFUL / DANGER) and the biggest risk of loss. You are a careful technical analyst. Read this trading chart picture. Report, in simple English: "
                 "1) the asset and timeframe if visible, 2) the trend (up, down, sideways) and why, 3) key support and "
                 "resistance levels with prices read from the axis, 4) any patterns or candles (e.g. double top, "
                 "flag, engulfing) and indicators shown (RSI, MACD, moving averages, volume), 5) a bullish scenario "
@@ -4660,6 +4661,9 @@ class ChatScreen(BoxLayout):
             pop.open()
 
         self._buttons_popup("Genius Wealth", [
+            ("Protect my money: check before I trade", lambda: self._bg(lambda: wealth_answer(
+                "Give me a short money-protection checklist to go through before every trade, the top reasons people "
+                "in Uganda lose money trading, and how to stop losses early.", self._wealth_profile())), RED),
             ("Talk to Genius Wealth bot (free for everyone)", bot_on, GOLD),
             ("Read a trading chart (picture)", self.chart_pick, GOLD),
             ("Check my trade screenshot (profit/loss advice)", self.chart_pick, GOLD),
