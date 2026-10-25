@@ -3716,7 +3716,15 @@ CHART_PROMPT = ("You are a careful technical analyst. Read this trading chart pi
                 "and a bearish scenario with the price that would confirm each, 6) a sensible risk plan: where a "
                 "stop-loss could go and why to risk only 1-2% of the account. Say clearly if the picture is too "
                 "blurry or not a chart. End with: 'This is education, not financial advice. Charts can't predict "
-                "the future.' Never say a trade is guaranteed.")
+                "the future.' Never say a trade is guaranteed. "
+                "IF the screenshot shows an open or closed TRADE or position (broker app such as MT4/MT5, Exness, "
+                "Binance, a positions/history screen, or entry/stop/target lines on a chart): read the asset, buy or "
+                "sell, lot/amount, entry price, current or exit price, stop-loss, take-profit and the profit/loss "
+                "shown. Then explain: whether it is in profit or loss and by how much (in money, pips/points and % of "
+                "the account if visible); the risk-to-reward ratio; how much it would lose at the stop and gain at "
+                "the target; mistakes (no stop-loss, lot too big, risking over 2%, trading against the trend); and "
+                "calm options, e.g. keep the stop, move it to break-even, take partial profit, or close, with the "
+                "reason for each. Help the person learn from wins and losses like a coach.")
 
 
 def _get_json(url, timeout=20):
@@ -4654,6 +4662,7 @@ class ChatScreen(BoxLayout):
         self._buttons_popup("Genius Wealth", [
             ("Talk to Genius Wealth bot (free for everyone)", bot_on, GOLD),
             ("Read a trading chart (picture)", self.chart_pick, GOLD),
+            ("Check my trade screenshot (profit/loss advice)", self.chart_pick, GOLD),
             ("Make my trading plan", plan, BLUE),
             ("About my money (private)", about_me, BLUE),
             ("Live prices: Bitcoin", lambda: self._bg(lambda: market_quote("btc")), GREY),
@@ -4667,7 +4676,7 @@ class ChatScreen(BoxLayout):
 
     def chart_pick(self, *_):
         self._chart_mode = True
-        self.say("Pick a screenshot of the trading chart. I'll read the trend, levels and risk for you.")
+        self.say("Pick a screenshot of a chart or your trade. I'll read the profit or loss, the risk and what to do next.")
         self.pick_file("image/*")
 
     def chart_read(self, path):
@@ -6025,6 +6034,10 @@ class ChatScreen(BoxLayout):
         if lw in ("wealth", "wealth bot", "genius wealth", "money bot", "trading bot", "trade bot", "invest"):
             self.wealth_menu()
             return
+        if lw in ("trade", "my trade", "check trade", "check my trade", "read trade", "trade screenshot",
+                  "profit", "loss", "profit or loss"):
+            self.chart_pick()
+            return
         if lw in ("chart", "read chart", "trading chart", "analyse chart", "analyze chart"):
             self.chart_pick()
             return
@@ -6057,7 +6070,8 @@ class ChatScreen(BoxLayout):
             self.owner_make_code(line)
             return
         FREE_WEALTH = (lw in ("wealth", "wealth bot", "genius wealth", "money bot", "trading bot", "trade bot", "invest",
-                              "chart", "read chart", "trading chart", "analyse chart", "analyze chart", "dollar rate",
+                              "trade", "my trade", "check trade", "check my trade", "read trade", "trade screenshot",
+                              "profit", "loss", "profit or loss", "chart", "read chart", "trading chart", "analyse chart", "analyze chart", "dollar rate",
                               "usd rate", "home", "home page", "dashboard")
                        or lw.startswith(("market ", "live ", "rate "))
                        or getattr(self, "bot_mode", None) == "wealth")
