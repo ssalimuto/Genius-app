@@ -206,7 +206,7 @@ CHANGELOG = """Genius 102.0 Doodle (2026-10-25)
   or 'blur the background' and Genius edits THAT picture, keeping the same person
 - Ideas for changes after every picture; 'undo picture' goes back, 'new picture' starts fresh
 - Top right: Find (search chats, notes, creations, internet) and Menu (My creations, My storage, Exit, Lock, Help)
-- Fun studio (Menu or say "fun"): photo collages, 14 instant effects + AI styles, video slideshows, fun videos
+- Fun studio (Menu or say "fun"): change clothes (12 outfits), change place (14 places), beautiful photo, photo collages, 14 instant effects + AI styles, video slideshows, fun videos
 - Accounts: anyone can tap "Create an account" (name, email, hidden password, hidden code; sign in with name or email) and gets their own private Genius. Owner manages them in Menu > Accounts
 - Login: password + hidden secret code (4-8 digits). Change it in Menu or say "change code"
 - My storage: a private 200 MB space for pictures, files and notes. Say "storage", "save this" or "save note ..."
@@ -2162,6 +2162,54 @@ AI_STYLES = (("Oil painting", "turn it into a realistic oil painting"),
              ("Rainy day", "make it a rainy day with wet reflections"))
 
 
+KEEP = " Keep the same person, the same face, body shape and pose exactly; photorealistic, natural light."
+OUTFITS = (("Smart suit", "dress the person in a smart, well-fitted dark suit with a white shirt"),
+           ("Kanzu", "dress the person in a clean white Ugandan kanzu with a dark coat"),
+           ("Gomesi", "dress the person in a beautiful colourful Ugandan gomesi"),
+           ("Football jersey", "dress the person in a Uganda Cranes football jersey"),
+           ("Graduation gown", "dress the person in a graduation gown and cap"),
+           ("Doctor coat", "dress the person in a doctor's white coat with a stethoscope"),
+           ("Pilot uniform", "dress the person in an airline pilot uniform"),
+           ("Streetwear", "dress the person in stylish modern streetwear and sneakers"),
+           ("Wedding outfit", "dress the person in an elegant wedding outfit"),
+           ("Traditional Kitenge", "dress the person in a stylish African kitenge outfit"),
+           ("Winter coat", "dress the person in a warm stylish winter coat and scarf"),
+           ("Sports kit", "dress the person in a sporty running outfit"))
+PLACES = (("Beach", "put the person on a beautiful sunny beach with blue sea"),
+          ("Kampala city", "put the person in Kampala city centre with tall buildings"),
+          ("Source of the Nile", "put the person at the Source of the Nile in Jinja"),
+          ("Murchison Falls", "put the person in front of Murchison Falls in Uganda"),
+          ("Mountains", "put the person in green mountains like the Rwenzori"),
+          ("Paris", "put the person in Paris with the Eiffel Tower behind"),
+          ("New York", "put the person on a New York street with skyscrapers"),
+          ("Dubai", "put the person in Dubai with the Burj Khalifa behind"),
+          ("Luxury car", "put the person standing next to a shiny luxury car"),
+          ("Office", "put the person in a modern bright office"),
+          ("Stadium", "put the person on the pitch of a big football stadium"),
+          ("Safari", "put the person on a safari in Queen Elizabeth park with animals far behind"),
+          ("Night city", "put the person in a city at night with beautiful lights"),
+          ("Studio portrait", "put the person in a professional photo studio with a plain soft background"))
+BEAUTY = (("Make it beautiful", "make this a beautiful professional photo: better light, sharp, rich colours, clean background"),
+          ("Clear skin", "gently clear the skin and remove spots while keeping it natural"),
+          ("Better lighting", "improve the lighting to soft, flattering golden light"),
+          ("Blur background", "blur the background like a professional camera, keep the person sharp"),
+          ("Smile", "give the person a natural, happy smile"),
+          ("Neat hair", "make the hair neat and well styled"))
+
+
+def beautify(path):
+    from PIL import ImageOps, ImageEnhance, ImageFilter
+    im = _open_rgb(path)
+    im.thumbnail((2000, 2000))
+    im = ImageOps.autocontrast(im, cutoff=1)
+    im = ImageEnhance.Color(im).enhance(1.18)
+    im = ImageEnhance.Brightness(im).enhance(1.04)
+    im = im.filter(ImageFilter.UnsharpMask(2, 90, 3))
+    out = fun_out("beautiful")
+    im.save(out, quality=94)
+    return out, "Made it brighter, sharper and more colourful."
+
+
 def fun_out(prefix, ext=".jpg"):
     return os.path.join(genius_dl("fun"), f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}{ext}")
 
@@ -2249,7 +2297,7 @@ def transform_image(path, style):
     return out, f"{style} done."
 
 
-def make_slideshow(paths, seconds=2):
+def make_slideshow(paths, seconds=2, effect=""):
     """A little video: pictures fade into each other, saved as an animated GIF that plays anywhere."""
     from PIL import Image, ImageOps
     paths = [p for p in paths if p and os.path.exists(p)][:12]
@@ -2262,6 +2310,18 @@ def make_slideshow(paths, seconds=2):
             imgs.append(ImageOps.fit(_open_rgb(p), size))
         except Exception:
             pass
+    if effect:
+        tmp = []
+        for im in imgs:
+            f = os.path.join(genius_dl("fun"), ".tmp_fx.jpg")
+            im.save(f)
+            o, _ = transform_image(f, effect) if effect != "Beautify" else beautify(f)
+            tmp.append(ImageOps.fit(_open_rgb(o), size) if o else im)
+            try:
+                os.remove(o)
+            except Exception:
+                pass
+        imgs = tmp
     frames, durs = [], []
     for i, im in enumerate(imgs):
         frames.append(im)
@@ -3450,12 +3510,67 @@ class ChatScreen(BoxLayout):
 
     def fun_studio(self, *_):
         self._buttons_popup("Fun studio", [
+            ("Change clothes", lambda: self.ai_menu("Change clothes", OUTFITS), GOLD),
+            ("Change place", lambda: self.ai_menu("Change place", PLACES), GOLD),
+            ("Beautiful photo", self.beauty_menu, GOLD),
             ("Make a collage", lambda: self.fun_pick("collage"), BLUE),
             ("Transform a picture", self.transform_menu, BLUE),
-            ("Make a video slideshow", lambda: self.fun_pick("video"), BLUE),
+            ("Make a video slideshow", self.video_menu, BLUE),
             ("Collage of my newest 6 photos", lambda: self.fun_run("collage", newest_photos(6)), GREY),
             ("Video of my newest 6 photos", lambda: self.fun_run("video", newest_photos(6)), GREY),
             ("Watch fun videos", self.fun_videos, GOLD)], hint="Pick pictures and have fun")
+
+    def _edit_src(self):
+        src = LAST_IMAGE.get("path")
+        if src and os.path.exists(src):
+            return src
+        me = my_photo()
+        if me:
+            remember_image(me, "my photo")
+            return me
+        return None
+
+    def ai_menu(self, title, items):
+        src = self._edit_src()
+        if not src:
+            self.say("First add your photo with + (or say setme after taking a selfie), then choose again.")
+            return
+        opts = [(t, lambda ins=ins: (remember_image(src, "photo to change"), self.do_edit(ins + "." + KEEP)), BLUE)
+                for t, ins in items]
+        opts.append(("Type my own...", lambda: self.say("Just type what you want, e.g. 'put me in a red suit at the airport'."), GREY))
+        self._buttons_popup(title, opts, cols=2, hint="Changes: " + os.path.basename(src)[:28])
+
+    def beauty_menu(self):
+        src = self._edit_src()
+        if not src:
+            self.say("Add a photo with + first, then tap Beautiful photo.")
+            return
+        opts = [("Quick beautify (instant)", lambda: self.fun_transform(src, "Beautify"), BLUE)]
+        opts += [(t, lambda ins=ins: (remember_image(src, "photo to improve"), self.do_edit(ins + "." + KEEP)), GOLD)
+                 for t, ins in BEAUTY]
+        self._buttons_popup("Beautiful photo", opts, cols=1, hint="Blue = instant. Gold = AI")
+
+    def video_menu(self):
+        self._video_opts = getattr(self, "_video_opts", {"seconds": 2, "effect": ""})
+        o = self._video_opts
+
+        def setv(**k):
+            o.update(k)
+            self.say(f"Video: {o['seconds']} s per picture, effect: {o['effect'] or 'none'}. Now choose pictures.")
+            self.video_menu()
+        self._buttons_popup("Video slideshow", [
+            ("Choose pictures and make it", lambda: self.fun_pick("video"), GOLD),
+            ("Use my newest 6 photos", lambda: self.fun_run("video", newest_photos(6)), GOLD),
+            ("Speed: fast (1 s)", lambda: setv(seconds=1), BLUE),
+            ("Speed: normal (2 s)", lambda: setv(seconds=2), BLUE),
+            ("Speed: slow (4 s)", lambda: setv(seconds=4), BLUE),
+            ("Effect: none", lambda: setv(effect=""), GREY),
+            ("Effect: beautify", lambda: setv(effect="Beautify"), GREY),
+            ("Effect: vintage", lambda: setv(effect="Vintage"), GREY),
+            ("Effect: black & white", lambda: setv(effect="Black & white"), GREY),
+            ("Effect: vivid colours", lambda: setv(effect="Vivid colours"), GREY),
+            ("Effect: soft glow", lambda: setv(effect="Soft glow"), GREY)], cols=2,
+            hint=f"Now: {o['seconds']} s per picture, effect {o['effect'] or 'none'}")
 
     def fun_videos(self):
         self._buttons_popup("Watch fun videos", [
@@ -3517,7 +3632,11 @@ class ChatScreen(BoxLayout):
 
         def d(*_):
             try:
-                out, msg = (make_collage if job == "collage" else make_slideshow)(paths)
+                if job == "collage":
+                    out, msg = make_collage(paths)
+                else:
+                    vo = getattr(self, "_video_opts", {"seconds": 2, "effect": ""})
+                    out, msg = make_slideshow(paths, vo["seconds"], vo["effect"])
             except ImportError:
                 out, msg = None, "The picture tools aren't installed in this version."
             except Exception as e:
@@ -3543,7 +3662,7 @@ class ChatScreen(BoxLayout):
         if not src:
             self.say("Add a picture first with +, then tap Transform.")
             return
-        opts = [(st, lambda st=st: self.fun_transform(src, st), BLUE) for st in FUN_STYLES]
+        opts = [(st, lambda st=st: self.fun_transform(src, st), BLUE) for st in ("Beautify",) + FUN_STYLES]
         opts += [("AI: " + t, lambda ins=ins: (remember_image(src, "picture to transform"), self.do_edit(ins)), GOLD)
                  for t, ins in AI_STYLES]
         self._buttons_popup("Transform: " + os.path.basename(src)[:24], opts, cols=2,
@@ -3554,7 +3673,7 @@ class ChatScreen(BoxLayout):
 
         def d(*_):
             try:
-                out, msg = transform_image(src, style)
+                out, msg = beautify(src) if style == "Beautify" else transform_image(src, style)
             except ImportError:
                 out, msg = None, "The picture tools aren't installed in this version."
             except Exception as e:
@@ -4048,11 +4167,20 @@ class ChatScreen(BoxLayout):
         if lw in ("fun", "fun studio", "studio", "have fun"):
             self.fun_studio()
             return
+        if lw in ("change clothes", "clothes", "outfit", "change outfit", "change wear"):
+            self.ai_menu("Change clothes", OUTFITS)
+            return
+        if lw in ("change place", "places", "change background", "background"):
+            self.ai_menu("Change place", PLACES)
+            return
+        if lw in ("beautiful", "beautify", "beautiful photo", "make it beautiful"):
+            self.beauty_menu()
+            return
         if lw in ("collage", "make a collage", "make collage"):
             self.fun_pick("collage")
             return
-        if lw in ("slideshow", "make a video", "make video", "video slideshow"):
-            self.fun_pick("video")
+        if lw in ("slideshow", "make a video", "make video", "video slideshow", "edit video", "video"):
+            self.video_menu()
             return
         if lw in ("transform", "effects", "filters", "transform picture"):
             self.transform_menu()
