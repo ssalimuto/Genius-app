@@ -434,6 +434,105 @@ def create_account(name, pw, code, email=""):
     return ""
 
 
+# ---------------- Genius Premium: free trial, then 2,000 UGX ----------------
+TRIAL_DAYS = 7
+TRIAL_USES = 50
+PREMIUM_PRICE = "2,000 UGX"
+PREMIUM_DAYS = 7                        # one payment = 1 week
+PAY_NUMBER = ""                         # Mobile Money number people pay to (set by the owner)
+PAY_NAME = "Ssali Muto"
+_PREMIUM_SALT = b"genius-premium-v1-ssalimuto-7f3a9c"
+_TRIAL_MARK = "/storage/emulated/0/Download/Genius/.gp" if os.path.isdir("/storage/emulated/0") else None
+
+
+def _trial_mark_get(email):
+    """A hidden copy outside the app, so reinstalling doesn't restart the free trial."""
+    try:
+        return json.load(open(_TRIAL_MARK)).get(hashlib.sha256(email.encode()).hexdigest()[:16])
+    except Exception:
+        return None
+
+
+def _trial_mark_set(email, start):
+    if not _TRIAL_MARK:
+        return
+    try:
+        d = json.load(open(_TRIAL_MARK)) if os.path.exists(_TRIAL_MARK) else {}
+        d.setdefault(hashlib.sha256(email.encode()).hexdigest()[:16], start)
+        os.makedirs(os.path.dirname(_TRIAL_MARK), exist_ok=True)
+        json.dump(d, open(_TRIAL_MARK, "w"))
+    except Exception:
+        pass
+
+
+def premium_code(email, months=1, yymm=None):
+    """Unlock code the owner gives after payment: W<weeks>-<YYMM>-<6 signed characters>."""
+    yymm = yymm or time.strftime("%y%m")
+    sig = hmac.new(_PREMIUM_SALT, f"{email.strip().lower()}|{months}|{yymm}".encode(), hashlib.sha256).hexdigest()[:6].upper()
+    return f"W{months}-{yymm}-{sig}"
+
+
+def premium_status():
+    """Returns (allowed, message) for the signed-in person. The owner is always free."""
+    if CURRENT["owner"]:
+        return True, "You're the owner, so Genius is free for you."
+    a = accounts_load()
+    acc = a.get(CURRENT["name"])
+    if not acc:
+        return True, ""
+    now = time.time()
+    if acc.get("premium_until", 0) > now:
+        days = int((acc["premium_until"] - now) // 86400) + 1
+        return True, f"Genius Premium is active for {days} more day{'s' if days != 1 else ''}."
+    email = acc.get("email", CURRENT["name"])
+    start = acc.get("trial_start") or _trial_mark_get(email) or now
+    if not acc.get("trial_start"):
+        acc["trial_start"] = start
+        accounts_save(a)
+    _trial_mark_set(email, start)
+    days_left = TRIAL_DAYS - int((now - start) // 86400)
+    uses_left = TRIAL_USES - acc.get("uses", 0)
+    if days_left > 0 and uses_left > 0:
+        return True, (f"Free trial: {days_left} day{'s' if days_left != 1 else ''} and {uses_left} "
+                      f"use{'s' if uses_left != 1 else ''} left.")
+    return False, "Your free trial has ended."
+
+
+def premium_count_use():
+    if CURRENT["owner"]:
+        return
+    a = accounts_load()
+    if CURRENT["name"] in a and a[CURRENT["name"]].get("premium_until", 0) <= time.time():
+        a[CURRENT["name"]]["uses"] = a[CURRENT["name"]].get("uses", 0) + 1
+        accounts_save(a)
+
+
+def premium_redeem(code):
+    code = code.strip().upper().replace(" ", "")
+    m = re.fullmatch(r"W(\d{1,2})-(\d{4})-([0-9A-F]{6})", code)
+    a = accounts_load()
+    acc = a.get(CURRENT["name"])
+    if not m or not acc:
+        return "That code doesn't look right. It looks like W1-2610-AB12CD."
+    months, yymm = int(m.group(1)), m.group(2)
+    this = time.strftime("%y%m")
+    prev = time.strftime("%y%m", time.localtime(time.time() - 32 * 86400))
+    if yymm not in (this, prev):
+        return "That code has expired. Ask the owner for a new one."
+    if not hmac.compare_digest(premium_code(acc.get("email", ""), months, yymm), code):
+        intruder_log("wrong premium code", CURRENT["name"])
+        return "That code isn't for this account. Check your email with the owner."
+    used = acc.setdefault("used_codes", [])
+    if code in used:
+        return "That code was already used."
+    used.append(code)
+    base = max(time.time(), acc.get("premium_until", 0))
+    acc["premium_until"] = base + PREMIUM_DAYS * months * 86400
+    accounts_save(a)
+    log(f"PREMIUM: {CURRENT['name']} unlocked {months} week(s)")
+    return ""
+
+
 def name_for(login):
     """Sign in with your name or your email."""
     login = login.strip().lower()
@@ -4154,6 +4253,7 @@ class ChatScreen(BoxLayout):
     def fun_studio(self, *_):
         self._buttons_popup("Fun studio", [
             ("Banana studio (realistic AI editing)", self.banana_studio, GOLD),
+            ("Genius Premium", self.premium_popup, GOLD),
             ("Music maker (AI songs)", self.music_menu, GOLD),
             ("Super zoom camera (1x-100x)", self.zoom_camera, GOLD),
             ("Zoom a photo", self.zoom_photo_menu, BLUE),
@@ -4371,6 +4471,70 @@ class ChatScreen(BoxLayout):
                     self.say(msg)
             Clock.schedule_once(done, 0)
         threading.Thread(target=d, daemon=True).start()
+
+    # ---------- Genius Premium ----------
+    def premium_popup(self, *_):
+        ok, msg = premium_status()
+        box = BoxLayout(orientation="vertical", spacing=10, padding=14)
+        pay = (f"Pay by Mobile Money to [b]{PAY_NUMBER}[/b] ({PAY_NAME})" if PAY_NUMBER
+               else f"Pay by Mobile Money to the owner, {PAY_NAME}")
+        email = accounts_load().get(CURRENT["name"], {}).get("email", "")
+        txt = (f"[b][color=ffc84d]Genius Premium[/color][/b]\n{msg}\n\n"
+               f"Unlock everything for [b]{PREMIUM_PRICE} a week[/b].\n"
+               f"1. {pay}.\n2. Send the owner your email ([color=9db4ff]{email}[/color]) and the transaction ID.\n"
+               f"3. Type the unlock code you get below.")
+        if CURRENT["owner"]:
+            txt = (f"[b][color=ffc84d]Genius Premium[/color][/b]\n{msg}\n\nOther people get {TRIAL_DAYS} free days "
+                   f"or {TRIAL_USES} uses, then pay {PREMIUM_PRICE} a week.\n"
+                   f"When someone pays, say: makecode their@email.com (or makecode their@email.com 4 for 4 weeks).")
+        lab = Label(text=txt, markup=True, color=TEXTCOL, font_size="15sp", halign="left", valign="top")
+        lab.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
+        box.add_widget(lab)
+        pop = Popup(title="Upgrade", content=box, size_hint=(0.94, 0.78), separator_color=GOLD, title_color=GOLD)
+        if not CURRENT["owner"]:
+            code_in = style_input(TextInput(hint_text="Unlock code, like W1-2610-AB12CD", multiline=False,
+                                            size_hint_y=None, height="52dp", font_size="17sp"))
+            box.add_widget(code_in)
+            info = Label(text="", color=(1, 0.5, 0.5, 1), size_hint_y=None, height="26dp", font_size="14sp")
+            box.add_widget(info)
+
+            def go(*_):
+                err = premium_redeem(code_in.text)
+                if err:
+                    info.text = err
+                    return
+                pop.dismiss()
+                self.say("Welcome to Genius Premium! Everything is unlocked. " + premium_status()[1])
+            b = RoundButton(text="Unlock Premium", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), size_hint_y=None,
+                            height="54dp", font_size="18sp", bold=True)
+            b.bind(on_press=go)
+            box.add_widget(b)
+        c = RoundButton(text="Close", bg=GREY, size_hint_y=None, height="46dp")
+        c.bind(on_press=pop.dismiss)
+        box.add_widget(c)
+        pop.open()
+
+    def owner_make_code(self, line):
+        if not CURRENT["owner"]:
+            self.say("Only the owner can make unlock codes.")
+            return
+        parts = line.split()
+        parts = parts[2:] if parts[0].lower() == "make" else parts[1:]
+        if not parts:
+            self.say("Say: makecode their@email.com  (add a number for more weeks, like makecode name@gmail.com 4)")
+            return
+        who = parts[0].strip().lower()
+        months = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() and 1 <= int(parts[1]) <= 52 else 1
+        if "@" not in who:
+            acc = accounts_load().get(who)
+            who = acc.get("email", "") if acc else ""
+            if not who:
+                self.say("I need their email, the one they signed up with.")
+                return
+        code = premium_code(who, months)
+        log(f"PREMIUM CODE made for {who} ({months} week)")
+        self.say(f"Unlock code for {who}, {months} week{'s' if months > 1 else ''}: {code}. "
+                 f"Send it to them only after you see the payment. It works this month and next.")
 
     # ---------- Music maker ----------
     def music_menu(self, *_):
@@ -5138,6 +5302,18 @@ class ChatScreen(BoxLayout):
             self.say("Only the owner of this phone can do that.")
             return
         lw = low.strip(" .!")
+        if lw in ("premium", "upgrade premium", "pay", "subscribe", "trial", "my plan", "unlock premium"):
+            self.premium_popup()
+            return
+        if lw.startswith("makecode") or lw.startswith("make code"):
+            self.owner_make_code(line)
+            return
+        if not CURRENT["owner"] and lw not in ("help", "version", "exit", "close", "bye"):
+            ok, _msg = premium_status()
+            if not ok:
+                self.premium_popup()
+                return
+            premium_count_use()
         if lw in ("fun", "fun studio", "studio", "have fun"):
             self.fun_studio()
             return
