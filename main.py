@@ -273,7 +273,7 @@ VERSION = "107.0"
 VERSION_DATE = "2026-10-25"
 CHANGELOG = """Genius 107.0 (2026-10-25)
 - Updates itself: type update and Genius downloads and installs the newest version, no website needed.
-- Tells you once a day when a new version is out.
+- Updates on its own: when a new version is out, Genius downloads it by itself and you just tap Update.
 
 Genius 106.0 (2026-10-25)
 - Understands misspelled commands, e.g. itruders becomes intruders.
@@ -1087,7 +1087,7 @@ def update_due():
         last = json.load(open(UPDATE_CHECK_FILE)).get("t", 0)
     except Exception:
         last = 0
-    if time.time() - last < 20 * 3600:
+    if time.time() - last < 5 * 3600:
         return False
     try:
         json.dump({"t": time.time()}, open(UPDATE_CHECK_FILE, "w"))
@@ -7805,17 +7805,25 @@ class GeniusApp(App):
         everywhere_load()
         threading.Thread(target=lambda: brain_self_review(), daemon=True).start()
         def check_update():
-            if not update_due():
-                return
-            found, _ = online_update()
-            if found:
-                def tell(*_):
-                    chat = getattr(self, "chat", None)
-                    if chat is not None:
-                        chat.say(f"Genius {found[0]} is out. Type update to install it right here.")
-                    else:
-                        Clock.schedule_once(tell, 5)
-                Clock.schedule_once(tell, 3)
+            # Auto-update: after unlock, then every 6 hours, Genius fetches the new
+            # version by itself and opens Android's Update screen (one tap).
+            while getattr(self, "chat", None) is None:
+                time.sleep(5)              # wait until the owner has unlocked Genius
+            while True:
+                if update_due():
+                    found, _ = online_update()
+                    if found and CURRENT.get("owner"):
+                        def tell(t):
+                            def go(*_):
+                                chat = getattr(self, "chat", None)
+                                if chat is not None:
+                                    chat.say(t)
+                                else:
+                                    Clock.schedule_once(go, 5)
+                            Clock.schedule_once(go, 1)
+                        tell(f"Genius {found[0]} is out. Getting it for you now.")
+                        install_online_update(found[0], found[1], tell)
+                time.sleep(6 * 3600)
         threading.Thread(target=check_update, daemon=True).start()
         EVERYWHERE["pending"] = intent_action()
         try:
