@@ -2301,6 +2301,45 @@ def ask_all(question):
                        sorted(results.items(), key=lambda x: x[1][1]))
 
 
+_FAST_CACHE = {}
+
+
+def fast_answer(question):
+    """Race every connected AI at once and return the FIRST good answer (Groq usually wins in under a second)."""
+    key = question.strip().lower()
+    hit = _FAST_CACHE.get(key)
+    if hit and time.time() - hit[1] < 1800:
+        return hit[0] + "\n[size=11sp][color=9aa0c0]\u26a1 instant (remembered)[/color][/size]"
+    import queue
+    q = queue.Queue()
+    jobs = {"groq": lambda: other_ai("groq", question, max_tokens=400),
+            "gemini": lambda: _ask_gemini_only(question, 400),
+            "openrouter": lambda: other_ai("openrouter", question, max_tokens=400)}
+    have = connected_ais()
+    jobs = {k: v for k, v in jobs.items() if k in have} or {"gemini": jobs["gemini"]}
+    t0 = time.time()
+
+    def run(k, fn):
+        try:
+            r = fn()
+        except Exception:
+            r = None
+        q.put((k, r))
+    for k, fn in jobs.items():
+        threading.Thread(target=run, args=(k, fn), daemon=True).start()
+    for _ in jobs:
+        try:
+            k, r = q.get(timeout=40)
+        except Exception:
+            break
+        if r and len(r.strip()) > 1:
+            _FAST_CACHE[key] = (r.strip(), time.time())
+            if len(_FAST_CACHE) > 200:
+                _FAST_CACHE.pop(next(iter(_FAST_CACHE)))
+            return r.strip() + f"\n[size=11sp][color=9aa0c0]\u26a1 {time.time() - t0:.1f}s[/color][/size]"
+    return "No AI answered fast enough. Check your internet."
+
+
 def genius_mind(question):
     """Genius Mind: plan, ask every AI, cross-check with live web search, critique, then one best answer."""
     plan = ask_gemini("Break this question into the key sub-questions and facts needed. Short list only.\n\n" + question,
@@ -6046,6 +6085,10 @@ class ChatScreen(BoxLayout):
                 except Exception as e:
                     self.say(f"Listing apps only works on the phone: {e}")
                 return
+        if lw.startswith(("quick ", "fast ", "q ")):
+            q = line.split(" ", 1)[1]
+            self._bg(lambda: fast_answer(q))
+            return
         if lw.startswith(("mind ", "think ", "genius mind ")):
             q = line.split(" ", 2)[2] if lw.startswith("genius mind ") else line.split(" ", 1)[1]
             self._bg(lambda: genius_mind(q))
