@@ -3757,6 +3757,41 @@ def intent_action(intent=None):
         return None
 
 # ---------------- screens ----------------
+class ProfileChip(Button):
+    """Round profile picture (or initial) for the left of the header."""
+    def __init__(self, **kw):
+        sz = kw.pop("size", ("42dp", "42dp"))
+        kw.setdefault("width", sz[0])
+        kw.setdefault("height", sz[1])
+        kw.setdefault("font_size", "18sp")
+        super().__init__(background_normal="", background_down="", background_color=(0, 0, 0, 0),
+                         size_hint=(None, None), bold=True, color=(1, 1, 1, 1), **kw)
+        self.bind(pos=self.redraw, size=self.redraw)
+        Clock.schedule_once(self.redraw, 0)
+
+    def redraw(self, *_):
+        from kivy.graphics import Ellipse
+        self.canvas.before.clear()
+        photo = my_photo()
+        name = str(CURRENT.get("name") or "G")
+        with self.canvas.before:
+            Color(*GOLD)
+            Ellipse(pos=(self.x - 2, self.y - 2), size=(self.width + 4, self.height + 4))
+            if photo:
+                try:
+                    tex = KivyImage(source=photo, nocache=True).texture
+                    Color(1, 1, 1, 1)
+                    Ellipse(pos=self.pos, size=self.size, texture=tex)
+                    self.text = ""
+                    return
+                except Exception:
+                    pass
+            Color(0.55, 0.38, 0.95, 1)
+            Ellipse(pos=self.pos, size=self.size)
+        self.color = (1, 1, 1, 1)
+        self.text = name[:1].upper()
+
+
 class RoundButton(Button):
     """A glossy rounded button: gradient fill, soft shadow, shine, press animation."""
     def __init__(self, bg=GREY, fg=TEXTCOL, **kw):
@@ -4032,9 +4067,14 @@ class ChatScreen(BoxLayout):
         self.deep = False
         add_gradient_bg(self)
 
-        # header bar
+        # header bar: profile on the left
         header = Panel(bg=HEADER, radius=0, orientation="horizontal",
-                       size_hint_y=None, height="60dp", padding=[18, 0, 18, 0])
+                       size_hint_y=None, height="60dp", padding=[12, 0, 18, 0], spacing=10)
+        pbox = BoxLayout(size_hint_x=None, width="46dp", padding=[0, 9, 0, 9])
+        self.profile_chip = ProfileChip()
+        self.profile_chip.bind(on_press=self.profile_drawer)
+        pbox.add_widget(self.profile_chip)
+        header.add_widget(pbox)
         title = Label(text="[b][color=ffc84d]Gen[/color][color=c79bff]ius[/color][/b]  [size=12sp][color=5ee6a0]\u25cf[/color] [color=9aa0c0]online[/color][/size]",
                       markup=True, font_size="25sp", halign="left", valign="middle")
         title.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
@@ -4413,6 +4453,64 @@ class ChatScreen(BoxLayout):
         self.out.text = ""
         log("CHAT CLEARED")
         self.say("Chat cleared. Fresh start.")
+
+    # ---------- profile drawer: slides in from the left ----------
+    def profile_drawer(self, *_):
+        name = str(CURRENT.get("name") or "")
+        acc = accounts_load().get(name, {}) if not CURRENT["owner"] else {}
+        email = acc.get("email", "") if acc else ""
+        try:
+            _ok, plan = premium_status()
+        except Exception:
+            plan = ""
+        box = BoxLayout(orientation="vertical", spacing=10, padding=[14, 14, 14, 14])
+        pop = Popup(title="", separator_height=0, content=box, size_hint=(0.82, 1),
+                    pos_hint={"x": 0, "top": 1}, background_color=(0.07, 0.05, 0.16, 0.97))
+        top = BoxLayout(size_hint_y=None, height="96dp", spacing=12)
+        big = ProfileChip(size=("84dp", "84dp"), font_size="34sp")
+        top.add_widget(big)
+        info = Label(text=f"[b]{name or 'Guest'}[/b]\n[size=13sp]{'Owner' if CURRENT['owner'] else (email or 'Member')}[/size]",
+                     markup=True, color=TEXTCOL, font_size="20sp", halign="left", valign="middle")
+        info.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        top.add_widget(info)
+        box.add_widget(top)
+        if plan:
+            pl = Label(text=plan, color=GOLD, font_size="14sp", size_hint_y=None, height="44dp", halign="left", valign="middle")
+            pl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+            box.add_widget(pl)
+
+        def set_photo():
+            src = LAST_IMAGE.get("path")
+            if src and set_my_photo(src):
+                self.profile_chip.redraw()
+                self.say("Your profile picture is updated.")
+            else:
+                self.say("Take a selfie or add a picture first, then tap 'Use last picture as my photo'.")
+
+        opts = [("Use last picture as my photo", set_photo, GOLD),
+                ("Take a selfie", self.zoom_camera, BLUE),
+                ("My plan (Premium)", self.premium_popup, BLUE),
+                ("My storage", self.storage_box, BLUE),
+                ("My creations", self.creations, BLUE),
+                ("Genius everywhere", self.everywhere_menu, GREY),
+                ("Share Genius", self.share_menu, GREY),
+                ("Change secret code", lambda: self.handle("change code"), GREY),
+                ("Sign out", self.app.build_login, RED)]
+        sv = ScrollView()
+        grid = GridLayout(cols=1, spacing=8, size_hint_y=None)
+        grid.bind(minimum_height=grid.setter("height"))
+        for label, fn, col in opts:
+            b = RoundButton(text=label, bg=col, fg=TEXTCOL, size_hint_y=None, height="50dp", font_size="16sp", bold=True)
+
+            def go(btn, fn=fn):
+                pop.dismiss()
+                fn()
+            b.bind(on_press=go)
+            grid.add_widget(b)
+        sv.add_widget(grid)
+        box.add_widget(sv)
+        box.add_widget(Label(text="Genius · App built by Ssali", color=HINT, font_size="12sp", size_hint_y=None, height="24dp"))
+        pop.open()
 
     # ---------- header: Menu (options) and Find (search) ----------
     def options_menu(self, *_):
@@ -5690,6 +5788,9 @@ class ChatScreen(BoxLayout):
                 except Exception as e:
                     self.say(f"Listing apps only works on the phone: {e}")
                 return
+        if lw in ("profile", "my profile", "account", "me"):
+            self.profile_drawer()
+            return
         if lw in ("share", "share genius", "share app", "invite", "invite friends"):
             self.share_menu()
             return
