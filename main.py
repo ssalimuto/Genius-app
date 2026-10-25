@@ -212,7 +212,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 104.0
+ABOUT_TEXT = """Genius 105.0
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -268,9 +268,12 @@ What this means
 
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
-VERSION = "104.0"
+VERSION = "105.0"
 VERSION_DATE = "2026-10-25"
-CHANGELOG = """Genius 104.0 Agent (2026-10-25)
+CHANGELOG = """Genius 105.0 (2026-10-25)
+- When Google refuses your key, Genius now tells you exactly why and how to fix it.
+
+Genius 104.0 Agent (2026-10-25)
 - Genius Agent: "do <job>" plans the job, does each step with live search, checks itself and saves the result.
 - Teach a skill once: "teach skill news: step; step", then "run news" forever. "skillbook" lists them.
 - Every question now trains the Brain: each answer, from any mode, leaves a lesson for next time.
@@ -927,6 +930,37 @@ def offline_reply(text):
     return None
 
 
+def key_reason(code, detail=""):
+    """Plain words for why Google refused the key, with Google's own reason."""
+    msg, why = "", ""
+    try:
+        err = json.loads(detail).get("error", {})
+        msg = (err.get("message") or "").strip()
+        for d in err.get("details") or []:
+            why = why or d.get("reason", "")
+    except Exception:
+        pass
+    k = (why + " " + msg).upper()
+    if "API_KEY_INVALID" in k or "NOT VALID" in k:
+        tip = "This key is wrong or was deleted. Make a new one at aistudio.google.com/apikey"
+    elif "EXPIRED" in k:
+        tip = "This key has expired. Make a new one at aistudio.google.com/apikey"
+    elif "SERVICE_DISABLED" in k or "HAS NOT BEEN USED" in k or "DISABLED" in k:
+        tip = "The Gemini service is switched off for this key's project. Make a key in a new project at aistudio.google.com/apikey"
+    elif "LOCATION" in k or "REGION" in k or "COUNTRY" in k:
+        tip = "Google doesn't allow this key from your location"
+    elif "BLOCKED" in k or "RESTRICT" in k or "REFERER" in k or "ANDROID" in k:
+        tip = "This key has limits that block the app. Remove the key's restrictions, or make a new key"
+    elif "PERMISSION" in k or code == 403:
+        tip = "This key isn't allowed to use Gemini. Make a new one at aistudio.google.com/apikey"
+    else:
+        tip = "Google refused the key"
+    out = "Google rejected the key. " + tip + ", then type setkey and paste only the key."
+    if msg:
+        out += "\nGoogle says: " + msg[:220]
+    return out
+
+
 def clean_key(text):
     """Pull the real key out of whatever was pasted (even a whole curl command)."""
     m = re.search(r"(AQ\.[A-Za-z0-9_\-]+|AIza[A-Za-z0-9_\-]{20,})", text)
@@ -1223,8 +1257,9 @@ def _gemini_image(prompt, ref=None, edit=None, blend=None):
                     return os.path.abspath(name), None
             last = "The model sent no picture. Try a simpler description."
         except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                return None, "Google rejected the key. Use setkey again."
+            detail = e.read().decode("utf8", "ignore")
+            if e.code in (401, 403) or (e.code == 400 and "API key" in detail):
+                return None, key_reason(e.code, detail)
             if e.code == 404:
                 last = "Drawing isn't on this key's free plan yet."
                 continue
@@ -1273,7 +1308,7 @@ def _gemini_try(key, use_search, max_tokens, timeout, deep):
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf8", "ignore")
                 if e.code in (401, 403) or (e.code == 400 and "API key" in detail):
-                    return None, "Google rejected the key. Copy only the key and use setkey again.", True
+                    return None, key_reason(e.code, detail), True
                 if e.code == 429:
                     err = "Free limit reached for now. Wait a minute and ask again."
                     break                  # next model won't help the quota
@@ -1634,7 +1669,7 @@ def agent_reply(text, ui, deep=False):
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf8", "ignore")
             if e.code in (401, 403) or (e.code == 400 and "API key" in detail):
-                return None, "Google rejected the key. Copy only the key and use setkey again."
+                return None, key_reason(e.code, detail)
             if e.code == 429:
                 err = "Free limit reached for now. Wait a minute and ask again."
             continue
@@ -3405,8 +3440,9 @@ def ask_about_file(path, kind, question):
             if t:
                 return t
         except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                return "Google rejected the key. Use setkey again."
+            detail = e.read().decode("utf8", "ignore")
+            if e.code in (401, 403) or (e.code == 400 and "API key" in detail):
+                return key_reason(e.code, detail)
             last = "Free limit reached. Wait a minute." if e.code == 429 else "Google is busy. Try again shortly."
         except Exception:
             last = "Your internet is too slow right now. Try better signal."
