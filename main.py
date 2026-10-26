@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "111.1"
+VERSION = "111.2"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -420,7 +420,8 @@ HELP_EXTRA = {
     "transform / looks": "Instant effects and iPhone-style looks that work offline",
     "ultra / zoom photo / ai zoom": "Make a photo sharper, or zoom into it",
     "collage / slideshow": "Put pictures together, or make a looping video",
-    "camera": "Zoom camera",
+    "camera": "Camera menu: selfie, back camera or live zoom",
+    "selfie": "Open the front camera for a selfie",
     "new picture / undo picture": "Start a fresh picture, or go back one",
     "quick <question>": "Fastest answer from any connected AI",
     "mind <question>": "Genius Mind: every AI plus web checks for one careful answer",
@@ -443,7 +444,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 111.1
+ABOUT_TEXT = """Genius 111.2
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -504,7 +505,10 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 111.1 (2026-10-26)
+CHANGELOG = """Genius 111.2 (2026-10-26)
+- Selfie camera button on the home screen, next to Super zoom camera. You can also add a Genius Selfie button to your phone's home screen (Genius everywhere).
+
+Genius 111.1 (2026-10-26)
 - Save and share: every picture now has Save to gallery, Save to files and Share buttons. Or just say 'save', 'save to files' or 'share picture'. Pictures go to your Gallery in a Genius album.
 
 Genius 111.0 (2026-10-26)
@@ -9548,6 +9552,7 @@ class ChatScreen(BoxLayout):
             ('"Hey Genius" wake word: ' + ("ON" if hey else "OFF"), self.toggle_hey, GOLD),
             ("Home-screen button: Talk", lambda: self.add_shortcut("talk", "Genius Talk"), BLUE),
             ("Home-screen button: Camera", lambda: self.add_shortcut("camera", "Genius Camera"), BLUE),
+            ("Home-screen button: Selfie", lambda: self.add_shortcut("selfie", "Genius Selfie"), BLUE),
             ("Home-screen button: Music", lambda: self.add_shortcut("sound", "Genius Music"), BLUE),
             ("Home-screen button: Ultra photo", lambda: self.add_shortcut("ultra", "Genius Ultra"), BLUE),
         ], cols=1, hint="Use Genius from anywhere on your phone")
@@ -12542,7 +12547,8 @@ class HomeScreen(BoxLayout):
         tiles = [("Chat with Genius", None, GOLD), ("Talk (voice)", "talk", BLUE),
                  ("Genius Wealth", "wealth", GOLD), ("Read a trading chart", "chart", GOLD2),
                  ("Make music", "sound", BLUE2), ("Photo studio", "fun", BLUE),
-                 ("Super zoom camera", "camera", BLUE2), ("Genius Ultra photo", "ultra", BLUE),
+                 ("Super zoom camera", "camera", BLUE2), ("Selfie camera", "selfie", GOLD2),
+                 ("Genius Ultra photo", "ultra", BLUE),
                  ("My storage", "storage", GREY), ("Genius everywhere", "everywhere", GREY),
                  ("Share Genius", "share", GREY), ("My plan", "premium", GREY)]
         for label, act, c in tiles:
