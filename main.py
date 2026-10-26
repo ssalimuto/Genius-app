@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "110.3"
+VERSION = "110.4"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -434,7 +434,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 110.3
+ABOUT_TEXT = """Genius 110.4
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -495,7 +495,12 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 110.3 (2026-10-26)
+CHANGELOG = """Genius 110.4 (2026-10-26)
+- No more empty boxes next to Genius and online.
+- 'make it' is no longer changed to 'makeai'.
+- Ask something while Genius is still thinking and it does it right after, instead of saying 'still thinking'. It never gets stuck after a bad network.
+
+Genius 110.3 (2026-10-26)
 - Keyboard fix: the screen no longer slides when you type. The typing box sits right on top of the keyboard and grows up to 6 lines so you can see all your words.
 
 Genius 110.2 (2026-10-26)
@@ -3436,7 +3441,7 @@ def fast_answer(question):
     key = question.strip().lower()
     hit = _FAST_CACHE.get(key)
     if hit and time.time() - hit[1] < 1800:
-        return hit[0] + "\n[size=11sp][color=9aa0c0]\u26a1 instant (remembered)[/color][/size]"
+        return hit[0] + "\n[size=11sp][color=9aa0c0]instant (remembered)[/color][/size]"
     import queue
     q = queue.Queue()
     jobs = {"groq": lambda: other_ai("groq", question, max_tokens=400),
@@ -3465,7 +3470,7 @@ def fast_answer(question):
             _FAST_CACHE[key] = (r.strip(), time.time())
             if len(_FAST_CACHE) > 200:
                 _FAST_CACHE.pop(next(iter(_FAST_CACHE)))
-            return r.strip() + f"\n[size=11sp][color=9aa0c0]\u26a1 {time.time() - t0:.1f}s[/color][/size]"
+            return r.strip() + f"\n[size=11sp][color=9aa0c0]{time.time() - t0:.1f}s[/color][/size]"
     return NET_AI_MSG
 
 
@@ -4871,7 +4876,7 @@ def wav_seconds(path):
 
 def spread_lines(texts, duration):
     """Older songs have no timing: spread the lines evenly over the song."""
-    texts = [t for t in texts if t.strip()] or ["\u266a instrumental \u266a"]
+    texts = [t for t in texts if t.strip()] or ["~ instrumental ~"]
     n = len(texts)
     seg = max(0.5, duration) / n
     return [dict(t=round(i * seg, 2), end=round((i + 1) * seg, 2), section="", text=t) for i, t in enumerate(texts)]
@@ -5739,6 +5744,10 @@ _AUTOCORRECT = {"teh": "the", "adn": "and", "waht": "what", "wat": "what", "hw":
                 "cant": "can't", "wont": "won't", "didnt": "didn't", "isnt": "isn't", "doesnt": "doesn't",
                 "whats": "what's", "lets": "let's", "ugnda": "uganda", "kampla": "kampala", "biolgy": "biology",
                 "chemestry": "chemistry", "mathematic": "mathematics", "maths": "maths", "i": "I"}
+COMMON_WORDS = {"make", "makes", "maker", "create", "about", "where", "there", "their", "which", "would", "could",
+                "should", "please", "write", "tell", "show", "explain", "think", "thing", "things", "music", "notes",
+                "story", "draw", "photo", "image", "money", "price", "today", "hello", "thanks", "again", "start"}
+
 _EMOJI = {"love": "❤️", "happy": "😊", "sad": "😢", "laugh": "😂", "lol": "😂", "fire": "🔥", "thanks": "🙏",
           "thank": "🙏", "ok": "👍", "good": "👍", "music": "🎵", "song": "🎶", "money": "💰", "school": "📚",
           "food": "🍲", "rain": "🌧️", "sun": "☀️", "party": "🎉", "birthday": "🎂", "phone": "📱", "cool": "😎",
@@ -5856,7 +5865,7 @@ def karaoke_markup(lines, idx, pal=None):
         last_sec = sec
         t = _esc(ln.get("text", ""))
         if i == idx:
-            out.append(f"[size=25sp][b][color={acc}]\u266a {t}[/color][/b][/size]")
+            out.append(f"[size=25sp][b][color={acc}]{t}[/color][/b][/size]")
         elif i < idx:
             out.append(f"[size=17sp][color={past}]{t}[/color][/size]")
         elif i == idx + 1:
@@ -5864,7 +5873,7 @@ def karaoke_markup(lines, idx, pal=None):
         else:
             out.append(f"[size=18sp][color={soft}]{t}[/color][/size]")
     if idx >= len(lines) - 1 and lines:
-        out.append(f"[size=13sp][color={acc2}]\u2726 Genius[/color][/size]")
+        out.append(f"[size=13sp][color={acc2}]\u2022 Genius[/color][/size]")
     return "\n".join(out)
 
 
@@ -8104,7 +8113,7 @@ class ChatScreen(BoxLayout):
                        size_hint_y=None, height="60dp", padding=[18, 0, 12, 0], spacing=10)
         self.profile_chip = ProfileChip()          # not shown; Profile is inside the menu
         self.profile_chip.bind(on_press=self.profile_drawer)
-        title = Label(text="[b][color=ffc84d]Gen[/color][color=c79bff]ius[/color][/b]  [size=12sp][color=5ee6a0]\u25cf[/color] [color=9aa0c0]online[/color][/size]",
+        title = Label(text="[b][color=ffc84d]Gen[/color][color=c79bff]ius[/color][/b]  [size=12sp][size=18sp][color=5ee6a0]\u2022[/color][/size] [color=9aa0c0]online[/color][/size]",
                       markup=True, font_size="25sp", halign="left", valign="middle")
         title.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
         title.shorten = True
@@ -9232,7 +9241,7 @@ class ChatScreen(BoxLayout):
                 self._last_song = out
                 m = plan.get("meta", {})
                 chorus = "\n".join(plan.get("sections", {}).get("chorus", [])) or plan.get("lyrics", "")
-                self.show("AI", f"\u266b [b]{_esc(plan['title'])}[/b]\n"
+                self.show("AI", f"[b]{_esc(plan['title'])}[/b]\n"
                                 f"Style: {plan.get('label', plan['style'])} "
                                 f"({'your choice' if plan.get('chosen') == 'you' else 'Genius picked'}), "
                                 f"{plan['key']} {plan['scale']}, {plan['bpm']} BPM, "
@@ -9265,7 +9274,7 @@ class ChatScreen(BoxLayout):
         info = " \u00b7 ".join(x for x in (meta.get("label") or meta.get("style", "").title(),
                                             f"{meta.get('key', '')} {meta.get('scale', '')}".strip(),
                                             f"{meta['bpm']} BPM" if meta.get("bpm") else "") if x)
-        head = Label(text=f"[b][color={acc}]\u266b {_esc(meta.get('title', 'Your song'))}[/color][/b]\n"
+        head = Label(text=f"[b][color={acc}]{_esc(meta.get('title', 'Your song'))}[/color][/b]\n"
                           f"[size=13sp][color={hint}]{_esc(info)}[/color][/size]",
                      markup=True, font_size="20sp", size_hint_y=None, height="62dp", halign="center", valign="middle")
         head.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
@@ -10121,11 +10130,11 @@ class ChatScreen(BoxLayout):
         if who == "AI" and isinstance(text, str) and not plain:
             text = colorize(md_to_markup(text))
         if who == "AI" and CURRENT.get("owner") and isinstance(text, str) and _needs_key_text(text):
-            text += "\n[ref=keywizard][b][color=ffc84d][u]\u27a4 Tap here to set up a free AI key[/u][/color][/b][/ref]"
+            text += "\n[ref=keywizard][b][color=ffc84d][u]\u00bb Tap here to set up a free AI key[/u][/color][/b][/ref]"
             if text.startswith(NO_AI_MSG[:40]):
                 Clock.schedule_once(self.offer_key_wizard, 0.3)
         if who == "AI":
-            head = f"[b][color={_hx(PAL['accent'])}]\u2726[/color] {gradient_word('Genius', PAL['accent'], PAL['accent2'])}[/b]"
+            head = f"[b]{gradient_word('Genius', PAL['accent'], PAL['accent2'])}[/b]"
         else:
             head = f"[b]{gradient_word(who, PAL['user'], PAL['accent2']) if who == 'You' else _esc(who)}[/b]"
             text = f"[color={_hx(PAL['text'])}]{_esc(text)}[/color]"     # your words exactly as typed, never highlighted
@@ -10268,11 +10277,12 @@ class ChatScreen(BoxLayout):
         action = LUGANDA_CMDS.get(action, action)
         action = {"whatsnew": "version", "changelog": "version", "updates": "update", "getupdate": "update"}.get(action, action)
         # Typo-tolerant commands: "itruders" -> "intruders" (short inputs only)
-        if action not in ALLOWED and action.isalpha() and len(action) >= 4 \
-                and len(line.split()) <= 3 and not action.startswith("set"):
+        if action not in ALLOWED and action.isalpha() and len(action) >= 5 and not arg \
+                and action not in COMMON_WORDS and not action.startswith("set"):
             import difflib
             names = [k for k in ALLOWED if k.isalpha() and len(k) >= 4 and not k.startswith("set")]
-            near = difflib.get_close_matches(action, names, n=1, cutoff=0.8)
+            near = [n for n in difflib.get_close_matches(action, names, n=1, cutoff=0.85)
+                    if abs(len(n) - len(action)) <= 2]
             if near:
                 self.show("AI", f"I took '{action}' as '{near[0]}'.")
                 action = near[0]
@@ -10985,7 +10995,7 @@ class ChatScreen(BoxLayout):
                 items.append(text("Already connected: " + ", ".join(have) + ". You can add another.",
                                   "15sp", HINT))
             for i, (p, info) in enumerate(KEY_WIZARD):
-                star = "\u2605 Recommended\n" if i == 0 else ""
+                star = "* Recommended\n" if i == 0 else ""
                 items.append(button(f"{star}{info['name']}\n[size=14sp]{info['tag']}[/size]",
                                     lambda p=p: step2(p), GOLD if i == 0 else BLUE, h="88dp"))
             for b in items:
@@ -11639,6 +11649,17 @@ class ChatScreen(BoxLayout):
             self.say(f"Tripwire '{arg.split()[0]}' set. If a hacker opens it in the decoy, I'll tell you.")
             return
 
+    def _run_queued(self, *_):
+        if getattr(self, "busy", False) and time.time() - getattr(self, "_busy_since", 0) <= 75:
+            return
+        if self._queue_ev is not None:
+            self._queue_ev.cancel()
+        self._queue_ev = None
+        q, self._queued = getattr(self, "_queued", None), None
+        if q:
+            self.busy = False
+            self.chat(q)
+
     def chat(self, text):
         if is_distressed(text):
             soft_voice(True)
@@ -11679,6 +11700,7 @@ class ChatScreen(BoxLayout):
         if self.turbo_on() and provider_key("groq") and not needs_tools(text) \
                 and not self.deep and not getattr(self, "busy", False):
             self.busy = True
+            self._busy_since = time.time()
             self.show("AI", "Thinking fast...")
 
             def turbo():
@@ -11708,9 +11730,16 @@ class ChatScreen(BoxLayout):
             self.say(NO_AI_MSG)
             return
         if getattr(self, "busy", False):
-            self.say("Still thinking about your last question. One moment.")
-            return
+            if time.time() - getattr(self, "_busy_since", 0) > 75:
+                self.busy = False          # the last one got lost on a bad network: don't stay stuck
+            else:
+                self._queued = text
+                self.say("Got it. I'll do that right after the last one.")
+                if not getattr(self, "_queue_ev", None):
+                    self._queue_ev = Clock.schedule_interval(self._run_queued, 0.5)
+                return
         self.busy = True
+        self._busy_since = time.time()
         self.show("AI", "Thinking deeply..." if self.deep else "Thinking...")
 
         ui = {
