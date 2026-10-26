@@ -39,6 +39,30 @@ jobs:
         with:
           tag_name: v${{ env.VER }}-build${{ github.run_number }}
           name: Genius ${{ env.VER }} (build ${{ github.run_number }})
+          make_latest: false
           files: |
             bin/genius_live.py
             bin/genius_live.sha256
+      - name: Newest app on one fixed link
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "$(ls bin/*.apk | head -1)" bin/Genius.apk
+          NOTES="Genius for Android, made in Uganda by Ssali Muto. Tap Genius.apk below to download the newest app. After you install it, Genius keeps itself up to date."
+          gh release view android >/dev/null 2>&1 || gh release create android --title "Genius for Android (newest)" --notes "$NOTES" --latest
+          gh release upload android bin/Genius.apk --clobber
+          gh release edit android --title "Genius for Android (newest)" --notes "$NOTES" --latest
+      - name: Old shared links get the newest app too
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[refresh-links]')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/old
+          gh api "repos/${{ github.repository }}/releases?per_page=100" --jq '.[] | select(.tag_name != "android") | .tag_name as $t | .assets[] | select(.name | endswith(".apk")) | "\($t) \(.name)"' > /tmp/old/list.txt
+          cat /tmp/old/list.txt
+          while read -r t n; do
+            cp bin/Genius.apk "/tmp/old/$n"
+            gh release upload "$t" "/tmp/old/$n" --clobber
+            rm -f "/tmp/old/$n"
+          done < /tmp/old/list.txt
+
