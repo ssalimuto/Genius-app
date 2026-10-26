@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "109.9"
+VERSION = "110.1"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -353,6 +353,22 @@ ALLOWED = MappingProxyType({
     "tripwire": "Add a fake secret that traps hackers, e.g. tripwire momo_pin",
     "deep": "Turn deep thinking + web search on or off",
     "theme": "Change the look: theme gold, theme diamond, or theme classic",
+    "news": "World news: Uganda, Africa, world, sports, tech (news brief for a summary)",
+    "uneb": "UNEB-style question, e.g. uneb s4 biology, then mark <your answer>",
+    "mark": "Mark your answer to the last UNEB question",
+    "homework": "Add a photo with + then type homework for step-by-step answers",
+    "luganda": "Luganda mode: luganda on / luganda off",
+    "translate": "English and Luganda, e.g. translate thank you",
+    "define": "Dictionary, e.g. define osmosis (works offline)",
+    "fee": "Mobile money charges, e.g. fee mtn send 50000",
+    "budget": "Money plan, e.g. budget 200000",
+    "scam": "Check a suspicious message, e.g. scam You have won...",
+    "farm": "Farming help, e.g. farm maize in Mityana",
+    "remember": "Teach Genius about you, e.g. remember I am in S4",
+    "memory": "What Genius remembers about you",
+    "forget": "Forget something, e.g. forget my class",
+    "datasaver": "Data saver on/off: shorter answers",
+    "proverb": "A Luganda proverb",
     "stop": "Shut down",
 })
 HELP_EXTRA = {
@@ -386,7 +402,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 109.9
+ABOUT_TEXT = """Genius 110.1
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -447,7 +463,23 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 109.9 (2026-10-26)
+CHANGELOG = """Genius 110.1 (2026-10-26)
+- Cleaner top bar: only Share and Search. Tap Search to find every tool (news, UNEB, draw, music, money, settings...) or search chats and the internet.
+
+Genius 110.0 (2026-10-26)
+- World news: Uganda, Africa, world, sports, business, tech, health. Tap a headline to read it. 'news brief' gives a short AI summary.
+- UNEB practice: uneb s4 biology gives a UNEB-style question; mark <your answer> gives a score and model answer.
+- Homework from a photo: add the photo with + and type homework for step-by-step solutions.
+- Luganda mode (luganda on/off), translate English and Luganda, Luganda proverbs.
+- Offline help: answers you got before, dictionary (define), calc and notes work without internet.
+- Money: budget 200000 plan and today's mobile money charges (fee mtn send 50000).
+- Scam checker: scam <message>.
+- Farming help with the weather: farm maize in Mityana.
+- Memory: remember I am in S4, memory, forget.
+- Data saver: datasaver on for shorter answers.
+- News and UNEB buttons in Tools. Type new to see everything.
+
+Genius 109.9 (2026-10-26)
 - New Share button on the top bar: one tap to send Genius to WhatsApp, Facebook, TikTok, Instagram, X, Telegram, Messenger, Snapchat, or copy the link.
 - Share Genius is also first in Tools.
 
@@ -6850,6 +6882,1123 @@ class LoginScreen(BoxLayout):
             tts(msg)
 
 
+
+
+# =====================================================================================
+# ================= GENIUS 110: offline, UNEB study, Luganda, money, safety ===========
+# Everything here is plain Python (stdlib only). Big tables are built the first time
+# they are needed, so opening Genius stays fast on small phones.
+# =====================================================================================
+_V110_LOCK = threading.Lock()
+
+
+def _v110_load(name, default):
+    """Read a small JSON file from the signed-in person's own folder."""
+    try:
+        with open(name, encoding="utf8") as f:
+            d = json.load(f)
+        return d if isinstance(d, type(default)) else default
+    except Exception:
+        return default
+
+
+def _v110_save(name, data):
+    try:
+        with _V110_LOCK:
+            tmp = name + ".tmp"
+            with open(tmp, "w", encoding="utf8") as f:
+                json.dump(data, f)
+            os.replace(tmp, name)
+        return True
+    except Exception as e:
+        log(f"V110 save {name} failed: {type(e).__name__}")
+        return False
+
+
+SETTINGS_V110 = "genius110_settings.json"
+
+
+def v110_settings():
+    d = _v110_load(SETTINGS_V110, {})
+    d.setdefault("luganda", False)
+    d.setdefault("datasaver", False)
+    d.setdefault("active", False)
+    d.setdefault("predict", True)
+    return d
+
+
+def v110_set(key, value):
+    d = v110_settings()
+    d[key] = value
+    _v110_save(SETTINGS_V110, d)
+    return d
+
+
+# ---------------- network status (offline badge) ----------------
+NET_STATE = {"online": True, "checked": 0.0}
+
+
+def net_online(max_age=30):
+    """Quick, cheap check: can we open a connection to a public DNS server? Cached for max_age seconds."""
+    if time.time() - NET_STATE["checked"] < max_age:
+        return NET_STATE["online"]
+    ok = False
+    for host in (("1.1.1.1", 443), ("8.8.8.8", 53), ("www.google.com", 443)):
+        try:
+            s = socket.create_connection(host, timeout=1.5)
+            s.close()
+            ok = True
+            break
+        except Exception:
+            continue
+    NET_STATE.update(online=ok, checked=time.time())
+    return ok
+
+
+def compress_image(path, max_side=1024, quality=70):
+    """Smaller copy of a picture for sending over slow or costly data. Returns the new path (or the old one)."""
+    try:
+        from PIL import Image
+        im = Image.open(path)
+        im = im.convert("RGB")
+        w, h = im.size
+        sc = min(1.0, float(max_side) / max(w, h))
+        if sc < 1.0:
+            im = im.resize((max(1, int(w * sc)), max(1, int(h * sc))))
+        out = os.path.join(os.path.dirname(path) or ".", "small_" + os.path.basename(path).rsplit(".", 1)[0] + ".jpg")
+        im.save(out, "JPEG", quality=quality, optimize=True)
+        return out if os.path.getsize(out) < os.path.getsize(path) else path
+    except Exception:
+        return path
+
+
+# ---------------- "don't reject normal questions" ----------------
+HELPFUL_RULES = (
+    "Be genuinely helpful. Answer every normal question fully and directly: school work, health and body "
+    "information, medicines, sex education, money, business, relationships, religion, politics, history, "
+    "wars, crime and law, technology, and anything else a curious young person asks. Never refuse, lecture or "
+    "say 'I can't help with that' for normal questions. If you are unsure, give your best answer and say what "
+    "to double-check. Ask one short clarifying question only when the question truly can't be answered "
+    "without it. For health, give clear information and say when to see a health worker. "
+    "Decline only clearly harmful requests: making weapons or explosives, instructions for hurting yourself or "
+    "others, any sexual content involving children, or helping scam, steal or hack people. When you decline, do "
+    "it in one kind sentence and offer a safe, useful alternative (for example how to stay safe or report it). ")
+
+_HARMFUL_PATTERNS = (
+    (r"\b(make|build|assemble|create)\b.{0,25}\b(bomb|explosive|grenade|ied|molotov|gun|pistol|firearm)s?\b",
+     "I won't help make weapons or explosives. If you're curious about the science, I can explain how chemistry "
+     "or engineering works safely, or how bomb-disposal and safety teams protect people."),
+    (r"\b(how (do|can) i|teach me to|help me)\b.{0,30}\b(poison|kill|murder|stab)\b.{0,20}\b(someone|somebody|him|her|them|my|a person|people)\b",
+     "I can't help with hurting anyone. If someone is in danger, call 999 or 112. If you're very angry or "
+     "scared, I'm here to talk it through, or type helpline for free help."),
+    (r"\b(child|children|kid|minor|underage|schoolgirl|schoolboy|\b1[0-5] ?(yr|year)s? old)\b.{0,30}\b(sex|sexual|nude|naked|porn)",
+     "I won't make sexual content involving children. If a child is being harmed, call Sauti 116 (free, 24 hours) "
+     "or the police on 999."),
+    (r"\b(steal|hack|get)\b.{0,25}\b(momo|mobile money|airtel money|someone'?s|their)\b.{0,15}\b(pin|password|account|money)\b",
+     "I won't help get into someone else's account or money. I can show you how to protect your own MoMo: "
+     "type scam to check a suspicious message."),
+    (r"\b(write|make|create|send)\b.{0,20}\b(scam|fake|phishing)\b.{0,20}\b(message|sms|text|link|page)\b",
+     "I won't write scam messages. I can help you spot and report them instead: type scam followed by the message."),
+)
+
+
+def harmful_redirect(text):
+    """Narrow local check for clearly harmful requests. Normal questions are never matched."""
+    t = " " + (text or "").lower() + " "
+    for pat, msg in _HARMFUL_PATTERNS:
+        if re.search(pat, t):
+            return msg
+    return None
+
+
+# ---------------- offline answers: recent AI answers saved on the phone ----------------
+OFFLINE_CACHE_FILE = "offline_answers.json"
+_OFFLINE_CACHE = {"items": None}
+OFFLINE_MARK = "[offline: saved answer]"
+_CACHE_STOP = set("the a an is are was were to of in on for and or what how why who when which do does did i you me my "
+                  "it this that with be can please tell about explain give define mean meaning genius".split())
+
+
+def _cache_words(t):
+    return [w for w in re.findall(r"[a-z0-9']+", (t or "").lower()) if w not in _CACHE_STOP]
+
+
+def _cache_items():
+    if _OFFLINE_CACHE["items"] is None:
+        _OFFLINE_CACHE["items"] = _v110_load(OFFLINE_CACHE_FILE, [])
+    return _OFFLINE_CACHE["items"]
+
+
+def offline_cache_add(q, a):
+    q, a = (q or "").strip(), (a or "").strip()
+    if len(q) < 3 or len(a) < 15 or OFFLINE_MARK in a or a in (NET_AI_MSG, NO_AI_MSG):
+        return False
+    if re.search(r"\b(pin|password|secret|setkey|otp)\b", q.lower()):
+        return False                                          # never keep anything private
+    items = _cache_items()
+    key = " ".join(_cache_words(q)) or q.lower()
+    items[:] = [x for x in items if x.get("k") != key]
+    items.append({"q": q[:300], "k": key, "a": a[:1800], "t": time.strftime("%Y-%m-%d")})
+    del items[:-150]
+    _v110_save(OFFLINE_CACHE_FILE, items)
+    return True
+
+
+def offline_cache_find(q, min_score=0.6):
+    """Exact or near match of an earlier question. Returns (answer, score) or (None, 0)."""
+    items = _cache_items()
+    if not items:
+        return None, 0.0
+    words = set(_cache_words(q))
+    key = " ".join(_cache_words(q))
+    best, best_s = None, 0.0
+    import difflib
+    for it in items:
+        if key and it.get("k") == key:
+            return it["a"], 1.0
+        iw = set((it.get("k") or "").split())
+        if not words or not iw:
+            continue
+        jac = len(words & iw) / float(len(words | iw))
+        if jac < 0.3:
+            continue
+        ratio = difflib.SequenceMatcher(None, key, it.get("k", "")).ratio()
+        s = max(jac, (jac + ratio) / 2)
+        if s > best_s:
+            best, best_s = it, s
+    if best and best_s >= min_score:
+        return best["a"], best_s
+    return None, best_s
+
+
+def offline_answer(q):
+    a, s = offline_cache_find(q)
+    if a:
+        return f"{a}\n\n[size=12sp]{OFFLINE_MARK} from earlier ({int(s * 100)}% match). Ask again when online for a fresh one.[/size]"
+    d = dictionary_lookup(q)
+    if d:
+        return d
+    return None
+
+
+OFFLINE_HELP = ("You're offline right now, but I can still help:\n"
+                "- calc 15% of 40000 (calculator)\n- define photosynthesis (dictionary)\n- note ... / notes\n"
+                "- quiz biology, uneb s4 physics (practice with marking)\n- translate thank you (Luganda)\n"
+                "- fee mtn send 50000, budget, money\n- farm maize, pest fall armyworm\n- scam <message>\n"
+                "- brief, proverb, what do you remember\nI also answer questions you asked before.")
+
+
+# ---------------- small offline English dictionary ----------------
+_DICT = {}
+_DICT_RAW = """
+photosynthesis|how green plants make food from carbon dioxide and water using sunlight, giving off oxygen
+respiration|the release of energy from food (glucose) in living cells
+osmosis|movement of water molecules through a partially permeable membrane from a dilute to a concentrated solution
+diffusion|movement of particles from a region of high concentration to a region of low concentration
+evaporation|change of a liquid into a gas at its surface, below boiling point
+condensation|change of a gas into a liquid when it cools
+transpiration|loss of water vapour from plant leaves, mainly through stomata
+ecosystem|a community of living things together with their non-living surroundings
+habitat|the natural home of a plant or animal
+erosion|the wearing away and removal of soil or rock by water, wind or ice
+democracy|government by the people, usually through elected representatives
+constitution|the basic laws and principles that say how a country is governed
+colonialism|control of one country or people by another, usually for economic gain
+independence|freedom from control by another country; Uganda gained it on 9 October 1962
+economy|the system of producing, selling and buying goods and services in a place
+inflation|a general rise in prices over time, so money buys less
+budget|a plan for how money will be earned and spent
+profit|money left after all costs are taken away from income
+loss|when costs are bigger than income
+capital|money or property used to start or grow a business; also the main city of a country
+entrepreneur|a person who starts and runs a business, taking risks to make a profit
+interest|money paid for borrowing money, or earned for saving it
+investment|putting money into something hoping to get more back later
+asset|something valuable that a person or business owns
+liability|a debt or something a person or business owes
+algorithm|a set of step-by-step instructions to solve a problem
+software|programs that tell a computer what to do
+hardware|the physical parts of a computer
+internet|a worldwide network that connects computers
+database|an organised collection of data stored on a computer
+spreadsheet|a program that arranges numbers in rows and columns for calculations, e.g. Excel
+virus|a tiny germ that grows inside living cells; also a harmful computer program
+bacteria|tiny single-celled living things; some cause disease, many are useful
+vaccine|a substance that trains the body's immune system to fight a disease
+immunity|the body's ability to resist a disease
+nutrition|getting the food needed for health and growth
+protein|food nutrient for growth and repair, found in beans, meat, fish, eggs
+carbohydrate|energy food such as posho, matooke, rice, cassava and bread
+vitamin|a nutrient needed in small amounts for good health
+mineral|a natural substance from the ground; in food, nutrients like iron and calcium
+atom|the smallest particle of an element
+molecule|two or more atoms joined together
+element|a substance made of only one kind of atom, e.g. oxygen, iron
+compound|a substance made of two or more elements chemically joined
+mixture|two or more substances mixed but not chemically joined
+acid|a substance with pH below 7 that turns blue litmus red
+base|a substance that neutralises an acid; soluble bases are alkalis (pH above 7)
+neutralisation|reaction of an acid with a base to form a salt and water
+energy|the ability to do work, measured in joules
+force|a push or pull, measured in newtons
+velocity|speed in a stated direction
+acceleration|the rate of change of velocity
+gravity|the force that pulls objects towards the Earth or towards each other
+friction|a force that opposes motion between surfaces in contact
+electricity|the flow of electric charge
+voltage|the push that drives electric current, measured in volts
+current|the rate of flow of electric charge, measured in amperes
+resistance|opposition to the flow of electric current, measured in ohms
+magnet|an object that attracts iron and has north and south poles
+density|mass per unit volume
+pressure|force acting per unit area
+equation|a statement that two expressions are equal
+fraction|a part of a whole, written like 3/4
+percentage|a number out of 100
+ratio|a comparison of two amounts, written like 2:3
+perimeter|the distance all the way round a shape
+area|the amount of surface a shape covers
+volume|the amount of space an object takes up
+probability|how likely something is to happen, from 0 to 1
+average|the sum of values divided by how many there are (the mean)
+noun|a word for a person, place, thing or idea
+verb|a doing or being word
+adjective|a word that describes a noun
+adverb|a word that describes a verb, adjective or other adverb
+pronoun|a word used instead of a noun, e.g. he, she, they
+synonym|a word with the same or nearly the same meaning as another
+antonym|a word with the opposite meaning
+metaphor|describing something as if it were something else, e.g. "time is money"
+simile|comparing using like or as, e.g. "as brave as a lion"
+proverb|a short, well-known saying that gives advice
+summary|a short version of the main points
+essay|a piece of writing on one topic
+climate|the usual weather of a place over many years
+weather|the condition of the air at a particular time
+equator|the imaginary line around the middle of the Earth; it passes through Uganda
+latitude|distance north or south of the equator, in degrees
+longitude|distance east or west of the Greenwich meridian, in degrees
+population|the number of people living in a place
+migration|movement of people or animals from one place to another
+urbanisation|growth of towns as people move from rural areas
+agriculture|farming: growing crops and keeping animals
+irrigation|supplying water to crops by channels, pipes or sprinklers
+fertiliser|a substance added to soil to help plants grow
+pesticide|a chemical used to kill pests that damage crops
+crop rotation|growing different crops on the same land in different seasons to keep soil healthy
+mulching|covering soil with grass or leaves to keep moisture and stop weeds
+parable|a short story that teaches a moral or religious lesson
+covenant|a serious agreement or promise, e.g. between God and people
+salvation|being saved from sin and its consequences
+prophet|a person believed to speak messages from God
+resilience|the ability to recover from difficulties
+integrity|being honest and having strong moral principles
+discipline|training yourself to follow rules or a plan
+freelancer|a person who works for different clients, not one employer
+portfolio|a collection of examples of your work
+curriculum vitae|a CV: a document listing your education, skills and experience
+proposal|a written offer explaining how you will do a job
+deadline|the latest time by which something must be done
+negotiate|to discuss to reach an agreement
+"""
+
+
+def _dict_table():
+    if not _DICT:
+        for line in _DICT_RAW.strip().splitlines():
+            w, _, m = line.partition("|")
+            if w and m:
+                _DICT[w.strip().lower()] = m.strip()
+    return _DICT
+
+
+def dictionary_lookup(q):
+    """'define osmosis', 'what is osmosis', 'meaning of erosion', 'amakulu ga ...' -> definition or None."""
+    t = (q or "").lower().strip(" ?.!")
+    t = re.sub(r"^(define|definition of|meaning of|what is the meaning of|what does|what is|what are|"
+               r"whats|what's|amakulu ga|amakulu g'|amakulu|explain)\s+(an?\s+|the\s+)?", "", t)
+    t = re.sub(r"\s+(mean|means)$", "", t).strip(" ?.!")
+    table = _dict_table()
+    if t in table:
+        return f"[b]{t}[/b]: {table[t]}."
+    if t.endswith("s") and t[:-1] in table:
+        return f"[b]{t[:-1]}[/b]: {table[t[:-1]]}."
+    return None
+
+
+def dictionary_words():
+    return sorted(_dict_table())
+
+
+# ---------------- Luganda: phrases, translation, mode ----------------
+_LG_PHRASES_RAW = """
+hello / how are you|oli otya
+how are you|oli otya
+i am fine|ndi bulungi
+fine|bulungi
+good morning|wasuze otya
+good morning (to many)|mwasuze mutya
+good afternoon|osiibye otya
+thank you|webale
+thank you very much|webale nnyo
+well done / thank you for working|webale okukola
+yes|yee
+no|nedda
+please|mwattu
+sorry|nsonyiwa
+sorry for your loss|kitalo
+goodbye|weeraba
+see you later|tunaalabagana
+okay|kale
+what is your name|erinnya lyo ggwe ani
+my name is|erinnya lyange nze
+i love you|nkwagala
+i don't understand|sitegedde
+help me|nnyamba
+how much is it|ssente mmeka
+where are you going|ogenda wa
+come|jjangu
+go|genda
+let's go|tugende
+wait|linda
+i am hungry|enjala ennuma
+i am tired|nkooye
+good|kirungi
+very good|kirungi nnyo
+bad|kibi
+water|amazzi
+food|emmere
+school|essomero
+teacher|omusomesa
+student|omuyizi
+book|ekitabo
+money|ssente
+house|ennyumba
+mother|maama
+father|taata
+friend|mukwano gwange
+child|omwana
+rain|enkuba
+sun|enjuba
+today|leero
+tomorrow|enkya
+yesterday|jjo
+doctor|omusawo
+hospital|eddwaliro
+garden / farm|ennimiro
+maize|kasooli
+beans|ebijanjaalo
+matooke / bananas|amatooke
+cassava|muwogo
+sweet potato|lumonde
+groundnuts|ebinyeebwa
+coffee|emmwanyi
+chicken|enkoko
+cow|ente
+goat|embuzi
+one|emu
+two|bbiri
+three|ssatu
+four|nnya
+five|ttaano
+six|mukaaga
+seven|musanvu
+eight|munaana
+nine|mwenda
+ten|kkumi
+"""
+_LG = {"en": None, "lg": None}
+
+
+def _lg_tables():
+    if _LG["en"] is None:
+        en, lg = {}, {}
+        for line in _LG_PHRASES_RAW.strip().splitlines():
+            e, _, g = line.partition("|")
+            g = g.strip()
+            for part in e.split("/"):
+                p = re.sub(r"\(.*?\)", "", part).strip().lower()
+                if p:
+                    en.setdefault(p, g)
+            lg.setdefault(g.lower(), re.sub(r"\(.*?\)", "", e).strip())
+        _LG["en"], _LG["lg"] = en, lg
+    return _LG["en"], _LG["lg"]
+
+
+def _norm(t):
+    return re.sub(r"[^a-z' ]+", " ", (t or "").lower()).strip()
+
+
+def translate_offline(text, to="lg"):
+    """Built-in phrase list. Returns (translation, exact) or (None, False)."""
+    en, lg = _lg_tables()
+    t = re.sub(r"\s+", " ", _norm(text)).strip()
+    if not t:
+        return None, False
+    table = en if to == "lg" else lg
+    if t in table:
+        return table[t], True
+    words = t.split()
+    out, known = [], 0
+    for w in words:
+        if w in table:
+            out.append(table[w])
+            known += 1
+        else:
+            out.append(w)
+    if known and known >= max(1, len(words) // 2):
+        return " ".join(out), False
+    return None, False
+
+
+def guess_direction(text):
+    """'lg' if the text looks English (translate to Luganda), else 'en'."""
+    en, lg = _lg_tables()
+    t = _norm(text)
+    lg_words = set(" ".join(lg).split()) | {"nze", "ggwe", "ye", "ffe", "mmwe", "bo", "oli", "otya", "nnyo", "webale",
+                                            "nkwagala", "ssente", "emmere", "ndi", "tugende", "kale", "omwana"}
+    words = t.split()
+    hits = sum(1 for w in words if w in lg_words)
+    return "en" if words and hits * 2 >= len(words) else "lg"
+
+
+def parse_translate(arg):
+    """'hello to luganda' / 'webale to english' / 'hello' -> (text, to)."""
+    a = (arg or "").strip()
+    m = re.match(r"(.+?)\s+(?:to|into|mu)\s+(luganda|oluganda|english|lungereza|olungereza)\s*$", a, re.I)
+    if m:
+        return m.group(1).strip(" '\""), ("lg" if "ganda" in m.group(2).lower() else "en")
+    return a.strip(" '\""), guess_direction(a)
+
+
+def lg_text(en_text, lg_textv):
+    """Built-in message in Luganda when Luganda mode is on (with the English underneath)."""
+    if v110_settings().get("luganda"):
+        return f"{lg_textv}\n[size=12sp]({en_text})[/size]"
+    return en_text
+
+
+LUGANDA_REPLY = ("[Reply only in simple, natural, correct Luganda (Oluganda). Use an English word only for technical "
+                 "terms that have no common Luganda word.] ")
+
+
+# ---------------- proverbs and facts (daily brief) ----------------
+_PROVERBS_RAW = """
+Kamu kamu gwe muganda.|One by one makes a bundle: small steps add up.
+Agali awamu ge galuma ennyama.|Teeth that are together bite the meat: unity is strength.
+Atannayitaayita yatenda nnyina okufumba.|One who has never travelled thinks only their mother cooks well: travel and learn.
+Akwata empola atuuka wala.|One who goes slowly goes far: patience wins.
+Ebbanja terigenda.|A debt doesn't go away on its own.
+Abangi babi kulya naye ku mirimo balungi.|A crowd is bad for eating but good for work.
+Maddu tegaggwaako mulamu.|While you are alive, remedies never run out: there's always a way.
+Nnannyini mulimo takeera kwota muliro.|The owner of the work doesn't rush to warm by the fire: be patient and responsible.
+Ababiri babibira ebigambo, naye abasatu babisattula.|Two can keep a secret, three spill it.
+K'ezaala k'ekomberera.|What you give birth to is what you care for: you reap what you sow.
+Ebirungi biri wala.|Good things are far away: they take effort.
+Kwana bangi, weesige batono.|Be friends with many, trust a few.
+Njala evumbula.|Hunger reveals the truth.
+Akabimbi akatono kakira ekyosi.|A small solid pumpkin beats a big hollow one: quality over quantity.
+Kappa w'etali, emmese yeekola ebigenyi.|When the cat is away, the rat throws a party.
+Mazzi masabe tegaloga nnyonta.|Begged-for water won't quench your thirst: work for what you need.
+Bw'ogwa awabi, eyali munno akwerabira.|When you fall on hard times, some friends forget you.
+Omukazi omulima azaala emmere; omunafu azaala omuddo.|The hard worker harvests food; the lazy one harvests weeds.
+Akabi tikeekisa.|Danger doesn't hide itself: watch for warning signs.
+Mmere mbi terumya njala.|Even poor food stops hunger: use what you have.
+Akaganda akatono kakira mukwano.|Even a small family tie is stronger than friendship.
+Atasaba taweebwa.|One who doesn't ask doesn't receive.
+Agenda ewaabwe tazibirirwa budde.|One going home is never stopped by darkness: you know your own way.
+Akamegga enjovu kenkana we!|How small is the thing that topples an elephant: cleverness beats size.
+Amagezi nsejjere: buli emu efulumya emmula bwayo.|Wisdom is like anthills: each pushes out earth its own way; people think differently.
+Atamukutte y'agamba nti mutenge.|The one not wrestling says 'throw him!': advice is easier than action.
+Abataka abaagalana be balima akambugu.|Neighbours who love each other clear the weeds on their boundary together.
+Abangi tebawulira: enkuba y'ebawuliza.|A crowd won't listen, but rain makes them listen.
+Akamwa k'omuntu si ka nte.|A person's mouth is not a cow's: think before you speak.
+Akakadde ak'obuggya amaggwa gakafumita emirundi ebiri.|The jealous one gets pricked by thorns twice: envy hurts you most.
+Ennume ekula bigwo.|A young bull grows by wrestling: challenges make you strong.
+Musajja gyagenda gy'asanga banne.|Wherever you go you will find fellow people: you're never truly alone.
+Bw'ogoba munno, olekamu ezinadda.|When you chase someone, save strength to run back: plan for the return.
+"""
+_FACTS = (
+    "Lake Victoria is the largest lake in Africa. Uganda shares it with Kenya and Tanzania.",
+    "The River Nile, the longest river in Africa, flows out of Lake Victoria at Jinja.",
+    "Uganda became independent on 9 October 1962.",
+    "Margherita Peak on Mount Stanley in the Rwenzori is about 5,109 m high, among the highest in Africa.",
+    "Bwindi Impenetrable Forest is home to about half of the world's mountain gorillas.",
+    "The equator passes through Uganda; you can stand in both hemispheres near Kayabwe on the Masaka road.",
+    "At Murchison Falls the whole Nile squeezes through a gap only about 7 metres wide.",
+    "Sunlight takes about 8 minutes to reach the Earth.",
+    "An adult human body has 206 bones.",
+    "Your heart beats about 100,000 times a day.",
+    "Sound travels at about 343 metres per second in air, but much faster in water.",
+    "Water expands when it freezes, which is why ice floats.",
+    "Honey stored well almost never goes bad.",
+    "An octopus has three hearts.",
+    "Bees must visit millions of flowers to make one kilogram of honey.",
+    "Plants release the oxygen we breathe during photosynthesis.",
+    "Lightning is hotter than the surface of the Sun for a split second.",
+    "The first computer programmer is often said to be Ada Lovelace, in the 1840s.",
+    "Mobile money began in East Africa and is now used across the world.",
+    "Uganda Martyrs' Day is on 3 June, remembered at Namugongo.",
+    "Coffee is one of Uganda's biggest exports, and Robusta coffee is native to the region.",
+    "Kampala was first built on seven hills, including Mengo, Kibuli and Namirembe.",
+    "A bolt of lightning carries enough energy to toast thousands of slices of bread.",
+    "The Moon has no air, so footprints left there can last for millions of years.",
+    "Reading for 20 minutes a day exposes you to about 1.8 million words a year.",
+    "Spaced practice (a little every day) helps memory far more than cramming the night before.",
+    "Sleeping well after studying helps your brain store what you learned.",
+    "Saving just UGX 1,000 a day gives you UGX 365,000 in a year.",
+    "The Rwenzori are often called the Mountains of the Moon.",
+    "Uganda has over 1,000 bird species, more than many larger countries.",
+)
+
+
+def proverbs():
+    out = []
+    for line in _PROVERBS_RAW.strip().splitlines():
+        lg_, _, en = line.partition("|")
+        if lg_ and en:
+            out.append((lg_.strip(), en.strip()))
+    return out
+
+
+def proverb_of_day(day=None):
+    p = proverbs()
+    day = time.localtime().tm_yday if day is None else day
+    return p[day % len(p)]
+
+
+def fact_of_day(day=None):
+    day = time.localtime().tm_yday if day is None else day
+    return _FACTS[(day * 7) % len(_FACTS)]
+
+
+REMINDERS_FILE = "reminders_v110.json"
+
+
+def reminder_store(minutes, text):
+    r = _v110_load(REMINDERS_FILE, [])
+    due = time.time() + int(minutes) * 60
+    r.append({"due": due, "text": str(text)[:200]})
+    cutoff = time.time() - 86400
+    r = [x for x in r if x.get("due", 0) > cutoff][-50:]
+    _v110_save(REMINDERS_FILE, r)
+
+
+def todays_reminders():
+    r = _v110_load(REMINDERS_FILE, [])
+    today = time.strftime("%Y-%m-%d")
+    out = []
+    for x in r:
+        try:
+            if time.strftime("%Y-%m-%d", time.localtime(x["due"])) == today:
+                when = time.strftime("%H:%M", time.localtime(x["due"]))
+                out.append(f"{when} {x['text']}" + (" (done)" if x["due"] < time.time() else ""))
+        except Exception:
+            continue
+    return out
+
+
+def brief_extras():
+    """Fact of the day, Luganda proverb and today's reminders: works fully offline."""
+    lgp, en = proverb_of_day()
+    parts = [f"Fact of the day: {fact_of_day()}", f"Luganda proverb: {lgp} ({en})"]
+    rem = todays_reminders()
+    if rem:
+        parts.append("Today's reminders: " + "; ".join(rem[:5]) + ".")
+    return parts
+
+
+# ---------------- memory: what Genius remembers about you ----------------
+MEMORY_V110 = "genius_memory.json"
+
+
+def mem_load():
+    d = _v110_load(MEMORY_V110, {})
+    d.setdefault("name", "")
+    d.setdefault("class", "")
+    d.setdefault("goals", [])
+    d.setdefault("prefs", [])
+    d.setdefault("facts", [])
+    return d
+
+
+def mem_remember(text):
+    """'remember my name is Ssali' / 'remember I am in S4' / 'remember my goal is ...' / 'remember I like ...'."""
+    t = (text or "").strip().strip(".")
+    if not t:
+        return "Tell me what to remember, e.g. remember I am in S4."
+    if re.search(r"\b(pin|password|passcode|otp|secret code|cvv)\b", t.lower()) or re.search(r"\b\d{4,6}\b", t) and "pin" in t.lower():
+        return "I won't store PINs or passwords in memory. Use the locker instead: save <name> <secret>."
+    d = mem_load()
+    low = t.lower()
+    m = re.match(r"(?:that\s+)?(?:my name is|call me|i am called|i'm called|erinnya lyange(?: nze)?)\s+(.+)", low)
+    if m:
+        d["name"] = t[len(t) - len(m.group(1)):].strip().title()[:40]
+        _v110_save(MEMORY_V110, d)
+        return f"Got it, I'll call you {d['name']}."
+    m = re.search(r"\b(?:i am in|i'm in|my class is|class|ndi mu)\s+(s\.?\s?[1-6]|senior\s+[1-6]|p\.?\s?[1-7]|year\s+\d|university|campus)\b", low)
+    if m:
+        c = m.group(1).replace(" ", "").replace(".", "").upper().replace("SENIOR", "S")
+        d["class"] = c
+        _v110_save(MEMORY_V110, d)
+        return f"Saved: you're in {c}. I'll pitch study help at that level."
+    m = re.match(r"(?:that\s+)?(?:my goal is|my dream is|i want to|i plan to|goal:?)\s+(.+)", low)
+    if m:
+        g = t[len(t) - len(m.group(1)):].strip()
+        if g.lower() not in [x.lower() for x in d["goals"]]:
+            d["goals"].append(g[:120])
+        d["goals"] = d["goals"][-10:]
+        _v110_save(MEMORY_V110, d)
+        return f"Saved your goal: {g}. I'll keep it in mind."
+    m = re.match(r"(?:that\s+)?(?:i like|i love|i prefer|i enjoy|i don't like|i hate|i dislike)\s+(.+)", low)
+    if m:
+        d["prefs"].append(t[:120])
+        d["prefs"] = d["prefs"][-20:]
+        _v110_save(MEMORY_V110, d)
+        return f"Noted: {t}."
+    t2 = re.sub(r"^that\s+", "", t, flags=re.I)
+    if t2.lower() not in [x.lower() for x in d["facts"]]:
+        d["facts"].append(t2[:160])
+    d["facts"] = d["facts"][-40:]
+    _v110_save(MEMORY_V110, d)
+    return f"I'll remember: {t2}."
+
+
+def mem_report():
+    d = mem_load()
+    lines = []
+    if d["name"]:
+        lines.append(f"Name: {d['name']}")
+    if d["class"]:
+        lines.append(f"Class: {d['class']}")
+    if d["goals"]:
+        lines.append("Goals: " + "; ".join(d["goals"]))
+    if d["prefs"]:
+        lines.append("Likes / preferences: " + "; ".join(d["prefs"]))
+    if d["facts"]:
+        lines.append("Other things:\n" + "\n".join(f"- {x}" for x in d["facts"][-15:]))
+    if not lines:
+        return ("I don't remember anything about you yet. Teach me, e.g.\nremember my name is Ssali\n"
+                "remember I am in S4\nremember my goal is to pass UCE with distinctions")
+    return "What I remember about you\n" + "\n".join(lines) + "\n\nRemove something: forget <word>  (or forget everything)"
+
+
+def mem_forget(what):
+    w = (what or "").strip().lower()
+    if not w:
+        return "Tell me what to forget, e.g. forget my class, or forget everything."
+    d = mem_load()
+    if w in ("everything", "all", "all memory", "byonna"):
+        _v110_save(MEMORY_V110, {"name": "", "class": "", "goals": [], "prefs": [], "facts": []})
+        try:
+            if os.path.exists(ABOUT_FILE):
+                os.remove(ABOUT_FILE)
+        except Exception:
+            pass
+        return "Done. I've forgotten everything you taught me about yourself."
+    n = 0
+    if w in ("my name", "name") or (d["name"] and w in d["name"].lower()):
+        n += bool(d["name"])
+        d["name"] = ""
+    if w in ("my class", "class") or (d["class"] and w == d["class"].lower()):
+        n += bool(d["class"])
+        d["class"] = ""
+    w2 = re.sub(r"^(my|about|that)\s+", "", w)
+    for k in ("goals", "prefs", "facts"):
+        keep = [x for x in d[k] if w2 not in x.lower()]
+        n += len(d[k]) - len(keep)
+        d[k] = keep
+    _v110_save(MEMORY_V110, d)
+    try:                                   # older 'aboutme' notes too
+        if os.path.exists(ABOUT_FILE):
+            lines = open(ABOUT_FILE, encoding="utf8").readlines()
+            keep = [x for x in lines if w2 not in x.lower()]
+            if len(keep) != len(lines):
+                n += len(lines) - len(keep)
+                open(ABOUT_FILE, "w", encoding="utf8").writelines(keep)
+    except Exception:
+        pass
+    return f"Forgotten ({n} item{'s' if n != 1 else ''})." if n else f"I didn't have anything about '{what}'."
+
+
+def mem_prompt():
+    """Short summary fed to the AI so answers fit the person."""
+    d = mem_load()
+    bits = []
+    if d["name"]:
+        bits.append(f"Preferred name: {d['name']}")
+    if d["class"]:
+        bits.append(f"Class: {d['class']} (Uganda)")
+    if d["goals"]:
+        bits.append("Goals: " + "; ".join(d["goals"][-5:]))
+    if d["prefs"]:
+        bits.append("Preferences: " + "; ".join(d["prefs"][-6:]))
+    if d["facts"]:
+        bits.append("Facts: " + "; ".join(d["facts"][-10:]))
+    return "\n".join(bits)
+
+
+# ---------------- world news: free Google News + BBC feeds, no key needed ----------------
+NEWS_TOPICS = {
+    "uganda": ("Uganda", "uganda when:1d", "https://feeds.bbci.co.uk/news/world/africa/rss.xml"),
+    "africa": ("Africa", "africa when:1d", "https://feeds.bbci.co.uk/news/world/africa/rss.xml"),
+    "world": ("World", "world news when:1d", "https://feeds.bbci.co.uk/news/world/rss.xml"),
+    "sports": ("Sports", "sports when:1d", "https://feeds.bbci.co.uk/sport/rss.xml"),
+    "business": ("Business", "business economy when:1d", "https://feeds.bbci.co.uk/news/business/rss.xml"),
+    "tech": ("Technology", "technology when:1d", "https://feeds.bbci.co.uk/news/technology/rss.xml"),
+    "health": ("Health", "health when:1d", "https://feeds.bbci.co.uk/news/health/rss.xml"),
+    "science": ("Science", "science when:2d", "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"),
+    "entertainment": ("Entertainment", "entertainment music when:1d",
+                      "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"),
+}
+NEWS_ALIASES = {"technology": "tech", "sport": "sports", "football": "sports", "money": "business",
+                "ug": "uganda", "local": "uganda", "global": "world", "international": "world", "music": "entertainment"}
+NEWS_LINKS = {}            # "news:N" -> url, for tapping a headline
+_NEWS_CACHE = {}
+
+
+def _news_fetch(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Linux; Android) Genius"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return r.read()
+
+
+def news_items(topic="world", limit=8):
+    """[(title, source, url, when)] newest first. Topic is a NEWS_TOPICS key or any search words."""
+    import xml.etree.ElementTree as ET
+    t = (topic or "world").strip().lower()
+    t = NEWS_ALIASES.get(t, t)
+    hit = _NEWS_CACHE.get(t)
+    if hit and time.time() - hit[1] < 900:
+        return hit[0][:limit]
+    if t in NEWS_TOPICS:
+        query, backup = NEWS_TOPICS[t][1], NEWS_TOPICS[t][2]
+    else:
+        query, backup = (topic.strip() + " when:3d"), None
+    urls = ["https://news.google.com/rss/search?q=" + urllib.parse.quote(query) + "&hl=en-UG&gl=UG&ceid=UG:en"]
+    if backup:
+        urls.append(backup)
+    out = []
+    for u in urls:
+        try:
+            root = ET.fromstring(_news_fetch(u))
+        except Exception as e:
+            log(f"NEWS feed failed: {type(e).__name__}")
+            continue
+        for it in root.iter("item"):
+            title = (it.findtext("title") or "").strip()
+            src = (it.findtext("source") or "").strip()
+            if src and title.endswith(" - " + src):
+                title = title[: -len(src) - 3].strip()
+            if not src and "bbc" in u:
+                src = "BBC"
+            when = (it.findtext("pubDate") or "")[5:22].strip()
+            if title:
+                out.append((title, src, (it.findtext("link") or "").strip(), when))
+            if len(out) >= 15:
+                break
+        if out:
+            break
+    if out:
+        _NEWS_CACHE[t] = (out, time.time())
+    return out[:limit]
+
+
+def news_markup(topic="world", limit=8):
+    items = news_items(topic, limit)
+    t = NEWS_ALIASES.get((topic or "").lower(), (topic or "").lower())
+    name = NEWS_TOPICS[t][0] if t in NEWS_TOPICS else (topic or "").strip().title()
+    if not items:
+        return None, f"I couldn't get {name} news right now. Check your internet and try again."
+    NEWS_LINKS.clear()
+    lines = [f"[b]{_esc(name)} news[/b]  [size=12sp](tap a headline to read it)[/size]"]
+    for i, (title, src, url, when) in enumerate(items, 1):
+        NEWS_LINKS[f"news:{i}"] = url
+        meta = " · ".join(x for x in (src, when) if x)
+        lines.append(f"[ref=news:{i}][b]{i}.[/b] [u]{_esc(title)}[/u][/ref]\n   [size=12sp][color=9aa0c0]{_esc(meta)}[/color][/size]")
+    lines.append("[size=12sp]Say 'news brief' for a short summary, or 'news <topic>' like news football.[/size]")
+    return items, "\n".join(lines)
+
+
+def news_brief(topic="world"):
+    items = news_items(topic, 10)
+    if not items:
+        return "I couldn't get the news right now. Check your internet and try again."
+    heads = "\n".join(f"- {t} ({s})" for t, s, _u, _w in items)
+    r = ask_gemini("Here are today's headlines:\n" + heads + "\n\nWrite a short news brief for a young person in "
+                   "Uganda: a one-sentence overview, then 4-6 bullet points with **bold** topics explaining each big "
+                   "story simply and why it matters. Only use facts from the headlines; don't invent details.", 700)
+    return r or ("Today's headlines:\n" + heads)
+
+
+# ---------------- UNEB practice (S1-S6), marked like UNEB ----------------
+UNEB_SUBJECTS = ("mathematics", "english", "biology", "chemistry", "physics", "geography", "history", "cre", "ire",
+                 "agriculture", "entrepreneurship", "ict", "computer studies", "literature", "kiswahili", "luganda",
+                 "economics", "general paper", "art", "commerce", "accounts", "fine art", "physical education")
+UNEB_LEVEL = {"s1": "S1 (lower secondary, new competence-based curriculum)", "s2": "S2 (lower secondary, new curriculum)",
+              "s3": "S3 (lower secondary, new curriculum)", "s4": "S4 UCE",
+              "s5": "S5 UACE (A-level)", "s6": "S6 UACE (A-level)", "p7": "P7 PLE"}
+
+
+def uneb_parse(arg):
+    a = (arg or "").lower()
+    m = re.search(r"\b(s ?[1-6]|p ?7|senior ?[1-6])\b", a)
+    level = None
+    if m:
+        level = "s" + re.sub(r"\D", "", m.group(1)) if not m.group(1).startswith("p") else "p7"
+        a = (a[:m.start()] + a[m.end():]).strip()
+    if not level:
+        c = mem_load().get("class", "").lower()
+        level = c if c in UNEB_LEVEL else "s4"
+    topic = re.sub(r"\s+", " ", a).strip(" ,.") or "mathematics"
+    return level, topic
+
+
+def uneb_question(arg):
+    level, topic = uneb_parse(arg)
+    return ask_gemini(
+        f"You are an experienced Ugandan teacher and UNEB examiner. Set ONE exam-style question for {UNEB_LEVEL[level]} "
+        f"on: {topic}. Follow the current Uganda curriculum (NCDC) and real UNEB style and wording. "
+        "Format exactly:\n**Question** (with marks in brackets)\n\nThen a line 'Answer below, then type: mark <your answer>'. "
+        "Do not give the answer.", 500) or "I couldn't reach the AI for a question. Check your internet and try again."
+
+
+def uneb_mark(question, answer):
+    return ask_gemini(
+        "You are a strict but kind UNEB examiner. Mark the student's answer to this question using a UNEB-style "
+        "marking guide.\n\nQuestion:\n" + question + "\n\nStudent's answer:\n" + answer +
+        "\n\nReply with:\n**Score:** x / total\n**What you got right:** bullets\n**What was missing:** bullets\n"
+        "**Model answer:** the full marking-guide answer\n**Tip for the exam:** one line", 900) \
+        or "I couldn't mark it right now. Check your internet and type mark again."
+
+
+# ---------------- homework from a photo ----------------
+HOMEWORK_PROMPT = ("This photo shows a student's homework or exam question. Read every question in it carefully. "
+                   "For each question: restate it, then solve it step by step like a patient Ugandan teacher, showing "
+                   "the working, and give the final answer in **bold**. Explain the method so the student can do the "
+                   "next one alone. If part of the photo is blurry, say which part. ")
+
+
+# ---------------- money: mobile money charges and a simple budget ----------------
+def momo_fees(arg):
+    a = arg or "mtn send 50000"
+    return ask_gemini(
+        "Search for the CURRENT official mobile money charges in Uganda (MTN MoMo and Airtel Money tariff, including the "
+        "0.5% withdrawal tax where it applies) and answer this: " + a + ". Give the amount in UGX, show the fee for "
+        "sending to the same network, another network/unregistered, and withdrawing at an agent. Say which date the tariff "
+        "is from, and that the person can confirm on *165# (MTN) or *185# (Airtel). Keep it short with bullets.",
+        700, search=True) or ("I couldn't get today's charges. Dial *165# (MTN) or *185# (Airtel) to see them.")
+
+
+def budget_plan(arg):
+    n = parse_amount(arg or "")
+    if not n:
+        return ("Tell me how much money you have, e.g. budget 200000, or budget 50k weekly.\n"
+                "I'll split it into needs, wants and savings.")
+    per = "week" if "week" in (arg or "").lower() else ("day" if "day" in (arg or "").lower() else "month")
+    needs, wants, save = int(n * 0.5), int(n * 0.3), n - int(n * 0.5) - int(n * 0.3)
+    yearly = save * {"day": 365, "week": 52, "month": 12}[per]
+    return (f"**Your budget for {ugx(n)} a {per}**\n"
+            f"- **Needs (50%):** {ugx(needs)} - food, transport, school things, rent, data you must have\n"
+            f"- **Wants (30%):** {ugx(wants)} - snacks, outings, airtime for fun\n"
+            f"- **Savings (20%):** {ugx(save)} - pay this first, the day money comes in\n\n"
+            f"Saving {ugx(save)} every {per} grows to about **{ugx(yearly)} in a year**.\n"
+            "Tips: write down every spend (spent 2000 airtime), set a goal (goal phone 300k), "
+            "and keep savings on a separate wallet or SACCO.")
+
+
+# ---------------- scam checker ----------------
+_SCAM_SIGNS = (
+    (r"\b(won|winner|prize|lottery|promotion|selected|congratulations)\b", "says you won a prize you never entered"),
+    (r"\b(pin|password|otp|secret code|verification code)\b", "asks for a PIN, password or code (real companies never do)"),
+    (r"\b(send|deposit|pay)\b.{0,30}\b(first|fee|charge|registration|processing|to receive|to claim)\b", "asks you to pay first to receive money"),
+    (r"\b(urgent|immediately|within \d+ ?(min|hour)|act now|today only|blocked|suspended)\b", "rushes or scares you"),
+    (r"\b(wrong(ly)? sent|sent by mistake|mistakenly|reverse|refund me)\b", "classic 'money sent by mistake, send it back' trick"),
+    (r"https?://|bit\.ly|tinyurl|wa\.me", "contains a link (check it before tapping)"),
+    (r"\b(double|guaranteed|100% profit|invest .{0,15} get|returns? daily)\b", "promises easy or guaranteed money"),
+    (r"\b(job|visa|scholarship)\b.{0,40}\b(fee|pay|deposit)\b", "a job, visa or scholarship that wants a fee"),
+    (r"\b(customer care|mtn staff|airtel staff|agent number|bank official)\b", "pretends to be company staff"),
+)
+
+
+def scam_check(text):
+    t = (text or "").lower()
+    signs = [why for pat, why in _SCAM_SIGNS if re.search(pat, t)]
+    local = ("**Red flags I see:**\n" + "\n".join(f"- {s}" for s in signs)) if signs else "I see no obvious red flags in the words."
+    verdict = "DANGER: very likely a scam" if len(signs) >= 2 else ("CAREFUL: possible scam" if signs else "Looks okay, but stay careful")
+    ai = None
+    if connected_ais():
+        ai = ask_gemini("A person in Uganda received this message. Is it a scam? Give a one-line verdict (SCAM / "
+                        "SUSPICIOUS / LOOKS SAFE), the reasons in 2-4 bullets, and exactly what to do next. Message:\n"
+                        + text[:1500], 400)
+    return (f"**{verdict}**\n{local}\n\n" + (ai + "\n\n" if ai else "") +
+            "Never share your PIN. Check money really arrived with *165# or *185#, not by SMS. "
+            "Report scams to your network (MTN 100, Airtel 100) and Police 999.")
+
+
+# ---------------- farming help (Uganda) ----------------
+def farm_help(arg):
+    a = (arg or "").strip() or "what to plant this season"
+    place = ""
+    m = re.search(r"\b(?:in|at)\s+([A-Za-z][A-Za-z ]{2,30})$", a)
+    if m:
+        place = m.group(1).strip()
+    try:
+        wx = weather_report(place or "Kampala")
+    except Exception:
+        wx = ""
+    r = ask_gemini(
+        "You are an agricultural extension officer in Uganda (NARO/MAAIF advice). The farmer asks: " + a +
+        ". Today's weather: " + (wx or "unknown") + ". Give practical, low-cost advice for a small farm: what to do now "
+        "this season, spacing/seed/fertiliser or manure, pests and diseases to watch (with cheap control), harvest and "
+        "storage, and where to sell. Use **bold** labels and short bullets. Mention a local agro-dealer or extension "
+        "officer for chemicals.", 900, search=True)
+    return r or "I couldn't reach the AI right now. Check your internet and try again."
+
+
+V110_HELP = """[b]New in Genius 110[/b]
+- [b]news[/b] - world, Uganda, Africa, sports, business, tech news (tap a headline). news brief = short summary
+- [b]uneb s4 biology[/b] - UNEB-style question, then [b]mark <your answer>[/b] for a score and model answer
+- [b]homework[/b] - add a photo with + then type homework: step-by-step solutions
+- [b]luganda on / luganda off[/b] - Genius answers in Luganda
+- [b]translate thank you[/b] - English to Luganda (or Luganda to English)
+- [b]define osmosis[/b] - dictionary, works offline
+- [b]fee mtn send 50000[/b] - today's mobile money charges
+- [b]budget 200000[/b] - needs, wants and savings plan
+- [b]scam <message>[/b] - check a suspicious SMS or WhatsApp message
+- [b]farm maize in Mityana[/b] - farming advice with the weather
+- [b]remember I am in S4[/b] / [b]memory[/b] / [b]forget ...[/b] - what Genius knows about you
+- [b]datasaver on[/b] - shorter answers to save data
+- [b]proverb[/b] - a Luganda proverb
+- Offline: Genius answers questions you asked before, the dictionary, calc and notes"""
+
+
+def v110_prompt_prefix(text):
+    """Extra instructions for the AI: Luganda mode, data saver and what Genius remembers."""
+    pre = ""
+    s = v110_settings()
+    if s.get("luganda"):
+        pre += LUGANDA_REPLY
+    if s.get("datasaver"):
+        pre += "[Data saver: answer in under 120 words.] "
+    try:
+        m = mem_prompt()
+        if m:
+            pre += m + " "
+    except Exception:
+        pass
+    return pre
+
+
+def v110_handle(screen, line, action, arg, low):
+    """Genius 110 commands. Returns True when handled."""
+    lw = low.strip(" .!?")
+    if action == "news" or lw in ("world news", "headlines", "amawulire", "show news", "latest news"):
+        if arg.lower().startswith(("brief", "summary", "summarise", "summarize")):
+            topic = arg.split(None, 1)[1] if len(arg.split()) > 1 else "world"
+            screen._bg(lambda: news_brief(topic), "Reading today's headlines...", speak=False)
+            return True
+        if not arg:
+            screen.news_menu()
+            return True
+        screen.show_news(arg)
+        return True
+    if action in ("uneb", "past paper", "paper"):
+        def job():
+            q = uneb_question(arg)
+            screen._uneb_q = q
+            return q
+        screen._bg(job, "Setting a UNEB-style question...", speak=False)
+        return True
+    if action == "mark":
+        q = getattr(screen, "_uneb_q", None)
+        if not q:
+            screen.say("Get a question first, e.g. uneb s4 chemistry. Then type mark and your answer.")
+            return True
+        if not arg:
+            screen.say("Type mark, then your answer.")
+            return True
+        screen._bg(lambda: uneb_mark(q, arg), "Marking your answer like UNEB...", speak=False)
+        return True
+    if action in ("homework", "solve photo", "hw") or lw in ("solve this homework", "do my homework", "solve this photo"):
+        att = getattr(screen, "attached", None)
+        if not att or att.get("kind") != "image":
+            screen.say("Tap + and add a clear photo of your homework, then type homework.")
+            return True
+        screen.file_question(HOMEWORK_PROMPT + (("Student note: " + arg) if arg else ""))
+        return True
+    if action == "luganda" and arg.lower() in ("on", "off", "mode", ""):
+        on = arg.lower() != "off"
+        v110_set("luganda", on)
+        screen.say("Luganda mode on. Nja kuddamu mu Luganda. (Type luganda off to stop.)" if on
+                   else "Luganda mode off. I'll answer in English.")
+        return True
+    if action in ("translate", "vvuunula", "vunula"):
+        if not arg:
+            screen.say("Say it like: translate thank you very much, or translate webale nnyo to english")
+            return True
+        text, to = parse_translate(arg)
+        got, exact = translate_offline(text, to)
+        if got and exact:
+            screen.say(f"{text} = **{got}**")
+            return True
+        lang = "Luganda" if to == "lg" else "English"
+        screen._bg(lambda: ask_gemini(f"Translate into natural, correct {lang}. Reply with only the translation, then "
+                                      f"one short line on pronunciation or usage.\n\n{text}", 300)
+                   or (f"{text} = {got} (rough, offline)" if got else "I couldn't translate that right now."),
+                   "Translating...", speak=False)
+        return True
+    if action in ("define", "meaning", "dictionary"):
+        d = dictionary_lookup("define " + arg) if arg else None
+        if d:
+            screen.say(d)
+        elif not arg:
+            screen.say("Say it like: define photosynthesis")
+        else:
+            screen._bg(lambda: ask_gemini(f"Define '{arg}' simply for a Ugandan secondary student: meaning, one example "
+                                          "sentence, and the subject it belongs to.", 250) or
+                       f"I don't have '{arg}' offline and couldn't reach the AI.", "Looking it up...", speak=False)
+        return True
+    if action in ("fee", "fees", "charges") and ("mtn" in low or "airtel" in low or "momo" in low or parse_amount(arg)):
+        screen._bg(lambda: momo_fees(arg), "Checking today's mobile money charges...", speak=False)
+        return True
+    if action == "budget":
+        screen.say(budget_plan(arg))
+        return True
+    if action in ("scam", "fraud", "isthisscam"):
+        if not arg:
+            screen.say("Paste the message after the word scam, e.g. scam Congratulations you have won 5M, send 20k to claim")
+            return True
+        screen._bg(lambda: scam_check(arg), "Checking that message for scam signs...", speak=False)
+        return True
+    if action in ("farm", "farming", "crop", "pest", "ennimiro"):
+        screen._bg(lambda: farm_help((action + " " + arg) if action == "pest" else arg),
+                   "Asking the farming expert...", speak=False)
+        return True
+    if action == "remember" and arg:
+        screen.say(mem_remember(arg))
+        return True
+    if lw in ("memory", "what do you remember", "what do you know about me", "my memory"):
+        screen.say(mem_report())
+        return True
+    if action == "forget" and arg and arg.lower() not in ("lessons", "file", "picture", "this file"):
+        screen.say(mem_forget(arg))
+        return True
+    if action == "datasaver" or lw in ("data saver on", "data saver off", "data saver"):
+        on = "off" not in low
+        v110_set("datasaver", on)
+        screen.say("Data saver on: shorter answers to save your data." if on else "Data saver off.")
+        return True
+    if action in ("proverb", "olugero", "engero"):
+        lgp, en = proverb_of_day(random.randint(0, 400))
+        screen.say(f"**{lgp}**\n{en}")
+        return True
+    if lw in ("new", "new features", "genius 110", "what's new in 110", "v110"):
+        screen.show("AI", V110_HELP)
+        return True
+    return False
+
+
 class ChatScreen(BoxLayout):
     attached = None
     busy = False                 # one slow job at a time (set before any worker starts)
@@ -6885,12 +8034,8 @@ class ChatScreen(BoxLayout):
         find_btn.bind(on_press=self.search_box)
         hb.add_widget(find_btn)
         header.add_widget(hb)
-        mb = BoxLayout(size_hint_x=None, width="52dp", padding=[0, 9, 0, 9])
-        bars = MenuBars(bg=BLUE, fg=TEXTCOL, font_size="13sp", bold=True)
-        bars.bind(on_press=self.tools_menu)
-        self.speak_btn = bars          # shows "Stop" while Genius hears you; tap to stop
-        mb.add_widget(bars)
-        header.add_widget(mb)
+        # only two buttons on top: Share and Search. Every tool is found from Search.
+        self.speak_btn = find_btn      # shows "Stop" while Genius hears you; tap to stop
         self.add_widget(header)
 
         # chat area
@@ -6957,7 +8102,7 @@ class ChatScreen(BoxLayout):
 
     def end_talk(self, msg=None):
         self.talking = False
-        self.speak_btn.text = ""
+        self.speak_btn.text = "Search"
         self.speak_btn.set_bg(BLUE)
         self.speak_btn.color = TEXTCOL
         if msg:
@@ -7397,12 +8542,13 @@ class ChatScreen(BoxLayout):
         box = BoxLayout(orientation="vertical", spacing=8, padding=10)
         pop = Popup(title="Tools", content=box, size_hint=(0.94, 0.94),
                     separator_color=GOLD, title_color=GOLD)
-        grid = GridLayout(cols=3, size_hint_y=None, height="300dp", spacing=8)
+        grid = GridLayout(cols=3, size_hint_y=None, height="370dp", spacing=8)
         quick = [("Share Genius", self.share_menu, GOLD), ("Speak", self.speak_input, GOLD),
                  ("Draw", lambda: self.handle("draw"), BLUE),
                  ("Locker", lambda: self.handle("secrets"), GREY), ("Notes", lambda: self.handle("notes"), GREY),
                  ("Weather", lambda: self.handle("weather"), GREY),
                  ("Deep: " + ("on" if self.deep else "off"), self.toggle_deep, GOLD if self.deep else GREY),
+                 ("News", self.news_menu, GOLD), ("UNEB", lambda: self.handle("uneb"), BLUE),
                  ("Clear", self.clear_chat, GREY), ("Add file", self.attach_menu, BLUE),
                  ("Stop", lambda: self.handle("stop"), RED)]
         def go_btn(label, fn, col, h=None):
@@ -7424,6 +8570,7 @@ class ChatScreen(BoxLayout):
                 ("Fun studio (collage, effects, video)", self.fun_studio, GOLD),
                 ("My creations (pictures)", self.creations, BLUE),
                 ("My storage", self.storage_box, BLUE),
+                ("New in Genius 110", lambda: self.show("AI", V110_HELP), GOLD),
                 ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
                 ("Help (all commands)", lambda: self.handle("help"), GREY),
                 ("Change secret code", lambda: self.handle("change code"), GREY),
@@ -7451,6 +8598,7 @@ class ChatScreen(BoxLayout):
                 ("My creations (pictures)", self.creations, BLUE),
                 ("My storage", self.storage_box, BLUE),
                 ("Add a picture or file", self.attach_menu, BLUE),
+                ("New in Genius 110", lambda: self.show("AI", V110_HELP), GOLD),
                 ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
                 ("Help (all commands)", lambda: self.handle("help"), GREY),
                 ("Change secret code", lambda: self.handle("change code"), GREY),
@@ -8546,31 +9694,85 @@ class ChatScreen(BoxLayout):
         box.add_widget(row)
         pop.open()
 
-    def search_box(self, *_):
-        box = BoxLayout(orientation="vertical", spacing=10, padding=12)
-        ti = style_input(TextInput(hint_text="Search for...", multiline=False, font_size="18sp",
-                                   size_hint_y=None, height="52dp"))
-        box.add_widget(ti)
-        pop = Popup(title="Find", content=box, size_hint=(0.92, 0.6),
-                    separator_color=GOLD, title_color=GOLD)
-        opts = [("Search my chats and notes", self.search_mine, BLUE),
-                ("Search my creations", lambda q: self.creations(q), BLUE),
-                ("Search the internet", lambda q: self.web_search(q), GREY)]
-        for label, fn, col in opts:
-            b = RoundButton(text=label, bg=col, fg=TEXTCOL, size_hint_y=None, height="52dp",
-                            font_size="17sp", bold=True)
+    def _all_tools(self):
+        """Every Genius tool in one list, so the Search button can find them all."""
+        return [("Share Genius", self.share_menu, GOLD), ("Speak (talk to Genius)", self.speak_input, GOLD),
+                ("World news", self.news_menu, GOLD), ("UNEB practice", lambda: self.handle("uneb"), BLUE),
+                ("Homework from a photo", lambda: self.say("Tap Add file, pick your homework photo, then type homework."), BLUE),
+                ("Draw a picture", lambda: self.handle("draw"), BLUE), ("Add file or photo", self.attach_menu, BLUE),
+                ("Photo studio", lambda: self.handle("studio"), BLUE), ("Make a song", lambda: self.handle("music"), BLUE),
+                ("Weather", lambda: self.handle("weather"), GREY), ("Farming help", lambda: self.handle("farm"), GREY),
+                ("Luganda mode on", lambda: self.handle("luganda on"), GREY),
+                ("Luganda mode off", lambda: self.handle("luganda off"), GREY),
+                ("Translate English / Luganda", lambda: self.handle("translate"), GREY),
+                ("Budget planner", lambda: self.handle("budget"), GREY),
+                ("Mobile money charges", lambda: self.handle("fee mtn send 50000"), GREY),
+                ("Scam checker", lambda: self.handle("scam"), GREY), ("Money and savings", lambda: self.handle("money"), GREY),
+                ("Wealth and markets", lambda: self.handle("wealth"), GREY), ("Study and exams", lambda: self.handle("study"), GREY),
+                ("Quiz", lambda: self.handle("quiz"), GREY), ("Freelancing", lambda: self.handle("freelance"), GREY),
+                ("Notes", lambda: self.handle("notes"), GREY), ("Locker (secrets)", lambda: self.handle("secrets"), GREY),
+                ("What Genius remembers", lambda: self.handle("memory"), GREY),
+                ("Deep thinking: " + ("on" if self.deep else "off"), self.toggle_deep, GREY),
+                ("Data saver on", lambda: self.handle("datasaver on"), GREY),
+                ("Data saver off", lambda: self.handle("datasaver off"), GREY),
+                ("Fun studio (collage, effects, video)", self.fun_studio, GREY),
+                ("My creations (pictures)", self.creations, GREY), ("My storage", self.storage_box, GREY),
+                ("Genius everywhere (bubble, shortcuts)", lambda: self.handle("everywhere"), GREY),
+                ("Profile", self.profile_drawer, GREY), ("Set up AI key", self.key_wizard, GOLD),
+                ("Theme / look", lambda: self.handle("theme"), GREY), ("Update Genius", lambda: self.handle("update"), GREY),
+                ("New in Genius 110", lambda: self.show("AI", V110_HELP), GREY),
+                ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
+                ("Help (all commands)", lambda: self.handle("help"), GREY),
+                ("Change secret code", lambda: self.handle("change code"), GREY),
+                ("Accounts", self.accounts_box, GREY), ("Clear chat", self.clear_chat, GREY),
+                ("Lock Genius", self.app.build_login, GREY), ("Exit Genius", self.exit_app, RED)]
 
-            def go(btn, fn=fn):
-                q = ti.text.strip()
-                if not q:
-                    return
-                pop.dismiss()
-                Clock.schedule_once(lambda *_: fn(q), 0.1)
-            b.bind(on_press=go)
-            box.add_widget(b)
-        ti.bind(on_text_validate=lambda *_: (pop.dismiss(), self.search_mine(ti.text.strip())) if ti.text.strip() else None)
+    def search_box(self, *_):
+        if getattr(self, "talking", False):
+            return self.speak_input()          # tapping while listening stops it
+        box = BoxLayout(orientation="vertical", spacing=8, padding=10)
+        ti = style_input(TextInput(hint_text="Search tools, chats or the internet...", multiline=False,
+                                   font_size="18sp", size_hint_y=None, height="52dp"))
+        box.add_widget(ti)
+        pop = Popup(title="Search", content=box, size_hint=(0.95, 0.94),
+                    separator_color=GOLD, title_color=GOLD)
+        sv = ScrollView()
+        lst = BoxLayout(orientation="vertical", spacing=8, size_hint_y=None)
+        lst.bind(minimum_height=lst.setter("height"))
+        sv.add_widget(lst)
+        box.add_widget(sv)
+        tools = self._all_tools()
+
+        def run(fn, *a):
+            pop.dismiss()
+            Clock.schedule_once(lambda *_: fn(*a), 0.1)
+
+        def btn(label, col, on):
+            b = RoundButton(text=label, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
+                            size_hint_y=None, height="50dp", font_size="16sp", bold=True)
+            b.bind(on_press=lambda *_: on())
+            lst.add_widget(b)
+
+        def refresh(*_):
+            q = ti.text.strip()
+            ql = q.lower()
+            lst.clear_widgets()
+            if q:
+                btn(f"Ask Genius: {q[:30]}", GOLD, lambda: run(self.handle, q))
+                btn(f"Search the internet: {q[:24]}", BLUE, lambda: run(self.web_search, q))
+                btn("Search my chats and notes", BLUE, lambda: run(self.search_mine, q))
+                btn("Search my creations", BLUE, lambda: run(self.creations, q))
+            words = ql.split()
+            for label, fn, col in tools:
+                if not words or all(w in label.lower() for w in words):
+                    btn(label, col, lambda fn=fn: run(fn))
+        ti.bind(text=refresh)
+        ti.bind(on_text_validate=lambda *_: run(self.handle, ti.text.strip()) if ti.text.strip() else None)
+        refresh()
+        close = RoundButton(text="Close", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), size_hint_y=None, height="46dp", bold=True)
+        close.bind(on_press=pop.dismiss)
+        box.add_widget(close)
         pop.open()
-        Clock.schedule_once(lambda *_: setattr(ti, "focus", True), 0.3)
 
     def search_mine(self, q):
         ql = q.lower()
@@ -8964,6 +10166,11 @@ class ChatScreen(BoxLayout):
                 line = (near[0] + " " + arg).strip()
                 low = line.lower()
 
+        try:
+            if v110_handle(self, line, action, arg, low):
+                return
+        except Exception as e:
+            log(f"V110 command failed: {type(e).__name__}: {e}")
         # Genius Brain: it learns and improves itself
         lw = low.strip(" .!?")
         if action in ("do", "agent", "job", "run") and not arg and lw in ("do", "agent", "job", "run"):
@@ -9798,6 +11005,53 @@ class ChatScreen(BoxLayout):
     def _on_chat_ref(self, _w, ref):
         if ref == "keywizard":
             self.key_wizard()
+        elif ref in NEWS_LINKS:
+            try:
+                open_url(NEWS_LINKS[ref])
+            except Exception as e:
+                log(f"NEWS open failed: {e}")
+                self.say("I couldn't open that story. Check your internet.")
+
+    def _v110_after(self, r):
+        """Keep good answers for offline use; if no AI was reachable, answer from what's saved."""
+        q = getattr(self, "_v110_q", "")
+        try:
+            if r in (NET_AI_MSG,) or not r:
+                off = offline_answer(q) if q else None
+                return off or r or NET_AI_MSG
+            if q:
+                offline_cache_add(q, r)
+        except Exception as e:
+            log(f"V110 cache failed: {type(e).__name__}")
+        return r
+
+    # ---------- world news ----------
+    def news_menu(self, *_):
+        opts = [(NEWS_TOPICS[k][0], (lambda k=k: self.show_news(k)), GOLD if k in ("world", "uganda") else BLUE)
+                for k in NEWS_TOPICS]
+        opts.append(("News brief (AI summary)", lambda: self._bg(lambda: news_brief("world"),
+                                                                 "Reading today's headlines...", speak=False), GOLD))
+        self._buttons_popup("World news", opts, cols=2, hint="Pick a topic. Tap a headline to read the full story")
+
+    def show_news(self, topic):
+        if getattr(self, "busy", False):
+            self.say("Still working on the last thing. One moment.")
+            return
+        self.busy = True
+        self.show("AI", "Getting the latest news...")
+
+        def work():
+            try:
+                _items, t = news_markup(topic)
+            except Exception as e:
+                log(f"NEWS failed: {e}")
+                t = "I couldn't get the news right now. Check your internet and try again."
+
+            def done(*_):
+                self.busy = False
+                self.show("AI", t)
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=work, daemon=True).start()
 
     def _need_key(self):
         if connected_ais():
@@ -10290,6 +11544,21 @@ class ChatScreen(BoxLayout):
         if reply:
             self.say(reply)
             return
+        harm = harmful_redirect(text)
+        if harm:
+            self.say(harm)
+            return
+        self._v110_q = text
+        if not net_online():
+            off = offline_answer(text)
+            self.say(off or OFFLINE_HELP)
+            return
+        try:
+            pre = v110_prompt_prefix(text)
+        except Exception:
+            pre = ""
+        if pre:
+            text = pre + "\n" + text
         ck = text.strip().lower()
         if ck in _answer_cache and not needs_tools(text):
             self.say(_answer_cache[ck])          # instant: answered before
@@ -10317,7 +11586,7 @@ class ChatScreen(BoxLayout):
 
                 def done(*_):
                     self.busy = False
-                    self.say(r)
+                    self.say(self._v110_after(r))
                 Clock.schedule_once(done, 0)
             ui_hooks = self._ui_hooks()
             threading.Thread(target=turbo, daemon=True).start()
@@ -10347,7 +11616,7 @@ class ChatScreen(BoxLayout):
 
             def done(*_):
                 self.busy = False
-                self.say(r)
+                self.say(self._v110_after(r))
             Clock.schedule_once(done, 0)
 
         def answer():
