@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "109.1"
+VERSION = "109.2"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -90,6 +90,34 @@ RED      = (0.95, 0.30, 0.42, 1)
 RED2     = (0.75, 0.15, 0.38, 1)
 TEXTCOL  = (0.96, 0.96, 1.00, 1)
 HINT     = (0.62, 0.64, 0.78, 1)
+
+# ---- Gold and Diamond looks (type: theme gold / theme diamond / theme classic) ----
+THEME_FILE = os.path.join(os.path.abspath(os.getcwd()), "theme.txt")
+THEMES = {
+    "gold": dict(BG=(0.03, 0.022, 0.0, 1), BG_TOP=(0.13, 0.095, 0.02, 1), BG_BOT=(0.015, 0.01, 0.0, 1),
+                 HEADER=(0.11, 0.08, 0.02, 0.90), PANEL=(1.0, 0.85, 0.45, 0.07),
+                 GOLD=(1.00, 0.80, 0.26, 1), GOLD2=(0.80, 0.52, 0.10, 1),
+                 BLUE=(0.86, 0.62, 0.16, 1), BLUE2=(0.55, 0.34, 0.05, 1),
+                 GREY=(1.0, 0.85, 0.45, 0.12), TEXTCOL=(1.0, 0.97, 0.88, 1), HINT=(0.80, 0.70, 0.48, 1),
+                 LINE=(1.00, 0.78, 0.30), SPARK=0),
+    "diamond": dict(BG=(0.01, 0.02, 0.05, 1), BG_TOP=(0.05, 0.10, 0.20, 1), BG_BOT=(0.008, 0.015, 0.045, 1),
+                    HEADER=(0.06, 0.11, 0.22, 0.90), PANEL=(0.75, 0.92, 1.0, 0.07),
+                    GOLD=(0.72, 0.93, 1.00, 1), GOLD2=(0.42, 0.70, 1.00, 1),
+                    BLUE=(0.45, 0.72, 1.00, 1), BLUE2=(0.68, 0.52, 1.00, 1),
+                    GREY=(0.75, 0.92, 1.0, 0.12), TEXTCOL=(0.95, 0.99, 1.0, 1), HINT=(0.64, 0.78, 0.92, 1),
+                    LINE=(0.62, 0.88, 1.00), SPARK=1),
+}
+try:
+    THEME = open(THEME_FILE).read().strip().lower() or "gold"
+except Exception:
+    THEME = "gold"
+if THEME not in THEMES and THEME != "classic":
+    THEME = "gold"
+if THEME in THEMES:
+    _t = THEMES[THEME]
+    BG, BG_TOP, BG_BOT, HEADER, PANEL = _t["BG"], _t["BG_TOP"], _t["BG_BOT"], _t["HEADER"], _t["PANEL"]
+    GOLD, GOLD2, BLUE, BLUE2, GREY = _t["GOLD"], _t["GOLD2"], _t["BLUE"], _t["BLUE2"], _t["GREY"]
+    TEXTCOL, HINT = _t["TEXTCOL"], _t["HINT"]
 Window.clearcolor = BG
 
 from kivy.graphics.texture import Texture
@@ -117,15 +145,78 @@ def gradient_texture(top, bottom, steps=64, horizontal=False):
     return tex
 
 
+_WALL_TEX = {}
+
+
+def wallpaper_texture():
+    """The doodle wallpaper, recoloured for the current look (gold lines on black,
+    or icy diamond lines with sparkles). Made once, then kept on the phone."""
+    if THEME not in THEMES:
+        return None
+    if THEME in _WALL_TEX:
+        return _WALL_TEX[THEME]
+    tex = None
+    try:
+        from kivy.core.image import Image as CoreImage
+        here = os.path.abspath(os.getcwd())
+        out = os.path.join(here, f"wall_{THEME}_v1.png")
+        if not os.path.exists(out):
+            src = None
+            for d in (here, os.path.dirname(os.path.abspath(__file__))):
+                if os.path.exists(os.path.join(d, "bg.jpg")):
+                    src = os.path.join(d, "bg.jpg")
+                    break
+            if not src:
+                return None
+            from PIL import Image, ImageDraw, ImageFilter
+            t = THEMES[THEME]
+            g = Image.open(src).convert("L")
+            w, h = g.size
+            px = g.load()
+            lo = sorted(g.resize((64, 64)).getdata())[32]
+            mask = g.point(lambda v: max(0, min(255, int((v - lo - 6) * 6))))
+            top = [int(c * 255) for c in t["BG_TOP"][:3]]
+            bot = [int(c * 255) for c in t["BG_BOT"][:3]]
+            base = Image.new("RGB", (1, h))
+            for y in range(h):
+                f = y / float(h - 1)
+                base.putpixel((0, y), tuple(int(top[k] + (bot[k] - top[k]) * f) for k in range(3)))
+            base = base.resize((w, h))
+            line = Image.new("RGB", (w, h), tuple(int(c * 255) for c in t["LINE"]))
+            glow = mask.filter(ImageFilter.GaussianBlur(3)).point(lambda v: int(v * 0.32))
+            img = Image.composite(line, base, glow)
+            img = Image.composite(line, img, mask.point(lambda v: int(v * 0.42)))
+            if t.get("SPARK"):
+                rnd = random.Random(7)
+                dr = ImageDraw.Draw(img)
+                for _ in range(70):
+                    x, y, r = rnd.randrange(w), rnd.randrange(h), rnd.choice((3, 4, 6, 8))
+                    col = (215, 245, 255)
+                    dr.line((x - r, y, x + r, y), fill=col, width=1)
+                    dr.line((x, y - r, x, y + r), fill=col, width=1)
+                    dr.point((x, y), fill=(255, 255, 255))
+            img.save(out)
+        tex = CoreImage(out).texture
+    except Exception as e:
+        try:
+            log(f"wallpaper skipped: {e}")
+        except Exception:
+            pass
+        tex = None
+    _WALL_TEX[THEME] = tex
+    return tex
+
+
 def add_gradient_bg(widget, top=BG_TOP, bottom=BG_BOT):
-    """Paint a smooth gradient plus soft glowing orbs behind a whole screen."""
+    """Paint the themed doodle wallpaper (or a gradient) plus soft glowing orbs behind a screen."""
+    wall = wallpaper_texture()
     with widget.canvas.before:
         Color(1, 1, 1, 1)
-        r = Rectangle(texture=gradient_texture(top, bottom))
-        Color(0.62, 0.30, 0.98, 0.10)
+        r = Rectangle(texture=wall if wall is not None else gradient_texture(top, bottom))
+        Color(BLUE2[0], BLUE2[1], BLUE2[2], 0.10)
         from kivy.graphics import Ellipse
         o1 = Ellipse()
-        Color(1.0, 0.70, 0.25, 0.07)
+        Color(GOLD[0], GOLD[1], GOLD[2], 0.07)
         o2 = Ellipse()
 
     def sync(*_):
@@ -145,13 +236,13 @@ _PAIRS = {GOLD: GOLD2, BLUE: BLUE2, RED: RED2}
 Builder.load_string('''
 <Popup>:
     background: ""
-    background_color: 0.07, 0.065, 0.15, 0.97
+    background_color: %s
     title_size: "19sp"
     title_align: "center"
     separator_height: "2dp"
 <ModalView>:
     overlay_color: 0.01, 0.01, 0.04, 0.72
-''')
+''' % ", ".join(str(round(c, 3)) for c in ((BG_TOP[0], BG_TOP[1], BG_TOP[2], 0.97) if THEME in THEMES else (0.07, 0.065, 0.15, 0.97))))
 
 OWNER = "ssalimuto"
 ROOT = os.path.abspath(os.getcwd())           # owner's home; guests live in ROOT/users/<name>
@@ -259,6 +350,7 @@ ALLOWED = MappingProxyType({
     "intruders": "See who tried to break in",
     "tripwire": "Add a fake secret that traps hackers, e.g. tripwire momo_pin",
     "deep": "Turn deep thinking + web search on or off",
+    "theme": "Change the look: theme gold, theme diamond, or theme classic",
     "stop": "Shut down",
 })
 LIFE_ACTIONS = ("life", "study", "subjects", "exam", "quiz", "explain", "studyplan",
@@ -1062,7 +1154,7 @@ def online_update():
         if rel.get("draft"):
             continue
         for a in rel.get("assets") or []:
-            m = re.match(r"genius-(\d+(?:\.\d+)*)-.*\.apk$", a.get("name", ""))
+            m = re.match(r"genius2-(\d+(?:\.\d+)*)-.*\.apk$", a.get("name", ""))
             if m and (best is None or _ver_tuple(m.group(1)) > _ver_tuple(best[0])):
                 best = (m.group(1), a.get("browser_download_url"))
     if not best:
@@ -7154,6 +7246,18 @@ class ChatScreen(BoxLayout):
                 install_online_update(found[0], found[1], tell)
             self.say("Checking for a new Genius...")
             threading.Thread(target=work, daemon=True).start()
+            return
+        if action == "theme":
+            pick = arg.lower().strip()
+            if pick not in ("gold", "diamond", "classic"):
+                self.say(f"Your look is {THEME}. Type theme gold, theme diamond, or theme classic.")
+                return
+            try:
+                open(THEME_FILE, "w").write(pick)
+            except Exception:
+                self.say("I couldn't save the new look. Try again.")
+                return
+            self.say(f"{pick.title()} look saved. Close and reopen Genius to see it.")
             return
         if action == "setkey":
             if arg:
