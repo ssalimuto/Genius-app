@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "110.2"
+VERSION = "110.3"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -72,7 +72,39 @@ from kivy.uix.widget import Widget
 from kivy.graphics import Color, RoundedRectangle, Rectangle
 from kivy.metrics import dp
 
-Window.softinput_mode = "below_target"   # keyboard doesn't cover the text box
+Window.softinput_mode = ""   # 110.3: screen never slides; the typing box lifts itself above the keyboard
+
+
+_KB_VIEWS = {}
+
+
+def keyboard_overlap():
+    """Pixels of the Kivy window hidden by the phone keyboard (0 when it's closed or on a computer)."""
+    if not ANDROID_OK():
+        return 0
+    try:
+        if "content" not in _KB_VIEWS:
+            from jnius import autoclass
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            _KB_VIEWS["content"] = act.getWindow().getDecorView().findViewById(autoclass("android.R$id").content)
+            _KB_VIEWS["Rect"] = autoclass("android.graphics.Rect")
+        v = _KB_VIEWS["content"]
+        r = _KB_VIEWS["Rect"]()
+        v.getWindowVisibleDisplayFrame(r)
+        loc = [0, 0]
+        v.getLocationOnScreen(loc)
+        hidden = (loc[1] + v.getHeight()) - r.bottom
+        return int(hidden) if hidden > dp(80) else 0     # ignore the nav bar / small insets
+    except Exception:
+        return 0
+
+
+def ANDROID_OK():
+    try:
+        from kivy.utils import platform as _pf
+        return _pf == "android"
+    except Exception:
+        return False
 
 # ---- theme colours ----
 # Genius Luxe theme: midnight glass, liquid gold, electric violet
@@ -402,7 +434,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 110.2
+ABOUT_TEXT = """Genius 110.3
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -463,7 +495,10 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 110.2 (2026-10-26)
+CHANGELOG = """Genius 110.3 (2026-10-26)
+- Keyboard fix: the screen no longer slides when you type. The typing box sits right on top of the keyboard and grows up to 6 lines so you can see all your words.
+
+Genius 110.2 (2026-10-26)
 - Trending on social media: the hottest worldwide posts people are sharing (Reddit world, Uganda and Africa) plus viral stories. Say 'news trending' or find it in Search.
 
 Genius 110.1 (2026-10-26)
@@ -6573,7 +6608,15 @@ class Panel(BoxLayout):
         self._gold_line.size = (self.width, 1.5)
 
 
+def _popup_kb_mode(ti, focused):
+    """Boxes in popups and other screens still slide into view above the keyboard; the chat box handles itself."""
+    if isinstance(ti, ChatInput):
+        return
+    Window.softinput_mode = "below_target" if focused else ""
+
+
 def style_input(ti):
+    ti.bind(focus=_popup_kb_mode)
     ti.background_normal = ""
     ti.background_active = ""
     ti.background_color = (0, 0, 0, 0)
@@ -8126,6 +8169,11 @@ class ChatScreen(BoxLayout):
         row.add_widget(self.inp)
         row.add_widget(send_col)
         self.add_widget(row)
+        # empty space the size of the keyboard: the box sits right on top of it, the screen doesn't slide
+        self.kb_pad = Widget(size_hint_y=None, height=0)
+        self.add_widget(self.kb_pad)
+        self.inp.bind(focus=self._kb_focus)
+        self._kb_ev = None
         Clock.schedule_once(self._grow_input, 0)
 
         self.say(f"Welcome {CURRENT['name']}. You are in command. Tap the menu at the top right for Speak and everything else.")
@@ -10133,11 +10181,30 @@ class ChatScreen(BoxLayout):
             self.handle(text)
 
     # ---------- typing: growing box + command suggestions ----------
+    def _kb_focus(self, _ti, focused):
+        if self._kb_ev is not None:
+            self._kb_ev.cancel()
+            self._kb_ev = None
+        if focused:
+            self._kb_ev = Clock.schedule_interval(self._kb_check, 0.15)
+        Clock.schedule_once(self._kb_check, 0.05)
+        Clock.schedule_once(self._kb_check, 0.4)
+
+    def _kb_check(self, *_):
+        h = keyboard_overlap() if self.inp.focus else 0
+        if not h and not ANDROID_OK() and self.inp.focus:
+            h = int(getattr(Window, "keyboard_height", 0) or 0)
+        if abs(self.kb_pad.height - h) > 2:
+            opening = h > self.kb_pad.height
+            self.kb_pad.height = h
+            if opening:      # keep the newest message in view, just above the box
+                Clock.schedule_once(lambda *_: setattr(self.scroll, "scroll_y", 0), 0.05)
+
     def _grow_input(self, *_):
         ti = self.inp
         pad = ti.padding[1] + ti.padding[3] if len(ti.padding) == 4 else 2 * ti.padding[-1]
         one = ti.line_height + pad
-        four = ti.line_height * 4 + ti.line_spacing * 3 + pad
+        four = ti.line_height * 6 + ti.line_spacing * 5 + pad   # grows to 6 lines so you see all your words
         h = max(one, min(four, ti.minimum_height))
         if abs(ti.height - h) > 0.5:
             ti.height = h
