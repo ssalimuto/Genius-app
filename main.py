@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "110.4"
+VERSION = "110.5"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -434,7 +434,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 110.4
+ABOUT_TEXT = """Genius 110.5
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -495,7 +495,12 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 110.4 (2026-10-26)
+CHANGELOG = """Genius 110.5 (2026-10-26)
+- Much faster answers: words start appearing in under a second and type themselves out as Genius thinks.
+- Quick questions use the fastest AI, and Genius keeps its line to the AI open so there's no waiting to connect.
+- Everyday questions like 'do you know...' no longer take the slow path.
+
+Genius 110.4 (2026-10-26)
 - No more empty boxes next to Genius and online.
 - 'make it' is no longer changed to 'makeai'.
 - Ask something while Genius is still thinking and it does it right after, instead of saying 'still thinking'. It never gets stuck after a bad network.
@@ -3224,6 +3229,126 @@ def pick_model(name, key):
     return ids[0]
 
 
+# ---------------- 110.5 fast lane: streamed Groq answers on a kept-open connection ----------------
+_GROQ_CONN = {}
+_GROQ_IDS = []
+_SLOW_WORDS = re.compile(r"\b(explain|essay|write|story|poem|code|program|solve|calculate|compare|analy[sz]e|"
+                         r"describe|discuss|plan|letter|summar|why|how does|how do|step)\w*", re.I)
+
+
+def _groq_conn(fresh=False):
+    import http.client
+    c = _GROQ_CONN.get("c")
+    if fresh and c is not None:
+        try:
+            c.close()
+        except Exception:
+            pass
+        c = None
+    if c is None:
+        c = http.client.HTTPSConnection("api.groq.com", timeout=20, context=ssl_context())
+        _GROQ_CONN["c"] = c
+    return c
+
+
+def groq_warmup():
+    """Open the secure line to Groq and learn its models before the first question (saves a second or two)."""
+    key = provider_key("groq")
+    if not key:
+        return
+    try:
+        if not _GROQ_IDS:
+            _GROQ_IDS.extend(m["id"] for m in _http_json(PROVIDERS["groq"]["base"] + "/models", key, timeout=15)["data"])
+        pick_model("groq", key)
+        _groq_conn().connect()
+    except Exception as e:
+        log(f"GROQ warmup: {type(e).__name__}")
+
+
+def fast_model(text, key):
+    """Short everyday questions go to the quickest model; bigger jobs to the smartest fast one."""
+    if len(text.split()) <= 14 and not _SLOW_WORDS.search(text):
+        for want in ("llama-3.1-8b-instant", "llama-3.3-70b-versatile"):
+            if want in _GROQ_IDS:
+                return want
+    return pick_model("groq", key)
+
+
+def groq_stream(text, convo=None, on_text=None, max_tokens=700):
+    """Ask Groq and hand back the words while they arrive, so the answer starts showing in under a second."""
+    key = provider_key("groq")
+    if not key:
+        return None
+    msgs = [{"role": "system", "content":
+             "You are Genius, the private assistant of " + CURRENT["name"] + ", a young person in Uganda, made by "
+             "Ssali Muto. Answer in clear, simple English, briefly and accurately. Say when you are "
+             "unsure. You can't see the time, weather or internet in this mode." + ANSWER_STYLE + brain_recall(text)}]
+    for m in (convo or [])[-8:]:
+        t = " ".join(p.get("text", "") for p in m.get("parts", []))
+        if t:
+            msgs.append({"role": "assistant" if m["role"] == "model" else "user", "content": t})
+    msgs.append({"role": "user", "content": text})
+    try:
+        model = fast_model(text, key)
+    except Exception as e:
+        log(f"GROQ model: {type(e).__name__}")
+        return None
+    body = {"model": model, "messages": msgs, "max_tokens": max_tokens, "temperature": 0.6, "stream": True}
+    if "gpt-oss" in model:
+        body.update(reasoning_effort="low", include_reasoning=False)
+    data = json.dumps(body)
+    out = []
+    for attempt in range(2):
+        try:
+            c = _groq_conn(fresh=attempt > 0)
+            c.request("POST", "/openai/v1/chat/completions", data,
+                      {"Content-Type": "application/json", "Authorization": "Bearer " + key})
+            r = c.getresponse()
+            if r.status != 200:
+                detail = r.read()[:200]
+                log(f"GROQ stream HTTP {r.status}: {detail!r}")
+                if r.status in (400, 404):
+                    _model_cache.pop("groq", None)
+                    if model in _GROQ_IDS and attempt == 0:
+                        _GROQ_IDS.remove(model)
+                        body["model"] = model = pick_model("groq", key)
+                        body.pop("reasoning_effort", None), body.pop("include_reasoning", None)
+                        data = json.dumps(body)
+                        continue
+                return None
+            while True:
+                line = r.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line.startswith(b"data:"):
+                    continue
+                d = line[5:].strip()
+                if d == b"[DONE]":
+                    break
+                try:
+                    piece = json.loads(d)["choices"][0]["delta"].get("content") or ""
+                except Exception:
+                    continue
+                if piece:
+                    out.append(piece)
+                    if on_text:
+                        on_text("".join(out))
+            try:
+                r.read()            # finish cleanly so the same line can be reused next time
+            except Exception:
+                _GROQ_CONN.pop("c", None)
+            return "".join(out).strip() or None
+        except Exception as e:
+            log(f"GROQ stream: {type(e).__name__}: {e}")
+            _GROQ_CONN.pop("c", None)
+            if out:
+                return "".join(out).strip()
+            if _is_net_error(e) and attempt:
+                return None
+    return None
+
+
 def other_ai(name, text, system=None, convo=None, max_tokens=700):
     """Ask Groq or OpenRouter. Returns text or None."""
     key = provider_key(name)
@@ -3401,9 +3526,12 @@ TOOL_WORDS = ("weather", "remind", "note", "time", "date", "battery", "draw", "p
               "remember", "calculate", "rain", "who won", "current", "now")
 
 
+_TOOL_RE = re.compile(r"\b(" + "|".join(re.escape(w) for w in TOOL_WORDS) + r")\b")
+
+
 def needs_tools(text):
-    t = text.lower()
-    return any(w in t for w in TOOL_WORDS)
+    """Whole words only: 'know' is not 'now', 'update' is not 'date', so normal questions take the fast lane."""
+    return bool(_TOOL_RE.search(text.lower()))
 
 
 def ask_all(question):
@@ -8184,6 +8312,7 @@ class ChatScreen(BoxLayout):
         self.inp.bind(focus=self._kb_focus)
         self._kb_ev = None
         Clock.schedule_once(self._grow_input, 0)
+        threading.Thread(target=groq_warmup, daemon=True).start()
 
         self.say(f"Welcome {CURRENT['name']}. You are in command. Tap the menu at the top right for Speak and everything else.")
 
@@ -10134,12 +10263,51 @@ class ChatScreen(BoxLayout):
             if text.startswith(NO_AI_MSG[:40]):
                 Clock.schedule_once(self.offer_key_wizard, 0.3)
         if who == "AI":
-            head = f"[b]{gradient_word('Genius', PAL['accent'], PAL['accent2'])}[/b]"
+            head = self._ai_head()
         else:
             head = f"[b]{gradient_word(who, PAL['user'], PAL['accent2']) if who == 'You' else _esc(who)}[/b]"
             text = f"[color={_hx(PAL['text'])}]{_esc(text)}[/color]"     # your words exactly as typed, never highlighted
         self.out.text += f"{head}\n{text}\n[size=6sp] [/size]\n"
         Clock.schedule_once(lambda *_: setattr(self.scroll, "scroll_y", 0), 0.1)
+
+    def _ai_head(self):
+        return f"[b]{gradient_word('Genius', PAL['accent'], PAL['accent2'])}[/b]"
+
+    # ---- streaming: the answer types itself out as it arrives ----
+    def _stream_begin(self, placeholder):
+        self.show("AI", placeholder)
+        self._stream_head = self._ai_head()
+        self._stream_tail = colorize(md_to_markup(placeholder)) + "\n[size=6sp] [/size]\n"
+        self._stream_buf, self._stream_shown = "", ""
+        self._stream_ev = Clock.schedule_interval(self._stream_paint, 0.12)
+
+    def _stream_feed(self, txt):          # called from the worker thread; painting happens on the UI clock
+        self._stream_buf = txt
+
+    def _stream_paint(self, *_):
+        buf = getattr(self, "_stream_buf", "")
+        if not buf or buf == self._stream_shown or not self.out.text.endswith(self._stream_tail):
+            return
+        self._stream_shown = buf
+        shown = re.sub(r"(?m)^\s*Ask next:.*$", "", buf).rstrip()
+        try:
+            body = colorize(md_to_markup(shown))
+        except Exception:
+            body = _esc(shown)
+        tail = body + "\n[size=6sp] [/size]\n"
+        self.out.text = self.out.text[:-len(self._stream_tail)] + tail
+        self._stream_tail = tail
+        self.scroll.scroll_y = 0
+
+    def _stream_end(self):
+        ev = getattr(self, "_stream_ev", None)
+        if ev is not None:
+            ev.cancel()
+        self._stream_ev = None
+        whole = getattr(self, "_stream_head", "") + "\n" + getattr(self, "_stream_tail", "")
+        if self._stream_tail and self.out.text.endswith(whole):
+            self.out.text = self.out.text[:-len(whole)]     # the finished answer replaces the live one
+        self._stream_tail = ""
 
     CHAT_MAX_PX = 3400          # phone GPUs can't draw one text picture taller than ~4096 px: it turns black
     _CHAT_SEP = "\n[size=6sp] [/size]\n"
@@ -11701,10 +11869,10 @@ class ChatScreen(BoxLayout):
                 and not self.deep and not getattr(self, "busy", False):
             self.busy = True
             self._busy_since = time.time()
-            self.show("AI", "Thinking fast...")
+            self._stream_begin("Thinking fast...")
 
             def turbo():
-                r = other_ai("groq", text, convo=history)
+                r = groq_stream(text, convo=history, on_text=self._stream_feed) or other_ai("groq", text, convo=history)
                 if r:
                     history.append({"role": "user", "parts": [{"text": text}]})
                     history.append({"role": "model", "parts": [{"text": r}]})
@@ -11721,6 +11889,7 @@ class ChatScreen(BoxLayout):
 
                 def done(*_):
                     self.busy = False
+                    self._stream_end()
                     self.say(self._v110_after(r))
                 Clock.schedule_once(done, 0)
             ui_hooks = self._ui_hooks()
