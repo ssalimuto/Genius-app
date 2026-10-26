@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "111.4"
+VERSION = "111.5"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -446,7 +446,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 111.4
+ABOUT_TEXT = """Genius 111.5
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -507,7 +507,13 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 111.4 (2026-10-26)
+CHANGELOG = """Genius 111.5 (2026-10-26)
+- 3 more free AIs you can connect: Cerebras, Mistral and SambaNova (type key).
+- Smart AI picker: Genius learns which AI is fastest and most reliable on your phone, and asks it first.
+- Good answer / Bad answer under each reply. Your taps teach Genius which AI to trust.
+- Help improve Genius (Menu): opt-in. Once a day it tells the developer which parts had problems, never your chats, name or files, so updates fix real problems faster.
+
+Genius 111.4 (2026-10-26)
 - Change profile picture (Menu > Change profile picture, or say 'profile picture'): take a selfie, a beauty selfie, choose from your gallery, use your last picture, or remove it. Genius centres it on your face. Every account has its own picture.
 
 Genius 111.3 (2026-10-26)
@@ -2493,7 +2499,7 @@ def brain_reflect(q, a):
                "If there is nothing worth learning, reply exactly NONE.")
         sysm = "You improve an assistant by writing short lessons for it. Be accurate; never invent facts."
         out = None
-        for prov in ("groq", "openrouter"):
+        for prov in ranked_providers():
             out = other_ai(prov, ask, system=sysm, max_tokens=80)
             if out:
                 break
@@ -3291,7 +3297,157 @@ PROVIDERS = {
              "prefer": ("gpt-oss-120b", "llama-3.3-70b", "llama-4", "qwen", "gpt-oss", "llama", "gemma")},
     "openrouter": {"file": ROUTER_KEY_FILE, "base": "https://openrouter.ai/api/v1",
                    "prefer": (":free",)},
+    "cerebras": {"file": os.path.join(ROOT, "cerebras_key.txt"), "base": "https://api.cerebras.ai/v1",
+                 "prefer": ("gpt-oss-120b", "llama-3.3-70b", "qwen-3", "llama")},
+    "mistral": {"file": os.path.join(ROOT, "mistral_key.txt"), "base": "https://api.mistral.ai/v1",
+                "prefer": ("mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "mistral")},
+    "sambanova": {"file": os.path.join(ROOT, "sambanova_key.txt"), "base": "https://api.sambanova.ai/v1",
+                  "prefer": ("llama-4-maverick", "deepseek-v3", "meta-llama-3.3-70b", "llama")},
 }
+AI_NAMES = {"groq": "Groq", "openrouter": "OpenRouter", "cerebras": "Cerebras", "mistral": "Mistral",
+            "sambanova": "SambaNova", "gemini": "Gemini"}
+
+# ---- 111.5 smart AI picker: Genius learns which AI is fastest and most reliable on THIS phone ----
+AI_STATS_FILE = os.path.join(ROOT, "ai_stats.json")
+_AI_STATS = {}
+_AI_STATS_LOCK = threading.Lock()
+
+
+def _ai_stats():
+    global _AI_STATS
+    if not _AI_STATS:
+        try:
+            _AI_STATS = json.load(open(AI_STATS_FILE))
+        except Exception:
+            _AI_STATS = {}
+    return _AI_STATS
+
+
+def ai_record(name, ok, secs=0.0, liked=None):
+    """Remember how an AI did: success, speed, and the user's thumbs up/down."""
+    with _AI_STATS_LOCK:
+        st = _ai_stats().setdefault(name, {"ok": 0, "fail": 0, "avg": 3.0, "up": 0, "down": 0})
+        if liked is True:
+            st["up"] += 1
+        elif liked is False:
+            st["down"] += 1
+        elif ok:
+            st["ok"] += 1
+            st["avg"] = round(st["avg"] * 0.8 + float(secs) * 0.2, 2)
+        else:
+            st["fail"] += 1
+        try:
+            json.dump(_AI_STATS, open(AI_STATS_FILE, "w"))
+        except Exception:
+            pass
+
+
+def ai_score(name):
+    st = _ai_stats().get(name, {"ok": 0, "fail": 0, "avg": 3.0, "up": 0, "down": 0})
+    tries = st["ok"] + st["fail"]
+    reliab = (st["ok"] + 2) / (tries + 3.0)                     # starts near 0.67, learns fast
+    likes = (st["up"] + 1) / (st["up"] + st["down"] + 2.0)
+    speed = 1.0 / (1.0 + max(0.2, st["avg"]) / 3.0)
+    return reliab * 0.5 + likes * 0.3 + speed * 0.2
+
+
+def ranked_providers():
+    """Connected chat AIs (not Gemini), best first."""
+    have = [n for n in PROVIDERS if provider_key(n)]
+    base = list(PROVIDERS)
+    return sorted(have, key=lambda n: (-ai_score(n), base.index(n)))
+
+
+# ---- 111.5 help improve Genius: opt-in, anonymous reports to the developer ----
+REPORT_TOPIC = "genius-dev-4b6b6740e6de68e5"          # read by the developer at ntfy.sh/<topic>
+REPORT_OPT_FILE = os.path.join(ROOT, "help_improve.json")
+
+
+def reports_opt():
+    try:
+        return json.load(open(REPORT_OPT_FILE))
+    except Exception:
+        return {"on": None, "last": 0}
+
+
+def reports_set(on):
+    d = reports_opt()
+    d["on"] = bool(on)
+    json.dump(d, open(REPORT_OPT_FILE, "w"))
+
+
+def send_report(title, body):
+    """Send a short, anonymous note to the developer. Only when the person turned 'Help improve Genius' on."""
+    if not reports_opt().get("on"):
+        return False
+
+    def go():
+        try:
+            data = (f"Genius {VERSION}\n" + body)[:3500].encode("utf-8")
+            req = urllib.request.Request("https://ntfy.sh/" + REPORT_TOPIC, data=data,
+                                         headers={"Title": title[:80].encode("ascii", "ignore").decode() or "Genius",
+                                                  "Tags": "genius"})
+            urllib.request.urlopen(req, timeout=15, context=ssl_context()).read(200)
+        except Exception as e:
+            log(f"REPORT send: {type(e).__name__}")
+    threading.Thread(target=go, daemon=True).start()
+    return True
+
+
+def problem_summary(hours=24):
+    """Which parts of Genius had trouble lately: only part names and error types, never what anyone typed."""
+    since = time.time() - hours * 3600
+    counts = {}
+    try:
+        for line in open(LOG_FILE, errors="ignore").readlines()[-4000:]:
+            try:
+                ts, ev = line.split(" | ", 1)
+                if time.mktime(time.strptime(ts.strip(), "%Y-%m-%d %H:%M:%S")) < since:
+                    continue
+            except Exception:
+                continue
+            if not re.search(r"fail|error|exception|couldn", ev, re.I):
+                continue
+            part = re.sub(r"[^A-Za-z ]", " ", ev.split(":", 1)[0])
+            part = " ".join(part.split()[:3])[:30] or "unknown"
+            err = re.search(r"\b([A-Z][A-Za-z]+(?:Error|Exception))\b", ev)
+            k = part + (" / " + err.group(1) if err else "")
+            counts[k] = counts.get(k, 0) + 1
+    except Exception:
+        pass
+    return sorted(counts.items(), key=lambda x: -x[1])[:25]
+
+
+def daily_problem_report():
+    d = reports_opt()
+    if not d.get("on") or time.time() - d.get("last", 0) < 86400:
+        return
+    probs = problem_summary()
+    d["last"] = time.time()
+    json.dump(d, open(REPORT_OPT_FILE, "w"))
+    if probs:
+        model = ""
+        try:
+            from jnius import autoclass
+            B = autoclass("android.os.Build")
+            model = f"{B.MANUFACTURER} {B.MODEL}, Android {android_sdk()}"
+        except Exception:
+            pass
+        ais = ", ".join(f"{AI_NAMES.get(n, n)} {ai_score(n) * 100:.0f}" for n in connected_ais() if n != "gemini")
+        send_report("Daily problems", f"{model}\nAI scores: {ais or 'none'}\n" +
+                    "\n".join(f"{n}x {k}" for k, n in probs))
+
+
+def ai_report():
+    rows = []
+    for n in ["gemini"] + list(PROVIDERS):
+        if n not in connected_ais():
+            continue
+        st = _ai_stats().get(n, {})
+        rows.append(f"{AI_NAMES.get(n, n)}: score {ai_score(n) * 100:.0f}, {st.get('ok', 0)} good, "
+                    f"{st.get('fail', 0)} failed, about {st.get('avg', 0):.1f}s, "
+                    f"{st.get('up', 0)} likes, {st.get('down', 0)} dislikes")
+    return rows
 _model_cache = {}
 _answer_cache = {}
 
@@ -3448,6 +3604,9 @@ def groq_stream(text, convo=None, on_text=None, max_tokens=700):
     return None
 
 
+LAST_AI = {"name": None}
+
+
 def other_ai(name, text, system=None, convo=None, max_tokens=700):
     """Ask Groq or OpenRouter. Returns text or None."""
     key = provider_key(name)
@@ -3465,12 +3624,18 @@ def other_ai(name, text, system=None, convo=None, max_tokens=700):
     for attempt in range(2):
         try:
             model = pick_model(name, key)
+            t0 = time.time()
             d = _http_json(PROVIDERS[name]["base"] + "/chat/completions", key,
                            {"model": model, "messages": msgs, "max_tokens": max_tokens,
                             "temperature": 0.6}, timeout=30)
-            return d["choices"][0]["message"]["content"].strip()
+            out = d["choices"][0]["message"]["content"].strip()
+            ai_record(name, bool(out), time.time() - t0)
+            LAST_AI["name"] = name
+            return out
         except Exception as e:
             log(f"{name} failed: {e}")
+            if not _is_net_error(e):
+                ai_record(name, False)
             if _is_net_error(e):
                 break                          # no internet: retrying only wastes time
             _model_cache.pop(name, None)       # maybe the model was retired; re-pick once
@@ -3507,10 +3672,33 @@ KEY_WIZARD = (
                               "Tap 'Create API Key', give it any name, then tap Create.",
                               "Tap 'Copy'. The key starts with sk-or- and is shown only once.",
                               "Come back to Genius and tap 'Paste', then 'Test and save'.")}),
+    ("cerebras", {"name": "Cerebras", "tag": "Free and super fast. Great backup.",
+                  "url": "https://cloud.cerebras.ai", "starts": ("csk-",), "file": PROVIDERS["cerebras"]["file"],
+                  "steps": ("Tap 'Open the key page' below.",
+                            "Sign up or sign in with Google.",
+                            "Open 'API Keys' on the left, then tap 'Generate API key'.",
+                            "Copy the key. It starts with csk-",
+                            "Come back to Genius and tap 'Paste', then 'Test and save'.")}),
+    ("mistral", {"name": "Mistral", "tag": "Free plan. Strong at writing and languages.",
+                 "url": "https://console.mistral.ai/api-keys", "starts": ("",), "file": PROVIDERS["mistral"]["file"],
+                 "steps": ("Tap 'Open the key page' below.",
+                           "Sign in with Google, and choose the free 'Experiment' plan if asked.",
+                           "Tap 'Create new key', give it any name, then Create.",
+                           "Copy the key (it's shown only once).",
+                           "Come back to Genius and tap 'Paste', then 'Test and save'.")}),
+    ("sambanova", {"name": "SambaNova", "tag": "Free. Big open AIs like Llama and DeepSeek.",
+                   "url": "https://cloud.sambanova.ai/apis", "starts": ("",), "file": PROVIDERS["sambanova"]["file"],
+                   "steps": ("Tap 'Open the key page' below.",
+                             "Sign in with Google.",
+                             "Tap 'Generate new API key' and give it any name.",
+                             "Copy the key.",
+                             "Come back to Genius and tap 'Paste', then 'Test and save'.")}),
 )
 KEY_WIZARD_INFO = dict(KEY_WIZARD)
 KEY_WIZARD_WORDS = ("key", "setup", "getkey", "apikey", "ekisumuluzo")
 _KEY_PATTERNS = {"groq": r"gsk_[A-Za-z0-9]{20,}", "openrouter": r"sk-or-[A-Za-z0-9_\-]{20,}",
+                 "cerebras": r"csk-[A-Za-z0-9]{20,}", "mistral": r"[A-Za-z0-9]{32}",
+                 "sambanova": r"[A-Za-z0-9\-]{30,}",
                  "gemini": r"AIza[A-Za-z0-9_\-]{20,}|AQ\.[A-Za-z0-9_\-]{20,}"}
 
 
@@ -3530,12 +3718,17 @@ def key_format_check(prov, key):
     """(ok, friendly_message). A quick check before any internet is used."""
     info = KEY_WIZARD_INFO.get(prov)
     if not info:
-        return False, "Pick Groq, Google Gemini or OpenRouter first."
+        return False, "Pick an AI first."
     if not key:
         return False, "The box is empty. Copy your key on the website, then tap Paste."
-    if not key.startswith(info["starts"]):
+    if info["starts"] == ("",):
         for other, oi in KEY_WIZARD:
-            if other != prov and key.startswith(oi["starts"]):
+            if other != prov and oi["starts"] != ("",) and key.startswith(oi["starts"]):
+                return False, (f"That looks like a {oi['name']} key, not a {info['name']} key. "
+                               f"Go back and pick {oi['name']}.")
+    elif not key.startswith(info["starts"]):
+        for other, oi in KEY_WIZARD:
+            if other != prov and oi["starts"] != ("",) and key.startswith(oi["starts"]):
                 return False, (f"That looks like a {oi['name']} key, not a {info['name']} key. "
                                f"Go back and pick {oi['name']}.")
         return False, (f"That doesn't look like a {info['name']} key. It should start with "
@@ -3553,6 +3746,9 @@ def key_test_request(prov, key):
     if prov == "gemini":
         return urllib.request.Request("https://generativelanguage.googleapis.com/v1beta/models?key="
                                       + urllib.parse.quote(key, safe=""))
+    if prov in ("cerebras", "mistral", "sambanova"):
+        return urllib.request.Request(PROVIDERS[prov]["base"] + "/models",
+                                      headers={"Authorization": "Bearer " + key})
     return urllib.request.Request("https://openrouter.ai/api/v1/auth/key",
                                   headers={"Authorization": "Bearer " + key})
 
@@ -3635,11 +3831,10 @@ def needs_tools(text):
 
 def ask_all(question):
     """Ask every connected AI at the same time and return all answers."""
-    jobs = {"Gemini": lambda: _ask_gemini_only(question, 500),
-            "Groq": lambda: other_ai("groq", question, max_tokens=500),
-            "OpenRouter": lambda: other_ai("openrouter", question, max_tokens=500)}
     have = connected_ais()
-    jobs = {k: v for k, v in jobs.items() if k.lower() in have}
+    jobs = {"Gemini": lambda: _ask_gemini_only(question, 500)} if "gemini" in have else {}
+    for n in ranked_providers():
+        jobs[AI_NAMES.get(n, n)] = (lambda n=n: other_ai(n, question, max_tokens=500))
     results = {}
 
     def run(k, fn):
@@ -3671,11 +3866,10 @@ def fast_answer(question):
         return hit[0] + "\n[size=11sp][color=9aa0c0]instant (remembered)[/color][/size]"
     import queue
     q = queue.Queue()
-    jobs = {"groq": lambda: other_ai("groq", question, max_tokens=400),
-            "gemini": lambda: _ask_gemini_only(question, 400),
-            "openrouter": lambda: other_ai("openrouter", question, max_tokens=400)}
     have = connected_ais()
-    jobs = {k: v for k, v in jobs.items() if k in have}
+    jobs = {n: (lambda n=n: other_ai(n, question, max_tokens=400)) for n in ranked_providers()[:3]}
+    if "gemini" in have:
+        jobs["gemini"] = lambda: _ask_gemini_only(question, 400)
     if not jobs:
         return NO_AI_MSG
     t0 = time.time()
@@ -3731,7 +3925,7 @@ def _ai_text(prompt, tokens=900, search=False):
     except Exception as e:
         log(f"agent gemini failed: {e}")
     if not r:
-        for prov in ("groq", "openrouter"):
+        for prov in ranked_providers():
             r = other_ai(prov, prompt, max_tokens=tokens)
             if r:
                 break
@@ -5783,7 +5977,7 @@ def ask_gemini(prompt, max_tokens=600, json_mode=False, search=False, system=Non
     r = _ask_gemini_only(prompt, max_tokens, json_mode, search, system)
     if r and not (search and r.startswith("Search failed")):
         return r
-    for prov in ("groq", "openrouter"):
+    for prov in ranked_providers():
         sys_txt = system or ("You help " + CURRENT["name"] + ", a young person in Uganda. Simple, clear English."
                              + (" Reply with only valid JSON." if json_mode else ""))
         t = other_ai(prov, prompt, system=sys_txt, max_tokens=max(max_tokens, 400))
@@ -9291,6 +9485,7 @@ class ChatScreen(BoxLayout):
         opts = [("Home", self.app.open_home, GOLD),
                 ("Genius Wealth (trading & money)", self.wealth_menu, GOLD),
                 ("Change profile picture", set_photo, BLUE),
+                ("Help improve Genius", self.help_improve_menu, BLUE),
                 ("Set up AI key", self.key_wizard, GOLD),
                 ("My plan (Premium)", self.premium_popup, BLUE),
                 ("My storage", self.storage_box, BLUE),
@@ -9569,6 +9764,44 @@ class ChatScreen(BoxLayout):
         except Exception:
             pass
         Clock.schedule_once(lambda *_: self._open_camera(), 0.2)
+
+    # ---------- 111.5 answer ratings and Help improve Genius ----------
+    def rate_answer(self, good):
+        rt = getattr(self, "_rate", None)
+        if not rt or rt.get("done"):
+            self.say("Thanks, I already have your rating for that one.")
+            return
+        rt["done"] = True
+        ai_record(rt["ai"], True, liked=bool(good))
+        if good:
+            self.say(f"Thanks! I'll use {AI_NAMES.get(rt['ai'], rt['ai'])} more for answers like that.")
+            return
+        opts = [("Tell me the right answer", lambda: setattr(self.inp, "text", "better: "), GOLD),
+                ("Ask Genius Mind (every AI checks)", lambda: self.handle("mind " + rt["q"]) if rt.get("q") else None, BLUE)]
+        if reports_opt().get("on"):
+            opts.append(("Send this to the developer", lambda: (send_report(
+                "Bad answer", f"AI: {rt['ai']}\nQ: {rt['q'][:600]}\nA: {rt['a'][:1500]}"),
+                self.say("Sent. Thank you for helping Genius get better.")), GREY))
+        else:
+            opts.append(("Turn on Help improve Genius", self.help_improve_menu, GREY))
+        self._buttons_popup("Sorry about that", opts, cols=1,
+                            hint="I'll use a different AI for questions like that")
+
+    def help_improve_menu(self, *_):
+        on = bool(reports_opt().get("on"))
+
+        def toggle():
+            reports_set(not on)
+            self.say("Help improve Genius is ON. Thank you! Once a day Genius sends the developer which parts "
+                     "had problems (never your chats, name or files), and you can send bad answers with one tap."
+                     if not on else "Help improve Genius is OFF. Nothing is sent.")
+        rows = ai_report()
+        self._buttons_popup("Help improve Genius", [
+            (("Turn OFF" if on else "Turn ON") + " Help improve Genius", toggle, GOLD),
+            ("Add another free AI", self.key_wizard, BLUE),
+            ("See how each AI is doing", lambda: self.say("\n".join(rows) if rows else
+                                                           "No AI connected yet. Tap Add another free AI."), BLUE),
+        ], cols=1, hint="Genius learns which AI answers best on your phone and uses it first")
 
     # ---------- profile picture ----------
     def change_profile_photo(self, *_):
@@ -11054,6 +11287,10 @@ class ChatScreen(BoxLayout):
     def show(self, who, text, plain=False):
         if who == "AI" and isinstance(text, str) and not plain:
             text = colorize(md_to_markup(text))
+        if who == "AI" and getattr(self, "_rate_next", False):
+            self._rate_next = False
+            text += ("\n[size=13sp][ref=like][color=7ee787][u]Good answer[/u][/color][/ref]     "
+                     "[ref=dislike][color=ff8a8a][u]Bad answer[/u][/color][/ref][/size]")
         if who == "AI" and CURRENT.get("owner") and isinstance(text, str) and _needs_key_text(text):
             text += "\n[ref=keywizard][b][color=ffc84d][u]\u00bb Tap here to set up a free AI key[/u][/color][/b][/ref]"
             if text.startswith(NO_AI_MSG[:40]):
@@ -11466,6 +11703,9 @@ class ChatScreen(BoxLayout):
             return
         if lw in ("camera", "open camera", "take photo", "take a photo", "photo"):
             self.camera_menu()
+            return
+        if lw in ("help improve", "help improve genius", "improve genius", "ai scores", "best ai", "ai stats"):
+            self.help_improve_menu()
             return
         if lw in ("profile picture", "profile photo", "change profile picture", "change profile photo", "change my photo",
                   "change my picture", "profile pic", "change profile pic", "set profile picture", "my profile picture"):
@@ -12124,6 +12364,9 @@ class ChatScreen(BoxLayout):
         pop.open()
 
     def _on_chat_ref(self, _w, ref):
+        if ref in ("like", "dislike"):
+            self.rate_answer(ref == "like")
+            return
         if ref == "keywizard":
             self.key_wizard()
         elif ref in NEWS_LINKS:
@@ -12136,6 +12379,9 @@ class ChatScreen(BoxLayout):
     def _v110_after(self, r):
         """Keep good answers for offline use; if no AI was reachable, answer from what's saved."""
         q = getattr(self, "_v110_q", "")
+        if r and r not in (NET_AI_MSG, NO_AI_MSG) and len(r) > 60:
+            self._rate = {"ai": LAST_AI.get("name") or "gemini", "q": q, "a": r}
+            self._rate_next = True
         try:
             if r in (NET_AI_MSG,) or not r:
                 off = offline_answer(q) if q else None
@@ -12775,7 +13021,7 @@ class ChatScreen(BoxLayout):
                 racers = []
                 if os.path.exists(KEY_FILE):
                     racers.append(lambda: agent_reply(text, ui, False)[0])
-                for prov in ("groq", "openrouter"):
+                for prov in ranked_providers()[:2]:
                     if prov in have:
                         tried.add(prov)
                         racers.append(lambda prov=prov: other_ai(prov, text, convo=history))
@@ -12798,7 +13044,7 @@ class ChatScreen(BoxLayout):
             if not reply and os.path.exists(KEY_FILE):
                 reply, err = agent_reply(text, ui, self.deep)
             if not reply:                       # backup AIs not already tried in the race
-                for prov in ("groq", "openrouter"):
+                for prov in ranked_providers():
                     if prov in tried:
                         continue
                     reply = other_ai(prov, text, convo=history)
@@ -12995,6 +13241,7 @@ class GeniusApp(App):
         live_started_ok()
         everywhere_load()
         threading.Thread(target=lambda: brain_self_review(), daemon=True).start()
+        threading.Thread(target=lambda: (time.sleep(60), daily_problem_report()), daemon=True).start()
         def check_update():
             # Auto-update: after unlock, then every 6 hours, Genius fetches the new
             # version by itself and opens Android's Update screen (one tap).
