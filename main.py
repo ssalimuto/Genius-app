@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "110.1"
+VERSION = "110.2"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -402,7 +402,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 110.1
+ABOUT_TEXT = """Genius 110.2
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -463,7 +463,10 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 110.1 (2026-10-26)
+CHANGELOG = """Genius 110.2 (2026-10-26)
+- Trending on social media: the hottest worldwide posts people are sharing (Reddit world, Uganda and Africa) plus viral stories. Say 'news trending' or find it in Search.
+
+Genius 110.1 (2026-10-26)
 - Cleaner top bar: only Share and Search. Tap Search to find every tool (news, UNEB, draw, music, money, settings...) or search chats and the internet.
 
 Genius 110.0 (2026-10-26)
@@ -7640,6 +7643,7 @@ def mem_prompt():
 
 # ---------------- world news: free Google News + BBC feeds, no key needed ----------------
 NEWS_TOPICS = {
+    "social": ("Trending on social media", "viral OR trending social media when:1d", None),
     "uganda": ("Uganda", "uganda when:1d", "https://feeds.bbci.co.uk/news/world/africa/rss.xml"),
     "africa": ("Africa", "africa when:1d", "https://feeds.bbci.co.uk/news/world/africa/rss.xml"),
     "world": ("World", "world news when:1d", "https://feeds.bbci.co.uk/news/world/rss.xml"),
@@ -7651,16 +7655,49 @@ NEWS_TOPICS = {
     "entertainment": ("Entertainment", "entertainment music when:1d",
                       "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"),
 }
-NEWS_ALIASES = {"technology": "tech", "sport": "sports", "football": "sports", "money": "business",
+NEWS_ALIASES = {"trending": "social", "viral": "social", "socialmedia": "social", "social media": "social",
+                "reddit": "social", "tiktok": "social", "x": "social", "twitter": "social", "technology": "tech", "sport": "sports", "football": "sports", "money": "business",
                 "ug": "uganda", "local": "uganda", "global": "world", "international": "world", "music": "entertainment"}
+_NEWS_JUNK = re.compile(r"viral video|video viral|\\^|\\+\\+|full video|leaked|video link|mms|[\u3000-\u9fff\u3010\u3011]|!!", re.I)
 NEWS_LINKS = {}            # "news:N" -> url, for tapping a headline
 _NEWS_CACHE = {}
 
 
 def _news_fetch(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Linux; Android) Genius"})
+    ua = "android:org.ssalimuto.geniu2:v110 (news reader)" if "reddit.com" in url else "Mozilla/5.0 (Linux; Android) Genius"
+    req = urllib.request.Request(url, headers={"User-Agent": ua})
     with urllib.request.urlopen(req, timeout=15) as r:
         return r.read()
+
+
+SOCIAL_FEEDS = (("https://www.reddit.com/r/worldnews/hot/.rss", "Reddit r/worldnews"),
+                ("https://www.reddit.com/r/Uganda/hot/.rss", "Reddit r/Uganda"),
+                ("https://www.reddit.com/r/africa/hot/.rss", "Reddit r/africa"))
+
+
+def social_items(limit=10):
+    """What people are talking about worldwide: Reddit's hottest posts (free feeds) + viral stories in the news."""
+    import xml.etree.ElementTree as ET
+    A = "{http://www.w3.org/2005/Atom}"
+    out = []
+    for url, name in SOCIAL_FEEDS:
+        try:
+            root = ET.fromstring(_news_fetch(url))
+        except Exception as e:
+            log(f"SOCIAL feed failed: {type(e).__name__}")
+            continue
+        n = 0
+        for e in root.iter(A + "entry"):
+            title = (e.findtext(A + "title") or "").strip()
+            link = e.find(A + "link")
+            href = link.get("href", "") if link is not None else ""
+            if not title or "megathread" in title.lower() or "daily discussion" in title.lower():
+                continue
+            out.append((title, name, href, (e.findtext(A + "updated") or "")[:10]))
+            n += 1
+            if n >= (5 if "worldnews" in url else 3):
+                break
+    return out[:limit]
 
 
 def news_items(topic="world", limit=8):
@@ -7671,6 +7708,15 @@ def news_items(topic="world", limit=8):
     hit = _NEWS_CACHE.get(t)
     if hit and time.time() - hit[1] < 900:
         return hit[0][:limit]
+    if t == "social":
+        got = social_items(limit + 4)
+        try:
+            got += [x for x in news_items("viral OR trending on social media", 6) if x not in got]
+        except Exception:
+            pass
+        if got:
+            _NEWS_CACHE[t] = (got, time.time())
+        return got[:limit]
     if t in NEWS_TOPICS:
         query, backup = NEWS_TOPICS[t][1], NEWS_TOPICS[t][2]
     else:
@@ -7693,7 +7739,7 @@ def news_items(topic="world", limit=8):
             if not src and "bbc" in u:
                 src = "BBC"
             when = (it.findtext("pubDate") or "")[5:22].strip()
-            if title:
+            if title and not _NEWS_JUNK.search(title + " " + src):
                 out.append((title, src, (it.findtext("link") or "").strip(), when))
             if len(out) >= 15:
                 break
@@ -7857,7 +7903,7 @@ def farm_help(arg):
 
 
 V110_HELP = """[b]New in Genius 110[/b]
-- [b]news[/b] - world, Uganda, Africa, sports, business, tech news (tap a headline). news brief = short summary
+- [b]news[/b] - trending on social media, world, Uganda, Africa, sports, business, tech news (tap a headline). news brief = short summary
 - [b]uneb s4 biology[/b] - UNEB-style question, then [b]mark <your answer>[/b] for a score and model answer
 - [b]homework[/b] - add a photo with + then type homework: step-by-step solutions
 - [b]luganda on / luganda off[/b] - Genius answers in Luganda
@@ -9697,7 +9743,7 @@ class ChatScreen(BoxLayout):
     def _all_tools(self):
         """Every Genius tool in one list, so the Search button can find them all."""
         return [("Share Genius", self.share_menu, GOLD), ("Speak (talk to Genius)", self.speak_input, GOLD),
-                ("World news", self.news_menu, GOLD), ("UNEB practice", lambda: self.handle("uneb"), BLUE),
+                ("World news", self.news_menu, GOLD), ("Trending on social media", lambda: self.show_news("social"), GOLD), ("UNEB practice", lambda: self.handle("uneb"), BLUE),
                 ("Homework from a photo", lambda: self.say("Tap Add file, pick your homework photo, then type homework."), BLUE),
                 ("Draw a picture", lambda: self.handle("draw"), BLUE), ("Add file or photo", self.attach_menu, BLUE),
                 ("Photo studio", lambda: self.handle("studio"), BLUE), ("Make a song", lambda: self.handle("music"), BLUE),
@@ -11027,7 +11073,7 @@ class ChatScreen(BoxLayout):
 
     # ---------- world news ----------
     def news_menu(self, *_):
-        opts = [(NEWS_TOPICS[k][0], (lambda k=k: self.show_news(k)), GOLD if k in ("world", "uganda") else BLUE)
+        opts = [(NEWS_TOPICS[k][0], (lambda k=k: self.show_news(k)), GOLD if k in ("world", "uganda", "social") else BLUE)
                 for k in NEWS_TOPICS]
         opts.append(("News brief (AI summary)", lambda: self._bg(lambda: news_brief("world"),
                                                                  "Reading today's headlines...", speak=False), GOLD))
