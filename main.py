@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "110.9"
+VERSION = "111.0"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -443,7 +443,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 110.9
+ABOUT_TEXT = """Genius 111.0
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -504,7 +504,11 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 110.9 (2026-10-26)
+CHANGELOG = """Genius 111.0 (2026-10-26)
+- Camera fixed: say 'camera' for Selfie (front camera), Back camera or the live zoom camera. Say 'selfie' to open the front camera straight away.
+- 14 new social media effects: HD clear, Warm, Cool, Teal & orange, Cinematic, Fade, Dreamy, Film grain, Glitch, Neon, Cartoon, Duotone pink, Polaroid and Vignette. After you take a photo, tap 'Add effects'.
+
+Genius 110.9 (2026-10-26)
 - Fixed news and Trending on social media not loading on phones.
 - Trending now also shows what people in Uganda and around the world are searching for, from Google Trends, and it loads faster.
 
@@ -3804,7 +3808,9 @@ def storage_note(text):
 
 
 # ---------------- Fun studio: collage, picture transformations, video slideshow ----------------
-FUN_STYLES = ("Black & white", "Vintage", "Pencil sketch", "Vivid colours", "Soft glow",
+FUN_STYLES = ("HD clear", "Warm", "Cool", "Teal & orange", "Cinematic", "Fade", "Dreamy", "Film grain",
+              "Glitch", "Neon", "Cartoon", "Duotone pink", "Polaroid", "Vignette",
+              "Black & white", "Vintage", "Pencil sketch", "Vivid colours", "Soft glow",
               "Mirror", "Rotate", "Blur", "Sharpen", "Negative", "Pixel art", "Poster", "Emboss", "Bright")
 AI_STYLES = (("Oil painting", "turn it into a realistic oil painting"),
              ("Watercolour", "turn it into a soft watercolour painting"),
@@ -5206,7 +5212,67 @@ def transform_image(path, style):
     im = _open_rgb(path)
     im.thumbnail((4096, 4096))
     st = style.lower()
-    if "black" in st:
+    if st == "hd clear":
+        im = ImageEnhance.Contrast(im.filter(ImageFilter.UnsharpMask(2, 120, 2))).enhance(1.08)
+        im = ImageEnhance.Color(im).enhance(1.12)
+    elif st == "warm":
+        r, g, b = im.split()
+        im = Image.merge("RGB", (r.point(lambda x: min(255, int(x * 1.10 + 8))), g.point(lambda x: min(255, int(x * 1.03))),
+                                 b.point(lambda x: int(x * 0.88))))
+    elif st == "cool":
+        r, g, b = im.split()
+        im = Image.merge("RGB", (r.point(lambda x: int(x * 0.9)), g.point(lambda x: min(255, int(x * 1.02))),
+                                 b.point(lambda x: min(255, int(x * 1.12 + 8)))))
+    elif "teal" in st or st == "cinematic":
+        g = ImageOps.grayscale(im)
+        tone = ImageOps.colorize(g, (10, 60, 70), (255, 190, 120))      # teal shadows, orange highlights
+        im = Image.blend(ImageEnhance.Contrast(im).enhance(1.12), tone, 0.35)
+        if st == "cinematic":
+            from PIL import ImageDraw
+            w, h = im.size
+            bar = int(h * 0.11)
+            dr = ImageDraw.Draw(im)
+            dr.rectangle([0, 0, w, bar], fill=(0, 0, 0))
+            dr.rectangle([0, h - bar, w, h], fill=(0, 0, 0))
+    elif st == "fade":
+        im = im.point(lambda x: int(40 + x * 0.78))
+        im = ImageEnhance.Color(im).enhance(0.8)
+    elif st == "dreamy":
+        soft = im.filter(ImageFilter.GaussianBlur(14))
+        im = ImageChops.screen(im, soft)
+        im = Image.blend(im, Image.new("RGB", im.size, (255, 200, 230)), 0.08)
+    elif "grain" in st:
+        import random as _rr
+        w, h = im.size
+        small = Image.new("L", (max(1, w // 2), max(1, h // 2)))
+        small.putdata([_rr.randint(0, 255) for _ in range(small.size[0] * small.size[1])])
+        noise = small.resize((w, h)).convert("RGB")
+        im = Image.blend(ImageEnhance.Color(im).enhance(0.85), noise, 0.08)
+        im = _vignette(im, 0.3)
+    elif st == "glitch":
+        r, g, b = im.split()
+        sh = max(4, im.size[0] // 60)
+        im = Image.merge("RGB", (ImageChops.offset(r, sh, 0), g, ImageChops.offset(b, -sh, 0)))
+    elif st == "neon":
+        edges = im.filter(ImageFilter.FIND_EDGES).filter(ImageFilter.MaxFilter(3))
+        edges = ImageEnhance.Brightness(ImageEnhance.Color(edges).enhance(3)).enhance(2.5)
+        im = ImageChops.add(ImageEnhance.Brightness(im).enhance(0.35), edges.filter(ImageFilter.GaussianBlur(1)))
+    elif st == "cartoon":
+        base = ImageOps.posterize(im.filter(ImageFilter.SMOOTH_MORE).filter(ImageFilter.SMOOTH_MORE), 3)
+        lines = ImageOps.grayscale(im).filter(ImageFilter.FIND_EDGES).point(lambda x: 0 if x > 40 else 255)
+        im = ImageChops.multiply(ImageEnhance.Color(base).enhance(1.5), lines.convert("RGB"))
+    elif "duotone" in st:
+        im = ImageOps.colorize(ImageOps.grayscale(im), (40, 10, 90), (255, 120, 190))
+    elif st == "polaroid":
+        w, h = im.size
+        side = min(w, h)
+        im = ImageOps.fit(ImageEnhance.Color(im).enhance(0.9), (side, side))
+        frame = Image.new("RGB", (side + side // 10, side + side // 4), (250, 248, 240))
+        frame.paste(im, (side // 20, side // 20))
+        im = frame
+    elif st == "vignette":
+        im = _vignette(im, 0.5)
+    elif "black" in st:
         im = ImageOps.grayscale(im).convert("RGB")
     elif "vintage" in st:
         g = ImageOps.grayscale(im)
@@ -9177,10 +9243,27 @@ class ChatScreen(BoxLayout):
     def zoom_camera(self, *_):
         try:
             from android.permissions import request_permissions, Permission
-            request_permissions([Permission.CAMERA])
+            from android.permissions import check_permission
+            if not check_permission(Permission.CAMERA):
+                def after(perms, grants):
+                    if grants and all(grants):
+                        Clock.schedule_once(lambda *_: self._open_camera(), 0.3)
+                    else:
+                        Clock.schedule_once(lambda *_: self.say(
+                            "Genius needs camera permission. Allow it, or open Settings > Apps > Genius > Permissions."), 0)
+                request_permissions([Permission.CAMERA], after)
+                return
         except Exception:
             pass
-        Clock.schedule_once(lambda *_: self._open_camera(), 0.8)
+        Clock.schedule_once(lambda *_: self._open_camera(), 0.2)
+
+    def camera_menu(self, *_):
+        self._buttons_popup("Camera", [
+            ("Selfie (front camera)", lambda: self.take_photo(front=True), GOLD),
+            ("Back camera", lambda: self.take_photo(front=False), GOLD),
+            ("Live zoom camera (1x-100x)", self.zoom_camera, BLUE),
+            ("Effects for my last photo", self.transform_menu, BLUE),
+            ("Pick from gallery", self.pick_gallery, GREY)], hint="Take a photo, then add effects")
 
     def _open_camera(self, index=0):
         from kivy.uix.camera import Camera
@@ -9188,11 +9271,16 @@ class ChatScreen(BoxLayout):
         from kivy.uix.stencilview import StencilView
         from kivy.uix.floatlayout import FloatLayout
         from kivy.graphics import PushMatrix, PopMatrix, Rotate
-        try:
-            cam = Camera(index=index, resolution=(1920, 1080), play=True, allow_stretch=True, keep_ratio=True)
-        except Exception as e:
-            log(f"CAMERA: {e}")
-            self.say("I couldn't open the camera. Allow camera permission, or use 'Zoom a photo' instead.")
+        cam = None
+        for res in ((1280, 720), (640, 480), (-1, -1)):
+            try:
+                cam = Camera(index=index, resolution=res, play=True, allow_stretch=True, keep_ratio=True)
+                break
+            except Exception as e:
+                log(f"CAMERA {res}: {e}")
+        if cam is None:
+            self.say("The live camera didn't start on this phone, so I'm opening your phone's camera instead.")
+            self.take_photo(front=bool(index))
             return
         st = {"zoom": 1.0, "rot": -90 if os.path.isdir("/storage/emulated/0") else 0, "index": index}
         stencil = StencilView()
@@ -10244,8 +10332,9 @@ class ChatScreen(BoxLayout):
 
     CAM_CODE = 7781
 
-    def take_photo(self, *_):
-        """Open the phone's camera; the photo comes straight back into the chat."""
+    def take_photo(self, *_, front=False):
+        """Open the phone's camera (front for selfies); the photo comes straight back into the chat."""
+        self._cam_front = bool(front)
         try:
             from android.permissions import request_permissions, check_permission, Permission
             need = [Permission.CAMERA]
@@ -10287,6 +10376,11 @@ class ChatScreen(BoxLayout):
                 self._cam_bound = True
             it = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
             it.putExtra(MediaStore.EXTRA_OUTPUT, cast("android.os.Parcelable", uri))
+            if getattr(self, "_cam_front", False):        # ask for the selfie camera (most phone cameras obey)
+                it.putExtra("android.intent.extras.CAMERA_FACING", 1)
+                it.putExtra("android.intent.extras.LENS_FACING_FRONT", 1)
+                it.putExtra("android.intent.extra.USE_FRONT_CAMERA", True)
+                it.putExtra("com.google.assistant.extra.USE_FRONT_CAMERA", True)
             it.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION)
             self._cam_uri = uri
             PA.mActivity.startActivityForResult(it, self.CAM_CODE)
@@ -10308,7 +10402,11 @@ class ChatScreen(BoxLayout):
         except Exception as e:
             log(f"CAM result: {e}")
         if path and os.path.getsize(path) > 0:
-            Clock.schedule_once(lambda *_: self.got_attachment(path), 0)
+            def show(*_):
+                self.got_attachment(path)
+                self._show_suggestions([("Add effects", "word:effects"), ("Beautify", "word:beautify"),
+                                        ("Homework", "word:homework")])
+            Clock.schedule_once(show, 0)
         else:
             Clock.schedule_once(lambda *_: self.say("Okay, no photo taken."), 0)
 
@@ -10947,7 +11045,13 @@ class ChatScreen(BoxLayout):
         if lw in ("fun", "fun studio", "studio", "have fun"):
             self.fun_studio()
             return
-        if lw in ("camera", "zoom camera", "super zoom", "zoom", "open camera"):
+        if lw in ("camera", "open camera", "take photo", "take a photo", "photo"):
+            self.camera_menu()
+            return
+        if lw in ("selfie", "front camera", "selfie camera"):
+            self.take_photo(front=True)
+            return
+        if lw in ("zoom camera", "super zoom", "zoom"):
             self.zoom_camera()
             return
         if lw in ("sound", "music", "music maker", "make music", "make a song", "song", "make song", "beat", "make a beat"):
