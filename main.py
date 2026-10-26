@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "111.7"
+VERSION = "111.8"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -446,7 +446,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 111.7
+ABOUT_TEXT = """Genius 111.8
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -507,7 +507,17 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 111.7 (2026-10-26)
+CHANGELOG = """Genius 111.8 (2026-10-26)
+- Checked every command for mistakes.
+- "Create for me a picture of a man" no longer puts YOUR face on the man. Your face is used only when you ask for a picture of you.
+- Picture requests always go to the picture maker, so an AI can't answer with only words.
+- "Make me a photo of a girl" makes a new picture instead of changing the last one.
+- Fixed random crashes when slow answers came back.
+- "save picture" no longer hidden like a password; clearer help for remember, forget, fee and call.
+- Offline, Genius says hi and does sums like what is 25*4.
+- "ai status", "menu" and "what can you do" now work.
+
+Genius 111.7 (2026-10-26)
 - Pictures of people now look like real Ugandans (dark brown skin, African features) unless you ask for someone else, and like real phone photos taken in everyday places, not glossy stock portraits.
 - The free picture maker's logo is cut off the bottom of pictures.
 - These picture rules are now built into Genius's brain, so its thinking and answers follow them too.
@@ -515,6 +525,7 @@ CHANGELOG = """Genius 111.7 (2026-10-26)
 - Genius Mind no longer shows "Search failed" when web search is down; it answers without it.
 - Tapping Good or Bad answer again no longer repeats the same message.
 - A bad picture rating offers "Make a new picture" or "Tell me what to change".
+- Full check of every command: fixed crashes from background jobs touching the screen, "save picture" no longer hidden like a password, clearer help for remember, forget, fee and call, and offline Genius now does sums and says hi.
 
 Genius 111.5 (2026-10-26)
 - 3 more free AIs you can connect: Cerebras, Mistral and SambaNova (type key).
@@ -1893,6 +1904,15 @@ def realistic_prompt(prompt):
 
 
 ME_WORDS = re.compile(r"\b(me|my face|myself|my photo|like me|of me)\b", re.I)
+# "create FOR ME a picture of a man" / "make me a photo of a girl" are about someone else, not my face
+_ME_ASKER = re.compile(r"\b(for|to|give|show|make|create|draw|generate|send|help|can you|could you|please)\s+me\b"
+                       r"(?!\s+(look|looking|as|in|wearing|holding|smil\w*|stand\w*|sit\w*|near|at|with|like|happy|sad|old|young|tall|fat|thin|beautiful|handsome)\b)", re.I)
+
+
+def about_me(prompt):
+    """True only when the picture should show the user's own face."""
+    p = _ME_ASKER.sub(" ", prompt or "")
+    return bool(ME_WORDS.search(p))
 
 
 _DIR_OK = {}
@@ -2055,7 +2075,7 @@ def remove_profile_photo():
 def gemini_image(prompt):
     """Draw a REAL-looking picture: Gemini first, then the free picture maker. Never cartoons.
     If the request is about the user ("draw me...") and me.jpg exists, the SAME face is kept."""
-    ref = my_photo() if ME_WORDS.search(prompt) else None
+    ref = my_photo() if about_me(prompt) else None
     if ref:
         path, err = _gemini_image(prompt, ref)
         if path:
@@ -2102,7 +2122,13 @@ def remember_image(path, prompt):
 def is_image_edit(low):
     """A follow-up like 'make me near building' right after a picture = edit that picture."""
     return bool(LAST_IMAGE["path"]) and time.time() - LAST_IMAGE["time"] < 3600 \
-        and os.path.exists(LAST_IMAGE["path"]) and bool(EDIT_START.match(low.strip()))
+        and os.path.exists(LAST_IMAGE["path"]) and bool(EDIT_START.match(low.strip())) \
+        and not NEW_PIC.search(low)
+
+
+# 111.7: "make me a photo of a girl" / "give me a picture of a cow" asks for a NEW picture, not a change
+NEW_PIC = re.compile(r"^\s*(make|give|create|draw|generate|show)\s+(me|us)\s+(a|an|another|one|some|\d+)\s+(new\s+)?"
+                     r"(picture|photo|image|pic|drawing|portrait)s?\s+(of|with|showing)\b", re.I)
 
 
 def blend_images(paths, instruction):
@@ -4033,7 +4059,7 @@ def genius_agent(task, steps=None):
         log(f"agent save failed: {e}")
     brain_add(f"For jobs like '{task[:100]}', these steps worked: " + "; ".join(steps)[:280], q=task)
     plan = "\n".join(f"{i}. {st}" for i, st in enumerate(steps, 1))
-    return f"\U0001F916 Genius Agent finished\nPlan:\n{plan}\n\n{final}{saved}"
+    return f"Genius Agent finished\nPlan:\n{plan}\n\n{final}{saved}"
 
 
 def skillbook_load():
@@ -7942,7 +7968,23 @@ def offline_cache_find(q, min_score=0.6):
     return None, best_s
 
 
+_OFF_GREET = re.compile(r"^\s*(hi|hello|hey|hallo|good (morning|afternoon|evening)|oli otya|gyebale|ki kati|wasuze otya)\b", re.I)
+_OFF_SUM = re.compile(r"(\d[\d,.]*\s*%\s*of\s*\d[\d,.]*)|(\(?-?\d[\d.]*\)?\s*[-+*/x×÷^]\s*[-+*/x×÷^()\d.\s]*\d\)?)", re.I)
+
+
 def offline_answer(q):
+    q = (q or "").strip()
+    if _OFF_GREET.match(q) and len(q.split()) <= 4:
+        return ("Hi " + (CURRENT.get("name") or "there") + "! You're offline right now, so I can't reach the AIs, "
+                "but I can still do sums, notes, quizzes, the dictionary and Luganda words. Type help to see them.")
+    if re.search(r"\b(what can you do|what do you do|menu|help me)\b", q, re.I):
+        return OFFLINE_HELP
+    m = _OFF_SUM.search(q)
+    if m:
+        expr = m.group(0).replace("x", "*").replace("×", "*").replace("÷", "/").strip()
+        r = do_calc(expr)
+        if "=" in r:
+            return r
     a, s = offline_cache_find(q)
     if a:
         return f"{a}\n\n[size=12sp]{OFFLINE_MARK} from earlier ({int(s * 100)}% match). Ask again when online for a fresh one.[/size]"
@@ -8886,6 +8928,10 @@ PRIVACY_TEXT = ("[b]Genius privacy shield[/b]\n"
                 "never your saved memory files.")
 
 
+SAVE_PHRASES = ("save it", "save picture", "save photo", "save to gallery", "save to files", "save to file",
+                "save this", "save image")
+
+
 def v110_handle(screen, line, action, arg, low):
     """Genius 110 commands. Returns True when handled."""
     lw = low.strip(" .!?")
@@ -8893,7 +8939,7 @@ def v110_handle(screen, line, action, arg, low):
               "download picture", "save to files", "save to file", "download to files", "share picture", "share photo"):
         src = LAST_IMAGE.get("path")
         if not src or not os.path.exists(src):
-            screen.say("Make or add a picture first, then say save.")
+            screen.say("Make or add a picture first, then say " + ("share." if lw.startswith("share") else "save."))
             return True
         if lw.startswith("share"):
             if not share_media(src):
@@ -9003,6 +9049,13 @@ def v110_handle(screen, line, action, arg, low):
         return True
     if action == "remember" and arg:
         screen.say(mem_remember(arg))
+        return True
+    if lw in ("remember", "forget"):
+        screen.say("Say it like: " + ("remember I am in S4" if lw == "remember" else "forget my class")
+                   + ". Type memory to see what I remember.")
+        return True
+    if lw in ("fee", "fees", "charges"):
+        screen.say("Say it like: fee mtn send 50000, or fee airtel withdraw 20000")
         return True
     if lw in ("memory", "what do you remember", "what do you know about me", "my memory"):
         screen.say(mem_report())
@@ -9516,7 +9569,7 @@ class ChatScreen(BoxLayout):
     def chart_read(self, path):
         def go():
             ans = ask_about_file(path, "image", CHART_PROMPT)
-            return "\U0001F4C8 Chart reading\n" + ans
+            return "Chart reading\n" + ans
         self._bg(go)
 
     # ---------- profile drawer: slides in from the left ----------
@@ -11321,6 +11374,9 @@ class ChatScreen(BoxLayout):
         threading.Thread(target=d, daemon=True).start()
 
     def show_image(self, path, caption):
+        if threading.current_thread() is not threading.main_thread():
+            Clock.schedule_once(lambda *_: self.show_image(path, caption), 0)
+            return
         box = BoxLayout(orientation="vertical", spacing=10, padding=12)
         if not path or not os.path.exists(path):
             self.say("I made it, but couldn't find the picture file. Please try once more.")
@@ -11356,6 +11412,9 @@ class ChatScreen(BoxLayout):
 
     # output
     def show(self, who, text, plain=False):
+        if threading.current_thread() is not threading.main_thread():   # 111.7: screen work only on the main thread
+            Clock.schedule_once(lambda *_: self.show(who, text, plain), 0)
+            return
         if who == "AI" and isinstance(text, str) and not plain:
             text = colorize(md_to_markup(text))
         if who == "AI" and getattr(self, "_rate_next", False):
@@ -11433,6 +11492,9 @@ class ChatScreen(BoxLayout):
         lbl.height = size[1]
 
     def say(self, text, plain=False):
+        if threading.current_thread() is not threading.main_thread():
+            Clock.schedule_once(lambda *_: self.say(text, plain), 0)
+            return
         follow = []
         if isinstance(text, str) and not plain:
             text, follow = split_follow_ups(text)
@@ -11548,10 +11610,12 @@ class ChatScreen(BoxLayout):
         if low.strip(" .!?") in ("mic test", "test mic", "test microphone", "microphone test"):
             self.mic_test()
             return
-        if low.startswith("setkey") or low.startswith("save ") or low.startswith("setvoice") \
-                or low.startswith("setgroq") or low.startswith("setrouter") or low.startswith("setpolli"):
+        if (low.startswith(("setkey", "setvoice", "setgroq", "setrouter", "setpolli"))
+                or (low.startswith("save ") and low.strip(" .!?") not in SAVE_PHRASES)):
             head = line.split()[0]
             self.show("You", f"{head} ********")
+        elif getattr(self, "_quiet_echo", False):
+            self._quiet_echo = False
         else:
             self.show("You", line)
         if is_crisis(line):
@@ -11561,6 +11625,11 @@ class ChatScreen(BoxLayout):
         action, arg = action.lower(), arg.strip()
         action = LUGANDA_CMDS.get(action, action)
         action = {"whatsnew": "version", "changelog": "version", "updates": "update", "getupdate": "update"}.get(action, action)
+        _alias = {"ai status": "ais", "my ai": "ais", "my ais": "ais", "which ai": "ais", "connected ais": "ais",
+                  "what can you do": "help", "commands": "help", "show commands": "help", "menu": "help"}
+        if low.strip(" .!?") in _alias:
+            action, arg = _alias[low.strip(" .!?")], ""
+            line = low = action
         # Typo-tolerant commands: "itruders" -> "intruders" (short inputs only)
         if action not in ALLOWED and action.isalpha() and len(action) >= 5 and not arg \
                 and action not in COMMON_WORDS and not action.startswith("set"):
@@ -11592,7 +11661,7 @@ class ChatScreen(BoxLayout):
             self.clear_chat()
             return
         if action in ("do", "agent", "job") and arg:
-            self._bg(lambda: genius_agent(arg), "\U0001F916 Genius Agent is planning and doing your job step by step...",
+            self._bg(lambda: genius_agent(arg), "Genius Agent is planning and doing your job step by step...",
                      speak=False)
             return
         if low.startswith("teach skill "):
@@ -11715,6 +11784,7 @@ class ChatScreen(BoxLayout):
         if lw.startswith(("mind ", "think ", "genius mind ")):
             q = line.split(" ", 2)[2] if lw.startswith("genius mind ") else line.split(" ", 1)[1]
             if PIC_ASK.search(q):           # 111.6: Mind can't draw, so a picture ask goes to the picture maker
+                self._quiet_echo = True
                 self.handle(q)
                 return
             self._bg(lambda: genius_mind(q))
@@ -11930,6 +12000,12 @@ class ChatScreen(BoxLayout):
             self.file_question(line)
             return
         if not LAST_IMAGE["path"] and my_photo() and re.match(r"^(make|put|show|place) me\b", low):
+            self.run(line, "draw", line)
+            return
+        # 111.7: a clear picture ask goes straight to the picture maker, so no AI can answer it with only words
+        if (action not in ALLOWED and action not in NEW_ACTIONS and action not in LIFE_ACTIONS
+                and not (att and att.get("kind") == "image") and PIC_ASK.search(low)
+                and not re.match(r"^\s*(how|why|what|when|where|who|which|can|could|is|are|do|does|explain|tell)\b", low)):
             self.run(line, "draw", line)
             return
         if getattr(self, "pending_quiz", None) and action.strip(".)") in ("a", "b", "c", "d"):
@@ -12847,7 +12923,11 @@ class ChatScreen(BoxLayout):
         elif action == "call":
             num = contacts_load().get(arg.strip().title()) or re.sub(r"[^\d+]", "", arg)
             if not num:
-                self.say("Say it like: call 116, or call Mum")
+                if arg.strip():
+                    self.say(f"I don't have a number for {arg.strip().title()} yet. Add it like: trusted "
+                             f"{arg.strip().title()} 0772123456, then say call {arg.strip().title()}.")
+                else:
+                    self.say("Say it like: call 116, or call Mum")
                 return
             ok = safe(lambda: dial(num))
             self.say(f"Opening the dialer for {num}. Press call." if ok
@@ -12979,6 +13059,7 @@ class ChatScreen(BoxLayout):
             self.chat(q)
 
     def chat(self, text):
+        said = text                         # what the person typed, before any hidden rules are added
         if is_distressed(text):
             soft_voice(True)
             self.care_tok = getattr(self, "care_tok", 0) + 1
@@ -13002,7 +13083,7 @@ class ChatScreen(BoxLayout):
             return
         self._v110_q = text
         if not net_online():
-            off = offline_answer(text)
+            off = offline_answer(said)
             self.say(off or OFFLINE_HELP)
             return
         try:
