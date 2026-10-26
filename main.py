@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "111.8"
+VERSION = "111.9"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -68,6 +68,7 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.popup import Popup
 from kivy.uix.image import Image as KivyImage
+from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.widget import Widget
 from kivy.graphics import Color, RoundedRectangle, Rectangle
 from kivy.metrics import dp
@@ -446,7 +447,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 111.8
+ABOUT_TEXT = """Genius 111.9
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -507,7 +508,14 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 111.8 (2026-10-26)
+CHANGELOG = """Genius 111.9 (2026-10-26)
+- New news screen, mostly videos: the latest clips from NTV Uganda, NBS, Al Jazeera, BBC, Sky Sports, ESPN FC, CNBC and CNET, each with its picture.
+- Photo stories from Nile Post and BBC with their pictures.
+- Videos and stories now play and open INSIDE Genius. Tap Close or Back to return.
+- Topic tabs on top: Uganda, World, Sports, Africa, Business, Tech, Entertainment, Health, Trending.
+- Say news or news videos to open it.
+
+Genius 111.8 (2026-10-26)
 - Checked every command for mistakes.
 - "Create for me a picture of a man" no longer puts YOUR face on the man. Your face is used only when you ask for a picture of you.
 - Picture requests always go to the picture maker, so an AI can't answer with only words.
@@ -5956,6 +5964,137 @@ def open_url(url):
         webbrowser.open(url)
 
 
+# ---------------- 111.9: in-app player (videos and stories open INSIDE Genius) ----------------
+_WEB = {"box": None, "view": None, "keep": []}
+
+
+def web_is_open():
+    return _WEB["box"] is not None
+
+
+def close_web():
+    def go():
+        box, view = _WEB["box"], _WEB["view"]
+        _WEB["box"] = _WEB["view"] = None
+        try:
+            if view is not None:
+                view.loadUrl("about:blank")
+                view.onPause()
+            if box is not None and box.getParent() is not None:
+                box.getParent().removeView(box)
+            if view is not None:
+                view.destroy()
+        except Exception as e:
+            log(f"WEB close failed: {e}")
+    try:
+        _ui(go)
+    except Exception:
+        pass
+
+
+def open_in_genius(url, title="Genius"):
+    """Play a video or open a story inside Genius (Android WebView). Falls back to the phone's browser."""
+    if not url:
+        return False
+    if "youtube.com/watch" in url or "youtu.be/" in url:
+        m = re.search(r"(?:v=|youtu\.be/)([\w-]{6,})", url)
+        if m:
+            url = "https://m.youtube.com/watch?v=" + m.group(1)
+    try:
+        from jnius import autoclass, PythonJavaClass, java_method
+    except Exception:
+        open_url(url)
+        return False
+
+    class _Click(PythonJavaClass):
+        __javainterfaces__ = ["android/view/View$OnClickListener"]
+        __javacontext__ = "app"
+
+        @java_method("(Landroid/view/View;)V")
+        def onClick(self, v):
+            close_web()
+
+    class _Key(PythonJavaClass):
+        __javainterfaces__ = ["android/view/View$OnKeyListener"]
+        __javacontext__ = "app"
+
+        @java_method("(Landroid/view/View;ILandroid/view/KeyEvent;)Z")
+        def onKey(self, v, code, ev):
+            if code != 4:                          # only the Back key
+                return False
+            if ev.getAction() == 1:                # key up
+                w = _WEB["view"]
+                if w is not None and w.canGoBack():
+                    w.goBack()
+                else:
+                    close_web()
+            return True
+
+    def go():
+        if _WEB["box"] is not None:              # already open: just load the new link
+            _WEB["view"].loadUrl(url)
+            return
+        PA = autoclass("org.kivy.android.PythonActivity")
+        act = PA.mActivity
+        LL = autoclass("android.widget.LinearLayout")
+        LP = autoclass("android.widget.LinearLayout$LayoutParams")
+        VGLP = autoclass("android.view.ViewGroup$LayoutParams")
+        Button = autoclass("android.widget.Button")
+        TextView = autoclass("android.widget.TextView")
+        WebView = autoclass("android.webkit.WebView")
+        Color = autoclass("android.graphics.Color")
+        box = LL(act)
+        box.setOrientation(1)
+        box.setBackgroundColor(Color.parseColor("#0b0b14"))
+        bar = LL(act)
+        bar.setOrientation(0)
+        bar.setBackgroundColor(Color.parseColor("#14122a"))
+        bar.setPadding(16, 8, 16, 8)
+        close = Button(act)
+        close.setText("Close")
+        close.setTextColor(Color.parseColor("#1a1a1a"))
+        close.setBackgroundColor(Color.parseColor("#ffc84d"))
+        click = _Click()
+        close.setOnClickListener(click)
+        head = TextView(act)
+        head.setText(str(title)[:60])
+        head.setTextColor(Color.parseColor("#ffc84d"))
+        head.setTextSize(16.0)
+        head.setPadding(24, 0, 0, 0)
+        head.setSingleLine(True)
+        bar.addView(close, LP(-2, -2))
+        bar.addView(head, LP(0, -2, 1.0))
+        web = WebView(act)
+        st = web.getSettings()
+        st.setJavaScriptEnabled(True)
+        st.setDomStorageEnabled(True)
+        st.setMediaPlaybackRequiresUserGesture(False)
+        st.setLoadWithOverviewMode(True)
+        st.setUseWideViewPort(True)
+        st.setBuiltInZoomControls(True)
+        st.setDisplayZoomControls(False)
+        web.setWebViewClient(autoclass("android.webkit.WebViewClient")())     # links stay inside Genius
+        web.setWebChromeClient(autoclass("android.webkit.WebChromeClient")())
+        key = _Key()
+        web.setOnKeyListener(key)
+        web.setFocusable(True)
+        web.setFocusableInTouchMode(True)
+        box.addView(bar, LP(-1, -2))
+        box.addView(web, LP(-1, 0, 1.0))
+        act.addContentView(box, VGLP(-1, -1))
+        web.requestFocus()
+        web.loadUrl(url)
+        _WEB.update(box=box, view=web)
+        _WEB["keep"] = [click, key]
+    try:
+        _ui(go, on_fail=lambda m, c: open_url(url))
+        return True
+    except Exception as e:
+        log(f"WEB open failed: {e}")
+        open_url(url)
+        return False
+
+
 def newest_photos(n=6):
     found = []
     for d in ("/storage/emulated/0/DCIM/Camera", "/storage/emulated/0/Pictures",
@@ -8565,7 +8704,7 @@ NEWS_TOPICS = {
     "entertainment": ("Entertainment", "entertainment music when:1d",
                       "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"),
 }
-NEWS_ALIASES = {"trending": "social", "viral": "social", "socialmedia": "social", "social media": "social",
+NEWS_ALIASES = {"videos": "uganda", "video": "uganda", "news videos": "uganda", "trending": "social", "viral": "social", "socialmedia": "social", "social media": "social",
                 "reddit": "social", "tiktok": "social", "x": "social", "twitter": "social", "technology": "tech", "sport": "sports", "football": "sports", "money": "business",
                 "ug": "uganda", "local": "uganda", "global": "world", "international": "world", "music": "entertainment"}
 _NEWS_JUNK = re.compile(r"viral video|video viral|\^|\+\+|full video|leaked|video link|mms|[\u3000-\u9fff\u3010\u3011]|!!", re.I)
@@ -8691,6 +8830,172 @@ def news_items(topic="world", limit=8):
     if out:
         _NEWS_CACHE[t] = (out, time.time())
     return out[:limit]
+
+
+# ---------------- 111.9: news with videos and photos ----------------
+_NTV, _NBS = ("UCwga1dPCqBddbtq5KYRii2g", "NTV Uganda"), ("UCzv3kGHEZ0fD404GVaW-GPg", "NBS TV")
+_AJE, _BBCV = ("UCNye-wNBqNL5ZzHSJj3l8Bg", "Al Jazeera"), ("UC16niRr50-MSBwiO3YDb3RA", "BBC News")
+NEWS_VIDEO_CHANNELS = {
+    "uganda": (_NTV, _NBS), "africa": (_NTV, _AJE), "world": (_AJE, _BBCV), "social": (_NTV, _NBS, _AJE),
+    "sports": (("UCNAf1k0yIjyGu3k9BwAg3lg", "Sky Sports Premier League"), ("UC6c1z7bA__85CIWZ_jpCK-Q", "ESPN FC")),
+    "business": (("UCvJJ_dzjViJCoLf5uKUTwoA", "CNBC"), _NTV), "tech": (("UCOmcA3f_RrH6b9NmcNa4tdg", "CNET"),),
+    "health": (_BBCV, _NTV), "science": (_BBCV, _AJE), "entertainment": (_NBS, _NTV),
+}
+NEWS_PHOTO_FEEDS = {
+    "uganda": ("https://nilepost.co.ug/feed", "https://feeds.bbci.co.uk/news/world/africa/rss.xml"),
+    "social": ("https://nilepost.co.ug/feed",),
+}
+_VID_CACHE = {}
+_MRSS = "{http://search.yahoo.com/mrss/}"
+
+
+def _ago(stamp):
+    """'2h ago' from an RSS or YouTube date."""
+    import email.utils
+    from datetime import datetime, timezone
+    try:
+        if "T" in stamp[:20]:
+            d = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        else:
+            d = email.utils.parsedate_to_datetime(stamp)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        m = max(0, int((datetime.now(timezone.utc) - d).total_seconds() // 60))
+        return f"{m} min ago" if m < 60 else f"{m // 60}h ago" if m < 1440 else f"{m // 1440}d ago"
+    except Exception:
+        return ""
+
+
+def _stamp(stamp):
+    import email.utils
+    from datetime import datetime
+    try:
+        return (datetime.fromisoformat(stamp.replace("Z", "+00:00")) if "T" in stamp[:20]
+                else email.utils.parsedate_to_datetime(stamp)).timestamp()
+    except Exception:
+        return 0
+
+
+def news_videos(topic="world", limit=10):
+    """Newest news videos for a topic: [{title, src, url, when, img, video, t}]."""
+    import xml.etree.ElementTree as ET
+    t = NEWS_ALIASES.get((topic or "world").strip().lower(), (topic or "world").strip().lower())
+    chans = NEWS_VIDEO_CHANNELS.get(t) or NEWS_VIDEO_CHANNELS["world"]
+    hit = _VID_CACHE.get(t)
+    if hit and time.time() - hit[1] < 900:
+        return hit[0][:limit]
+    A, Y = "{http://www.w3.org/2005/Atom}", "{http://www.youtube.com/xml/schemas/2015}"
+    raw = {}
+
+    def grab(cid):
+        try:
+            raw[cid] = _news_fetch("https://www.youtube.com/feeds/videos.xml?channel_id=" + cid)
+        except Exception as e:
+            log(f"NEWS video feed failed: {type(e).__name__}")
+    th = [threading.Thread(target=grab, args=(c,), daemon=True) for c, _n in chans]
+    for x in th:
+        x.start()
+    for x in th:
+        x.join(14)
+    out = []
+    for cid, name in chans:
+        try:
+            root = ET.fromstring(raw[cid])
+        except Exception:
+            continue
+        for e in list(root.iter(A + "entry"))[:8]:
+            vid = (e.findtext(Y + "videoId") or "").strip()
+            title = (e.findtext(A + "title") or "").strip()
+            if not vid or not title or "#shorts" in title.lower() or _NEWS_JUNK.search(title):
+                continue
+            pub = e.findtext(A + "published") or ""
+            out.append({"title": title, "src": name, "url": "https://www.youtube.com/watch?v=" + vid,
+                        "when": _ago(pub), "t": _stamp(pub), "video": True,
+                        "img": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"})
+    out.sort(key=lambda d: d["t"], reverse=True)
+    if out:
+        _VID_CACHE[t] = (out, time.time())
+    return out[:limit]
+
+
+def news_photos(topic="world", limit=6):
+    """Newest stories that come with a photo: [{title, src, url, when, img, video}]."""
+    import xml.etree.ElementTree as ET
+    t = NEWS_ALIASES.get((topic or "world").strip().lower(), (topic or "world").strip().lower())
+    feeds = NEWS_PHOTO_FEEDS.get(t) or ((NEWS_TOPICS[t][2],) if t in NEWS_TOPICS and NEWS_TOPICS[t][2] else ())
+    out = []
+    for u in feeds:
+        try:
+            root = ET.fromstring(_news_fetch(u))
+        except Exception as e:
+            log(f"NEWS photo feed failed: {type(e).__name__}")
+            continue
+        src = "Daily Monitor" if "monitor" in u else "Nile Post" if "nilepost" in u else "BBC"
+        n = 0
+        for it in root.iter("item"):
+            title = (it.findtext("title") or "").strip()
+            img = ""
+            for tag in (_MRSS + "thumbnail", _MRSS + "content", "enclosure"):
+                el = it.find(".//" + tag)
+                if el is not None and el.get("url"):
+                    img = el.get("url")
+                    break
+            if not img:
+                m = re.search(r'<img[^>]+src="([^"]+)"', it.findtext("description") or "")
+                img = m.group(1) if m else ""
+            if not title or _NEWS_JUNK.search(title):
+                continue
+            pub = it.findtext("pubDate") or ""
+            out.append({"title": title, "src": src, "url": (it.findtext("link") or "").strip(), "when": _ago(pub),
+                        "t": _stamp(pub), "video": False, "img": img.replace("/240/", "/480/")})
+            n += 1
+            if n >= limit:
+                break
+    if t not in ("uganda", "social"):          # Ugandan papers stay first for Uganda news
+        out.sort(key=lambda d: d["t"], reverse=True)
+    else:
+        per = {}
+        for d in out:
+            per.setdefault(d["src"], []).append(d)
+        mixed = []
+        while any(per.values()):
+            for k in list(per):
+                if per[k]:
+                    mixed.append(per[k].pop(0))
+        out = mixed
+    return out[:limit]
+
+
+def news_thumb(url):
+    """Download a news picture once (small cache), return the file path or None."""
+    if not url or not url.startswith("http"):
+        return None
+    d = os.path.join(os.path.abspath(os.getcwd()), "news_pics")
+    os.makedirs(d, exist_ok=True)
+    f = os.path.join(d, hashlib.sha1(url.encode()).hexdigest()[:20] + ".jpg")
+    if os.path.exists(f) and os.path.getsize(f) > 500:
+        return f
+    try:
+        data = _news_fetch(url)
+        if len(data) < 500 or len(data) > 3_000_000:
+            return None
+        try:                                          # shrink big pictures to save memory and data
+            from PIL import Image
+            im = Image.open(io.BytesIO(data)).convert("RGB")
+            im.thumbnail((640, 360))
+            im.save(f, "JPEG", quality=82)
+        except Exception:
+            open(f, "wb").write(data)
+        files = sorted((os.path.join(d, x) for x in os.listdir(d)), key=os.path.getmtime)
+        for old in files[:-120]:
+            try:
+                os.remove(old)
+            except Exception:
+                pass
+        return f
+    except Exception as e:
+        log(f"NEWS picture failed: {type(e).__name__}")
+        return None
 
 
 def news_markup(topic="world", limit=8):
@@ -9076,6 +9381,39 @@ def v110_handle(screen, line, action, arg, low):
         screen.show("AI", V110_HELP)
         return True
     return False
+
+
+class NewsCard(ButtonBehavior, BoxLayout):
+    """One news video or story: big picture on top, headline under it. Tap to play inside Genius."""
+
+    def __init__(self, item, **kw):
+        big = item.get("video") or item.get("img")
+        super().__init__(orientation="vertical", size_hint_y=None, padding=[dp(8), dp(8)], spacing=dp(6),
+                         height=dp(300) if big else dp(110), **kw)
+        self.item = item
+        with self.canvas.before:
+            Color(1, 1, 1, 0.07)
+            self._bg = RoundedRectangle(radius=[dp(14)])
+        self.bind(pos=self._paint, size=self._paint)
+        self.pic = None
+        if big:
+            self.pic = KivyImage(allow_stretch=True, keep_ratio=True, size_hint_y=None, height=dp(190),
+                                 color=(1, 1, 1, 0.15))
+            self.add_widget(self.pic)
+        badge = "[b][color=ff4d5e]VIDEO[/color][/b]  " if item.get("video") else ""
+        meta = " · ".join(x for x in (item.get("src"), item.get("when")) if x)
+        lb = Label(text=f"[b]{_esc(item['title'] if len(item['title']) <= 110 else item['title'][:107] + '...')}[/b]\n[size=13sp]{badge}[color=9aa0c0]{_esc(meta)}[/color][/size]",
+                   markup=True, font_size="16sp", color=TEXTCOL, halign="left", valign="top")
+        lb.bind(size=lambda w, *_: setattr(w, "text_size", (w.width, w.height)))
+        self.add_widget(lb)
+
+    def _paint(self, *_):
+        self._bg.pos, self._bg.size = self.pos, self.size
+
+    def set_pic(self, path):
+        if self.pic is not None and path:
+            self.pic.source = path
+            self.pic.color = (1, 1, 1, 1)
 
 
 class ChatScreen(BoxLayout):
@@ -12521,7 +12859,7 @@ class ChatScreen(BoxLayout):
             self.key_wizard()
         elif ref in NEWS_LINKS:
             try:
-                open_url(NEWS_LINKS[ref])
+                open_in_genius(NEWS_LINKS[ref], "News")
             except Exception as e:
                 log(f"NEWS open failed: {e}")
                 self.say("I couldn't open that story. Check your internet.")
@@ -12544,6 +12882,8 @@ class ChatScreen(BoxLayout):
 
     # ---------- world news ----------
     def news_menu(self, *_):
+        self.show_news("uganda")          # 111.9: straight to the video news screen (topics are tabs there)
+        return
         opts = [(NEWS_TOPICS[k][0], (lambda k=k: self.show_news(k)), GOLD if k in ("world", "uganda", "social") else BLUE)
                 for k in NEWS_TOPICS]
         opts.append(("News brief (AI summary)", lambda: self._bg(lambda: news_brief("world"),
@@ -12551,23 +12891,88 @@ class ChatScreen(BoxLayout):
         self._buttons_popup("World news", opts, cols=2, hint="Pick a topic. Tap a headline to read the full story")
 
     def show_news(self, topic):
-        if getattr(self, "busy", False):
-            self.say("Still working on the last thing. One moment.")
-            return
-        self.busy = True
-        self.show("AI", "Getting the latest news...")
+        """111.9: news screen, videos first (they play inside Genius), then photo stories, then headlines."""
+        topic = (topic or "world").strip()
+        t = NEWS_ALIASES.get(topic.lower(), topic.lower())
+        name = NEWS_TOPICS[t][0] if t in NEWS_TOPICS else topic.title()
+        root = BoxLayout(orientation="vertical", spacing=dp(6), padding=[dp(6), dp(6)])
+        tabs_sv = ScrollView(size_hint_y=None, height=dp(52), do_scroll_y=False, bar_width=0)
+        tabs = BoxLayout(size_hint_x=None, spacing=dp(6))
+        tabs.bind(minimum_width=tabs.setter("width"))
+        pop = Popup(title=f"{name} news", content=root, size_hint=(1, 1), separator_color=GOLD,
+                    title_color=GOLD, title_size="20sp")
+        for k in ("uganda", "world", "sports", "africa", "business", "tech", "entertainment", "health", "social"):
+            b = RoundButton(text=NEWS_TOPICS[k][0], bg=GOLD if k == t else GREY,
+                            fg=(0.1, 0.1, 0.1, 1) if k == t else TEXTCOL, size_hint_x=None,
+                            width=dp(30) + dp(9) * len(NEWS_TOPICS[k][0]), font_size="14sp", bold=True)
+            b.bind(on_press=lambda _b, k=k: (pop.dismiss(), Clock.schedule_once(lambda *_: self.show_news(k), 0.1)))
+            tabs.add_widget(b)
+        tabs_sv.add_widget(tabs)
+        root.add_widget(tabs_sv)
+        sv = ScrollView(do_scroll_x=False)
+        grid = GridLayout(cols=1, spacing=dp(10), size_hint_y=None, padding=[0, dp(4)])
+        grid.bind(minimum_height=grid.setter("height"))
+        wait = Label(text="Getting the latest videos and stories...", size_hint_y=None, height=dp(60),
+                     color=HINT, font_size="16sp")
+        grid.add_widget(wait)
+        sv.add_widget(grid)
+        root.add_widget(sv)
+        close = RoundButton(text="Close", bg=GREY, fg=TEXTCOL, size_hint_y=None, height=dp(50), bold=True)
+        close.bind(on_press=pop.dismiss)
+        root.add_widget(close)
+        pop.open()
+        state = {"open": True}
+        pop.bind(on_dismiss=lambda *_: state.update(open=False))
+
+        def tap(card):
+            it = card.item
+            if it.get("url"):
+                open_in_genius(it["url"], it.get("src") or "News")
 
         def work():
+            vids, pics, heads = [], [], []
             try:
-                _items, t = news_markup(topic)
+                vids = news_videos(t, 12)
             except Exception as e:
-                log(f"NEWS failed: {e}")
-                t = "I couldn't get the news right now. Check your internet and try again."
+                log(f"NEWS videos failed: {type(e).__name__}")
+            try:
+                pics = news_photos(t, 6)
+            except Exception as e:
+                log(f"NEWS photos failed: {type(e).__name__}")
+            if len(vids) + len(pics) < 6:
+                try:
+                    heads = [{"title": a, "src": b, "url": c, "when": d, "video": False, "img": ""}
+                             for a, b, c, d in news_items(topic, 8)]
+                except Exception as e:
+                    log(f"NEWS headlines failed: {type(e).__name__}")
+            items = vids[:4] + pics[:2] + vids[4:8] + pics[2:4] + vids[8:] + pics[4:] + heads   # mostly videos
 
-            def done(*_):
-                self.busy = False
-                self.show("AI", t)
-            Clock.schedule_once(done, 0)
+            def fill(*_):
+                grid.clear_widgets()
+                if not items:
+                    grid.add_widget(Label(text=f"I couldn't get {name} news right now. Check your internet and try again.",
+                                          size_hint_y=None, height=dp(80), color=HINT, font_size="16sp",
+                                          text_size=(Window.width * 0.85, None), halign="center"))
+                    return
+                cards = []
+                for it in items:
+                    c = NewsCard(it)
+                    c.bind(on_release=tap)
+                    grid.add_widget(c)
+                    cards.append(c)
+                grid.add_widget(Label(text="Tap any video or story to watch or read it inside Genius.",
+                                      size_hint_y=None, height=dp(40), color=HINT, font_size="13sp"))
+
+                def pics_job():
+                    for c in cards:
+                        if not state["open"]:
+                            return
+                        if c.item.get("img"):
+                            pth = news_thumb(c.item["img"])
+                            if pth:
+                                Clock.schedule_once(lambda *_, c=c, pth=pth: c.set_pic(pth), 0)
+                threading.Thread(target=pics_job, daemon=True).start()
+            Clock.schedule_once(fill, 0)
         threading.Thread(target=work, daemon=True).start()
 
     def _need_key(self):
