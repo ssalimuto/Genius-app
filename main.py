@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "111.5"
+VERSION = "111.6"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -446,7 +446,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 111.5
+ABOUT_TEXT = """Genius 111.6
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -507,7 +507,12 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 111.5 (2026-10-26)
+CHANGELOG = """Genius 111.6 (2026-10-26)
+- Pictures of people now look like real Ugandans (dark brown skin, African features) unless you ask for someone else, and like real phone photos taken in everyday places, not glossy stock portraits.
+- The free picture maker's logo is cut off the bottom of pictures.
+- These picture rules are now built into Genius's brain, so its thinking and answers follow them too.
+
+Genius 111.5 (2026-10-26)
 - 3 more free AIs you can connect: Cerebras, Mistral and SambaNova (type key).
 - Smart AI picker: Genius learns which AI is fastest and most reliable on your phone, and asks it first.
 - Good answer / Bad answer under each reply. Your taps teach Genius which AI to trust.
@@ -1583,13 +1588,13 @@ FREE_DRAW_FAIL = ("The free picture makers are very busy right now. Wait a minut
                   "or add a Gemini key with billing (setkey) for faster, sharper pictures.")
 
 
-def _short_prompt(prompt, limit=380):
+def _short_prompt(prompt, limit=440):
     """Free makers want a short prompt: keep the description, drop the long camera wording."""
     p = (prompt or "").replace(PHOTO_STYLE, "").strip(" .,")
-    p = re.sub(r"\s+", " ", p)[:limit].strip(" .,") or "a beautiful real photograph"
-    return p + (", award-winning real photograph, photorealistic, shot on a full-frame camera, 50mm lens, "
-                "natural soft light, true-to-life skin texture, detailed eyes, sharp focus, "
-                "shallow depth of field, rich natural colours")
+    p = ugandan_people(p, prompt)
+    p = re.sub(r"\s+", " ", p)[:limit].strip(" .,") or "a real photograph"
+    return p + (", real casual photo taken on an Android phone, everyday snapshot, natural light, "
+                "true-to-life skin texture, everything in focus, ordinary background, no bokeh, unedited")
 
 
 def _retry_after(body, default=0):
@@ -1645,7 +1650,8 @@ POLLI_KEY_FILE = os.path.join(ROOT, "pollinations_key.txt")
 POLLI_GEN = "https://gen.pollinations.ai/image/"
 NEG_PROMPT = ("cartoon, anime, drawing, painting, illustration, 3d render, cgi, plastic skin, waxy skin, "
               "airbrushed, oversaturated, deformed hands, extra fingers, missing fingers, bad anatomy, "
-              "distorted face, asymmetrical eyes, blurry, low quality, jpeg artifacts, text, watermark, logo")
+              "distorted face, asymmetrical eyes, blurry, low quality, jpeg artifacts, text, watermark, logo, "
+              "bokeh, studio portrait, stock photo, glamour, light skin when African people were asked for")
 
 
 def polli_key():
@@ -1706,7 +1712,7 @@ def _pollinations(prompt):
         try:
             code, ctype, data = _fetch(url, timeout=60)
             if ctype.startswith("image") and len(data) > 2000:
-                return save_picture(polish_picture(data)), None
+                return save_picture(polish_picture(data, crop_logo=True)), None
             return None, "busy"
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf8", "ignore")
@@ -1724,13 +1730,16 @@ def _pollinations(prompt):
     return None, "busy"
 
 
-def polish_picture(data):
+def polish_picture(data, crop_logo=False):
     """Gentle photo finishing for the free makers: a touch of sharpening, contrast and warmth,
     like a phone camera does. Never changes the content; returns the original bytes if PIL is missing."""
     try:
         import io
         from PIL import Image, ImageEnhance, ImageFilter
         im = Image.open(io.BytesIO(data)).convert("RGB")
+        if crop_logo:                       # the free maker stamps its name in the bottom corner
+            W, H = im.size
+            im = im.crop((0, 0, W, int(H * 0.955)))
         if max(im.size) < 900:
             scale = 1216.0 / max(im.size)
             im = im.resize((int(im.size[0] * scale), int(im.size[1] * scale)), Image.LANCZOS)
@@ -1830,10 +1839,30 @@ def free_image(prompt, tries=2):
 NOT_REAL_WORDS = ("cartoon", "anime", "manga", "comic", "illustration", "illustrated", "drawing",
                   "drawn", "sketch", "painting", "painted", "clipart", "clip art", "3d render",
                   "render", "pixar", "disney", "chibi", "vector", "emoji", "doodle")
-PHOTO_STYLE = ("real photograph, candid smartphone photo, photorealistic, real human skin texture with pores, "
-               "natural African skin tones, true-to-life colours, natural daylight, sharp focus on the face, "
-               "shallow depth of field, real background, 35mm lens, high detail, unedited, "
-               "not a cartoon, not an illustration, not a painting, not 3D")
+PHOTO_STYLE = ("real unedited photo taken with an Android phone camera, casual everyday snapshot, "
+               "real human skin texture with pores, true-to-life colours, natural light, "
+               "everything in focus, ordinary real background, no bokeh, no studio lighting, no filter, "
+               "not a cartoon, not an illustration, not a painting, not 3D, not a stock photo")
+
+# 111.6: people in Genius pictures look like the people of Uganda unless the request says otherwise
+_PERSON_RE = re.compile(r"\b(man|men|woman|women|boy|girls?|boys|guy|lady|ladies|person|people|student|students|"
+                        r"teacher|doctor|nurse|farmer|child|children|kid|kids|baby|family|mother|father|mum|mom|dad|"
+                        r"grandma|grandmother|grandfather|couple|friends?|portrait|selfie|face|bride|groom|"
+                        r"pastor|soldier|player|footballer|musician|singer|dancer|crowd|worker|driver|me|myself)\b", re.I)
+_RACE_RE = re.compile(r"\b(white|caucasian|european|asian|chinese|japanese|korean|indian|arab|latino|latina|hispanic|"
+                      r"mzungu|blonde|red hair|mixed race|american|british|mexican|brazilian)\b", re.I)
+
+
+def ugandan_people(text, original=""):
+    """Put 'Black Ugandan, dark brown skin' at the very start when people are in the picture
+    and no other look was asked for (free picture makers otherwise default to other faces)."""
+    both = (original or "") + " " + text
+    if not _PERSON_RE.search(both) or _RACE_RE.search(original or text):
+        return text
+    if re.search(r"\b(black african|ugandan|dark brown skin)\b", text[:120], re.I):
+        return text
+    return ("Black Ugandan East African people with dark brown skin, African facial features and short black "
+            "kinky hair, real ordinary Ugandans. " + text)
 
 
 def realistic_prompt(prompt):
@@ -1844,17 +1873,19 @@ def realistic_prompt(prompt):
     p = re.sub(r"\s+", " ", p).strip(" ,.") or "a person"
     try:
         better = ask_gemini(
-            "Rewrite this as ONE vivid description of a REAL photograph (max 60 words): who or what is in it, "
-            "their face and expression, clothes, the real place behind them (for Uganda use real places like "
-            "brick walls, red soil, markets), the light and the camera angle. No cartoon or art words. "
-            "Only the description.\n\nRequest: " + p, max_tokens=150)
+            "Rewrite this as ONE plain description of a REAL casual phone photo (max 60 words): who or what is in "
+            "it, their face and expression, clothes, the real everyday place behind them (for Uganda use real "
+            "places like painted plaster walls, brick houses, red soil roads, markets, classrooms). People are "
+            "Black Ugandans with dark brown skin unless the request says otherwise. Ordinary phone snapshot, "
+            "not a glamour or stock photo. No cartoon or art words. Only the description.\n\nRequest: " + p,
+            max_tokens=150)
         if better and 15 < len(better) < 600 and "couldn" not in better.lower() and "no ai" not in better.lower():
             p = better.strip().strip('"')
             for w in NOT_REAL_WORDS:
                 p = re.sub(r"\b" + re.escape(w) + r"s?\b", "", p, flags=re.I)
     except Exception:
         pass
-    return p + ". " + PHOTO_STYLE
+    return ugandan_people(p, prompt) + ". " + PHOTO_STYLE
 
 
 ME_WORDS = re.compile(r"\b(me|my face|myself|my photo|like me|of me)\b", re.I)
@@ -2473,18 +2504,37 @@ def brain_add(lesson, q="", score=1, kind="lesson"):
     brain_save(items)
 
 
+# 111.6: lessons built into Genius's brain for good (the owner taught them; they never fade)
+CORE_LESSONS = (
+    ("picture photo image draw make create portrait selfie person people man woman boy girl",
+     "When making pictures of people, show real Black Ugandans with dark brown skin and African features, unless "
+     "the person asks for someone else."),
+    ("picture photo image draw make create portrait selfie",
+     "Pictures should look like real, unedited Android phone photos in everyday Ugandan places (painted walls, "
+     "brick houses, red soil roads, markets, classrooms), not glossy studio or stock portraits with blurred backgrounds."),
+    ("uganda ugandan african africa people",
+     "The user lives in Uganda: give examples, places, prices (UGX) and people that fit Uganda first."),
+)
+
+
+def core_lessons(text):
+    w = _words(text)
+    return [ls for keys, ls in CORE_LESSONS if w & set(keys.split())]
+
+
 def brain_recall(text, n=4):
-    """The lessons that best match this question, strongest first."""
+    """The lessons that best match this question, strongest first (the owner's core lessons always come first)."""
     want = _words(text)
     if not want:
         return ""
+    core = core_lessons(text)
     scored = []
     for it in brain_load():
         hit = len(want & _words(it["lesson"] + " " + it.get("q", "")))
         if hit and it.get("score", 0) > -2:
             scored.append((hit * 2 + it.get("score", 0) + (3 if it.get("kind") == "correction" else 0), it))
     scored.sort(key=lambda x: x[0], reverse=True)
-    best = [it["lesson"] for _, it in scored[:n]]
+    best = core + [it["lesson"] for _, it in scored[:n]]
     return ("\nLessons you learned before (trust these, corrections most of all):\n- " + "\n- ".join(best)) if best else ""
 
 
