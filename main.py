@@ -8980,6 +8980,7 @@ def news_thumb(url):
         if len(data) < 500 or len(data) > 3_000_000:
             return None
         try:                                          # shrink big pictures to save memory and data
+            import io
             from PIL import Image
             im = Image.open(io.BytesIO(data)).convert("RGB")
             im.thumbnail((640, 360))
