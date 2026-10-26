@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "109.8"
+VERSION = "109.9"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -386,7 +386,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 109.8
+ABOUT_TEXT = """Genius 109.9
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -447,7 +447,11 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 109.8 (2026-10-26)
+CHANGELOG = """Genius 109.9 (2026-10-26)
+- New Share button on the top bar: one tap to send Genius to WhatsApp, Facebook, TikTok, Instagram, X, Telegram, Messenger, Snapchat, or copy the link.
+- Share Genius is also first in Tools.
+
+Genius 109.8 (2026-10-26)
 - Fixed: in long chats the words could vanish and the chat turned into a black box. Genius now hides the oldest messages so your chat always stays visible.
 
 Genius 109.7 (2026-10-26)
@@ -6162,8 +6166,9 @@ def pin_shortcut(action, label):
 
 
 GENIUS_LINK = "https://github.com/ssalimuto/Genius-app/releases/latest"
-SHARE_TEXT = ("Meet Genius - an AI that talks with you, makes songs, edits photos without changing your face, "
-              "zooms 100x and more. Free 7-day trial. Download for Android: " + GENIUS_LINK)
+SHARE_TEXT = ("Meet Genius - a smart AI app made in Uganda. It answers like Google with sources, makes realistic "
+              "pictures, edits photos without changing your face, makes songs, helps you type in English and Luganda, "
+              "and more. Free 7-day trial. Download for Android: " + GENIUS_LINK)
 
 
 def share_genius(target=None):
@@ -6864,10 +6869,17 @@ class ChatScreen(BoxLayout):
         title = Label(text="[b][color=ffc84d]Gen[/color][color=c79bff]ius[/color][/b]  [size=12sp][color=5ee6a0]\u25cf[/color] [color=9aa0c0]online[/color][/size]",
                       markup=True, font_size="25sp", halign="left", valign="middle")
         title.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        title.shorten = True
+        title.shorten_from = "right"
         header.add_widget(title)
         self.mode_lbl = Label(text="Fast", font_size="15sp", color=HINT,
                               halign="right", size_hint_x=None, width="60dp")
-        header.add_widget(self.mode_lbl)
+        # Share sits right on the top bar (in place of the Fast/Deep word) so anyone can spread Genius in one tap
+        sb = BoxLayout(size_hint_x=None, width="64dp", padding=[0, 9, 0, 9])
+        share_btn = RoundButton(text="Share", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), font_size="13sp", bold=True)
+        share_btn.bind(on_press=self.share_menu)
+        sb.add_widget(share_btn)
+        header.add_widget(sb)
         hb = BoxLayout(size_hint_x=None, width="70dp", padding=[0, 9, 0, 9])
         find_btn = RoundButton(text="Search", bg=BLUE, fg=TEXTCOL, font_size="13sp", bold=True)
         find_btn.bind(on_press=self.search_box)
@@ -7385,13 +7397,14 @@ class ChatScreen(BoxLayout):
         box = BoxLayout(orientation="vertical", spacing=8, padding=10)
         pop = Popup(title="Tools", content=box, size_hint=(0.94, 0.94),
                     separator_color=GOLD, title_color=GOLD)
-        grid = GridLayout(cols=3, size_hint_y=None, height="230dp", spacing=8)
-        quick = [("Speak", self.speak_input, GOLD), ("Draw", lambda: self.handle("draw"), BLUE),
-                 ("Add file", self.attach_menu, BLUE),
+        grid = GridLayout(cols=3, size_hint_y=None, height="300dp", spacing=8)
+        quick = [("Share Genius", self.share_menu, GOLD), ("Speak", self.speak_input, GOLD),
+                 ("Draw", lambda: self.handle("draw"), BLUE),
                  ("Locker", lambda: self.handle("secrets"), GREY), ("Notes", lambda: self.handle("notes"), GREY),
                  ("Weather", lambda: self.handle("weather"), GREY),
                  ("Deep: " + ("on" if self.deep else "off"), self.toggle_deep, GOLD if self.deep else GREY),
-                 ("Clear", self.clear_chat, GREY), ("Stop", lambda: self.handle("stop"), RED)]
+                 ("Clear", self.clear_chat, GREY), ("Add file", self.attach_menu, BLUE),
+                 ("Stop", lambda: self.handle("stop"), RED)]
         def go_btn(label, fn, col, h=None):
             b = RoundButton(text=label, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
                             font_size="15sp", bold=True, **({"size_hint_y": None, "height": h} if h else {}))
@@ -7756,17 +7769,29 @@ class ChatScreen(BoxLayout):
 
     # ---------- Genius everywhere ----------
     def share_menu(self, *_):
-        apps = [("WhatsApp", "com.whatsapp"), ("Facebook", "com.facebook.katana"), ("TikTok", "com.zhiliaoapp.musically"),
-                ("Instagram", "com.instagram.android"), ("X (Twitter)", "com.twitter.android"), ("Telegram", "org.telegram.messenger")]
+        apps = [("WhatsApp", "com.whatsapp"), ("WhatsApp Business", "com.whatsapp.w4b"),
+                ("Facebook", "com.facebook.katana"), ("Facebook Lite", "com.facebook.lite"),
+                ("TikTok", "com.zhiliaoapp.musically"), ("Instagram", "com.instagram.android"),
+                ("X (Twitter)", "com.twitter.android"), ("Telegram", "org.telegram.messenger"),
+                ("Messenger", "com.facebook.orca"), ("Snapchat", "com.snapchat.android")]
 
         def go(pkg=None):
             try:
                 share_genius(pkg)
             except Exception as e:
-                self.say(f"Sharing didn't open: {e}. The link is {GENIUS_LINK}")
+                log(f"SHARE failed: {e}")
+                copy_link()
+
+        def copy_link():
+            try:
+                from kivy.core.clipboard import Clipboard
+                Clipboard.copy(SHARE_TEXT)
+                self.say("Copied! Paste it in any chat, status or post so friends can download Genius:\n" + GENIUS_LINK)
+            except Exception:
+                self.say("Send friends this link to download Genius:\n" + GENIUS_LINK)
         self._buttons_popup("Share Genius", [(n, lambda p=p: go(p), BLUE) for n, p in apps] +
-                            [("Any other app...", go, GOLD)], cols=2,
-                            hint="Friends download Genius from your link")
+                            [("Copy link", copy_link, GREY), ("Any other app...", go, GOLD)], cols=2,
+                            hint="Tap an app. Friends download Genius from your link")
 
     def everywhere_menu(self, *_):
         on = EVERYWHERE["bubble_on"]
