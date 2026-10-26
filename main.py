@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "110.5"
+VERSION = "110.6"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -76,6 +76,15 @@ Window.softinput_mode = ""   # 110.3: screen never slides; the typing box lifts 
 
 
 _KB_VIEWS = {}
+
+
+def android_sdk():
+    """Android version number (API level); 0 when not on a phone."""
+    try:
+        from jnius import autoclass
+        return int(autoclass("android.os.Build$VERSION").SDK_INT)
+    except Exception:
+        return 0
 
 
 def keyboard_overlap():
@@ -434,7 +443,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 110.5
+ABOUT_TEXT = """Genius 110.6
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -495,7 +504,10 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 110.5 (2026-10-26)
+CHANGELOG = """Genius 110.6 (2026-10-26)
+- New + button next to the typing box: take a photo with the camera, pick from your gallery, add your newest screenshot, or add a file like a PDF or notes. Then ask about it, solve homework from it, or change it.
+
+Genius 110.5 (2026-10-26)
 - Much faster answers: words start appearing in under a second and type themselves out as Genius thinks.
 - Quick questions use the fastest AI, and Genius keeps its line to the AI open so there's no waiting to connect.
 - Everyday questions like 'do you know...' no longer take the slow path.
@@ -8292,17 +8304,24 @@ class ChatScreen(BoxLayout):
 
         # input row: wraps and grows to 4 lines, stays above the keyboard
         self.in_row = row = BoxLayout(size_hint_y=None, height="62dp", spacing=8, padding=[10, 4, 10, 10])
-        self.inp = style_input(ChatInput(hint_text="Type here, or tap the menu to speak...",
+        self.inp = style_input(ChatInput(hint_text="Ask Genius anything...",
                                multiline=True, do_wrap=True, font_size="18sp", size_hint_y=None,
                                write_tab=False, text_validate_unfocus=False))
         self.inp.bind(on_text_validate=self.send, text=self._typing, minimum_height=self._grow_input,
                       width=self._grow_input)
-        send_col = BoxLayout(orientation="vertical", size_hint_x=None, width="96dp")
+        send_col = BoxLayout(orientation="vertical", size_hint_x=None, width="84dp")
         send_col.add_widget(Widget())
         send = RoundButton(text="Send", bg=GOLD, fg=(0.1, 0.1, 0.1, 1),
                            size_hint_y=None, height="48dp", font_size="18sp", bold=True)
         send.bind(on_press=self.send)
         send_col.add_widget(send)
+        plus_col = BoxLayout(orientation="vertical", size_hint_x=None, width="48dp")
+        plus_col.add_widget(Widget())
+        plus = RoundButton(text="+", bg=BLUE, fg=TEXTCOL, size_hint_y=None, height="48dp",
+                           font_size="28sp", bold=True)
+        plus.bind(on_press=self.attach_menu)
+        plus_col.add_widget(plus)
+        row.add_widget(plus_col)
         row.add_widget(self.inp)
         row.add_widget(send_col)
         self.add_widget(row)
@@ -8314,7 +8333,7 @@ class ChatScreen(BoxLayout):
         Clock.schedule_once(self._grow_input, 0)
         threading.Thread(target=groq_warmup, daemon=True).start()
 
-        self.say(f"Welcome {CURRENT['name']}. You are in command. Tap the menu at the top right for Speak and everything else.")
+        self.say(f"Welcome {CURRENT['name']}. You are in command. Tap Search to find any tool, or + to add a photo, screenshot or file.")
 
     # ---------- listening: hear you, answer, speak back ----------
     SPEECH_CODE = 7777
@@ -10052,10 +10071,12 @@ class ChatScreen(BoxLayout):
         box = BoxLayout(orientation="vertical", spacing=10, padding=12)
         pop = Popup(title="Add to Genius", content=box, size_hint=(0.9, 0.62),
                     separator_color=GOLD, title_color=GOLD)
-        opts = [("Choose a picture", lambda: self.pick_file("image/*"), BLUE),
-                ("Choose a file (PDF, text...)", lambda: self.pick_file("*/*"), BLUE),
+        pop.size_hint = (0.9, 0.82)
+        opts = [("Take a photo (camera)", self.take_photo, GOLD),
+                ("Gallery: photos and screenshots", self.pick_gallery, BLUE),
+                ("My newest screenshot", self.attach_screenshot, BLUE),
+                ("A file (PDF, notes, text...)", lambda: self.pick_file("*/*"), BLUE),
                 ("My newest photo", lambda: self.attach_newest(True), GREY),
-                ("My newest file", lambda: self.attach_newest(False), GREY),
                 ("Cancel", None, RED)]
         for label, fn, col in opts:
             b = RoundButton(text=label, bg=col, fg=TEXTCOL, size_hint_y=None, height="54dp",
@@ -10068,6 +10089,112 @@ class ChatScreen(BoxLayout):
             b.bind(on_press=go)
             box.add_widget(b)
         pop.open()
+
+    CAM_CODE = 7781
+
+    def take_photo(self, *_):
+        """Open the phone's camera; the photo comes straight back into the chat."""
+        try:
+            from android.permissions import request_permissions, check_permission, Permission
+            need = [Permission.CAMERA]
+            if android_sdk() < 29:
+                need.append(Permission.WRITE_EXTERNAL_STORAGE)
+            if all(check_permission(p) for p in need):
+                self._launch_camera()
+                return
+
+            def after(perms, grants):
+                if grants and all(grants):
+                    Clock.schedule_once(lambda *_: self._launch_camera(), 0.2)
+                else:
+                    Clock.schedule_once(lambda *_: self.say(
+                        "Genius needs the camera to take a photo. Tap + again and allow Camera, "
+                        "or choose a picture from your gallery."), 0)
+            request_permissions(need, after)
+        except Exception as e:
+            log(f"CAM perm: {e}")
+            self.say("The camera isn't available here. Tap + and choose a picture from your gallery.")
+
+    def _launch_camera(self):
+        try:
+            from jnius import autoclass, cast
+            from android import activity
+            Intent = autoclass("android.content.Intent")
+            MediaStore = autoclass("android.provider.MediaStore")
+            ContentValues = autoclass("android.content.ContentValues")
+            PA = autoclass("org.kivy.android.PythonActivity")
+            cr = PA.mActivity.getContentResolver()
+            cv = ContentValues()
+            cv.put("_display_name", f"Genius_{int(time.time())}.jpg")
+            cv.put("mime_type", "image/jpeg")
+            if android_sdk() >= 29:
+                cv.put("relative_path", "Pictures/Genius")
+            uri = cr.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv)
+            if not getattr(self, "_cam_bound", False):
+                activity.bind(on_activity_result=self._on_cam_result)
+                self._cam_bound = True
+            it = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+            it.putExtra(MediaStore.EXTRA_OUTPUT, cast("android.os.Parcelable", uri))
+            it.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            self._cam_uri = uri
+            PA.mActivity.startActivityForResult(it, self.CAM_CODE)
+        except Exception as e:
+            log(f"CAM launch: {e}")
+            self.say("I couldn't open the camera. Tap + and choose a picture from your gallery instead.")
+
+    def _on_cam_result(self, request, result, intent):
+        if request != self.CAM_CODE:
+            return
+        uri, self._cam_uri = getattr(self, "_cam_uri", None), None
+        path = None
+        try:
+            if result == -1 and uri is not None:
+                path = self._copy_uri(uri)
+            elif uri is not None:
+                from jnius import autoclass
+                autoclass("org.kivy.android.PythonActivity").mActivity.getContentResolver().delete(uri, None, None)
+        except Exception as e:
+            log(f"CAM result: {e}")
+        if path and os.path.getsize(path) > 0:
+            Clock.schedule_once(lambda *_: self.got_attachment(path), 0)
+        else:
+            Clock.schedule_once(lambda *_: self.say("Okay, no photo taken."), 0)
+
+    def pick_gallery(self, *_):
+        """The phone's Gallery, where photos and screenshots are (no extra permission needed)."""
+        try:
+            from jnius import autoclass
+            from android import activity
+            Intent = autoclass("android.content.Intent")
+            MediaStore = autoclass("android.provider.MediaStore")
+            PA = autoclass("org.kivy.android.PythonActivity")
+            if not getattr(self, "_pick_bound", False):
+                activity.bind(on_activity_result=self._on_pick_result)
+                self._pick_bound = True
+            it = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+            it.setType("image/*")
+            PA.mActivity.startActivityForResult(it, self.PICK_CODE)
+        except Exception as e:
+            log(f"GALLERY: {e}")
+            self.pick_file("image/*")
+
+    def attach_screenshot(self, *_):
+        self._storage_permission()
+        best, bt = None, 0
+        for d in ("/storage/emulated/0/Pictures/Screenshots", "/storage/emulated/0/DCIM/Screenshots",
+                  "/storage/emulated/0/Screenshots"):
+            try:
+                for n in os.listdir(d):
+                    f = os.path.join(d, n)
+                    if os.path.isfile(f) and file_kind(f) == "image" and os.path.getmtime(f) > bt:
+                        best, bt = f, os.path.getmtime(f)
+            except Exception:
+                continue
+        if best:
+            self.got_attachment(best)
+        else:
+            self.say("I couldn't see your screenshots yet. Opening your gallery so you can pick one.")
+            self.pick_gallery()
 
     def _storage_permission(self):
         try:
