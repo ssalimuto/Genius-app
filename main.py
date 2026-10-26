@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "109.4"
+VERSION = "109.5"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -355,7 +355,9 @@ ALLOWED = MappingProxyType({
     "stop": "Shut down",
 })
 HELP_EXTRA = {
-    "music / sound <idea>": "Make a song, e.g. sound happy afrobeat about my friends (play song, stop music)",
+    "make song <style> about <idea>": "Make a song with words, e.g. make song amapiano about my mum. Styles: afrobeat, amapiano, kadongo kamu, luganda praise, gospel, dancehall, hip hop, rnb, love ballad, kids, pop, lofi. Add 'in Luganda' or 'English and Luganda'",
+    "music / sound": "Music maker menu with every style",
+    "play song / lyrics / pause music / stop music": "Play your last song with karaoke words on screen, pause or stop it",
     "studio / banana": "Photo studio: AI edits, change clothes or place, blend photos (banana pro on/off)",
     "transform / looks": "Instant effects and iPhone-style looks that work offline",
     "ultra / zoom photo / ai zoom": "Make a photo sharper, or zoom into it",
@@ -383,7 +385,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 109.4
+ABOUT_TEXT = """Genius 109.5
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -403,6 +405,8 @@ What I can do
 - Problem solver: step-by-step plans for real-life problems (solve)
 - Builder: writes small Python programs on request and runs them with your approval
 - Talk and listen (Speak button, hands-free 'Hey Genius')
+- Music maker: songs in 14 styles (Afrobeat, Amapiano, Kadongo Kamu, Luganda praise, Gospel, Dancehall, Hip hop, RnB, ballad, kids...) with real-sounding instruments, words in English or Luganda, and karaoke lyrics while it plays
+- Suggests commands as you type; tap one to fill it in
 
 Safety
 - Only the owner can log in. Wrong passwords lock it for longer each time (5 min, 15 min, 1 hour).
@@ -442,7 +446,17 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 109.4 (2026-10-26)
+CHANGELOG = """Genius 109.5 (2026-10-26)
+- See your words as you type: the box wraps and grows up to 4 lines, stays above the keyboard, and is easy to read on every theme.
+- Suggestions while you type: matching commands (English and Luganda) appear above the box. Tap one to fill it in.
+- Karaoke: when Genius plays a song it made, the words show on screen and the line being played lights up. Pause, Play again and Stop buttons. Say 'lyrics' or 'play song' anytime.
+- Better songs: each style now has its own tempo, key, drums, bass line, chords and lead sound - Afrobeat, Amapiano (log drum), Kadongo Kamu (finger-picked guitar), Luganda praise, Gospel (organ), Dancehall, Hip hop (808), RnB, Love ballad, Kids, Pop, Lo-fi, Cinematic and Dance.
+- More real sound: plucked guitar, kora and bass strings, warmer piano and organ, real-sounding drums, a human feel, stereo, echo, hall reverb and studio mastering at CD quality (44.1 kHz).
+- Real song words: intro, verses, a catchy chorus that repeats, bridge and outro, with rhymes. In English, Luganda, or both. With an AI key the AI writes them; without one Genius uses its own songbook.
+- Just say it: "make song amapiano about my mum". Genius tells you which style it picked.
+- Colourful chat: names, numbers, commands and links in your theme's colours. Your own words and secrets are never coloured.
+
+Genius 109.4 (2026-10-26)
 - New 'Set up AI key' helper: type key (or tap it in your profile or the menu) and Genius walks you through getting a free AI key in 3 easy steps.
 - Pick Groq (free, fastest), Google Gemini (free, needed for picture edits) or OpenRouter, open the key page with one tap, then Paste and Test.
 - Genius checks the key works before saving it, and tells you plainly if it's wrong, expired or there's no internet.
@@ -1009,6 +1023,7 @@ def _play_file(path):
         snd = SoundLoader.load(path)
         if snd:
             _luganda["sound"] = snd
+            _luganda["file"], _luganda["paused_at"] = path, 0.0
             snd.play()
             return True
     except Exception as e:
@@ -1020,6 +1035,7 @@ def _play_file(path):
         mp.prepare()
         mp.start()
         _luganda["sound"] = mp
+        _luganda["file"], _luganda["paused_at"] = path, 0.0
         return True
     except Exception as e:
         log(f"PLAY android failed: {e}")
@@ -3584,319 +3600,1115 @@ def pro_look(path, look):
 
 
 # ================= Genius Music Maker =================
-import math as _m, random as _r, wave as _wave
+# 109.5 "real" engine: 44.1 kHz 16-bit stereo, plucked strings (Karplus-Strong), additive/FM keys,
+# synthesised drums, humanised timing and velocity, panning, reverb, delay, bus compression and a limiter.
+# Pure Python (stdlib only) so it ships as a quiet code update.
+import math as _m, random as _r, wave as _wave, array as _array, sys as _sys
 
-SR = 22050
+SR = 44100
 _NOTE = {"C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3, "E": 4, "F": 5, "F#": 6, "GB": 6,
          "G": 7, "G#": 8, "AB": 8, "A": 9, "A#": 10, "BB": 10, "B": 11}
-_SCALES = {"major": [0, 2, 4, 5, 7, 9, 11], "minor": [0, 2, 3, 5, 7, 8, 10]}
+_SCALES = {"major": [0, 2, 4, 5, 7, 9, 11], "minor": [0, 2, 3, 5, 7, 8, 10],
+           "dorian": [0, 2, 3, 5, 7, 9, 10], "mixolydian": [0, 2, 4, 5, 7, 9, 10]}
+
+# Every genre: tempo, scale, keys, chord progressions, drum kit pattern, swing, and which
+# instrument plays chords / bass / lead melody / arpeggio / pad, plus their rhythms.
 _STYLES = {
-    "afrobeat":  dict(bpm=104, drums="afro", inst=["epiano", "bass", "pluck", "pad", "shaker"], prog=[6, 4, 1, 5], scale="minor"),
-    "amapiano":  dict(bpm=112, drums="amapiano", inst=["epiano", "logdrum", "pad", "shaker"], prog=[2, 5, 1, 6], scale="minor"),
-    "pop":       dict(bpm=110, drums="pop", inst=["piano", "bass", "pad", "pluck"], prog=[1, 5, 6, 4], scale="major"),
-    "lofi":      dict(bpm=78, drums="lofi", inst=["epiano", "bass", "pad"], prog=[2, 5, 1, 6], scale="major"),
-    "gospel":    dict(bpm=76, drums="halftime", inst=["piano", "strings", "bass"], prog=[1, 4, 6, 5], scale="major"),
-    "cinematic": dict(bpm=70, drums="none", inst=["strings", "piano", "pad", "bass"], prog=[6, 4, 1, 5], scale="minor"),
-    "hiphop":    dict(bpm=88, drums="trap", inst=["piano", "bass", "pad"], prog=[1, 6, 4, 5], scale="minor"),
-    "ballad":    dict(bpm=72, drums="halftime", inst=["piano", "strings", "bass"], prog=[1, 5, 6, 4], scale="major"),
-    "dance":     dict(bpm=124, drums="pop", inst=["pluck", "bass", "pad", "piano"], prog=[6, 4, 1, 5], scale="minor"),
-    "kids":      dict(bpm=116, drums="pop", inst=["marimba", "bass", "pluck"], prog=[1, 4, 5, 1], scale="major"),
+    "afrobeat":  dict(label="Afrobeat", bpm=104, scale="minor", keys=("A", "G", "F#", "C"),
+                      progs=([6, 4, 1, 5], [1, 6, 4, 5], [2, 5, 1, 1]), drums="afro", swing=0.10,
+                      chords="epiano", crhythm="offbeat", bass="bass", brhythm="afro", lead="kora",
+                      arp="guitar", pad="pad", sevenths=True, family="party"),
+    "amapiano":  dict(label="Amapiano", bpm=112, scale="dorian", keys=("F", "G", "A", "D"),
+                      progs=([2, 5, 1, 6], [1, 4, 2, 5], [6, 2, 5, 1]), drums="amapiano", swing=0.16,
+                      chords="epiano", crhythm="piano_stab", bass="logdrum", brhythm="amapiano", lead="flute",
+                      arp=None, pad="pad", sevenths=True, family="party"),
+    "gospel":    dict(label="Gospel", bpm=76, scale="major", keys=("C", "D", "Eb", "F"),
+                      progs=([1, 4, 6, 5], [1, 6, 2, 5], [4, 5, 3, 6]), drums="gospel", swing=0.12,
+                      chords="piano", crhythm="gospel", bass="bass", brhythm="gospel", lead="piano",
+                      arp=None, pad="organ", sevenths=True, family="praise"),
+    "praise":    dict(label="Luganda praise", bpm=120, scale="major", keys=("D", "E", "G", "A"),
+                      progs=([1, 4, 5, 1], [1, 5, 6, 4], [4, 1, 5, 1]), drums="praise", swing=0.06,
+                      chords="guitar", crhythm="strum8", bass="bass", brhythm="bouncy", lead="organ",
+                      arp="kora", pad="organ", sevenths=False, family="praise", lang="lg"),
+    "kadongo":   dict(label="Kadongo Kamu", bpm=96, scale="major", keys=("G", "D", "A", "C"),
+                      progs=([1, 4, 5, 1], [1, 5, 4, 1], [1, 4, 1, 5]), drums="kadongo", swing=0.08,
+                      chords="guitar", crhythm="fingerpick", bass="ksbass", brhythm="kadongo", lead="guitar",
+                      arp=None, pad=None, sevenths=False, family="story"),
+    "dancehall": dict(label="Dancehall", bpm=96, scale="minor", keys=("A", "C", "D", "E"),
+                      progs=([1, 6, 7, 1], [1, 4, 6, 5], [6, 7, 1, 1]), drums="dembow", swing=0.0,
+                      chords="lead", crhythm="dembow_stab", bass="808", brhythm="dembow", lead="brass",
+                      arp=None, pad="pad", sevenths=False, family="party"),
+    "hiphop":    dict(label="Hip hop", bpm=88, scale="minor", keys=("C", "D", "F", "G"),
+                      progs=([1, 6, 4, 5], [1, 1, 6, 7], [6, 4, 1, 7]), drums="boombap", swing=0.18,
+                      chords="piano", crhythm="sparse", bass="808", brhythm="trap", lead="bell",
+                      arp=None, pad="strings", sevenths=True, family="hustle"),
+    "rnb":       dict(label="RnB", bpm=74, scale="dorian", keys=("Eb", "F", "Bb", "C"),
+                      progs=([2, 5, 1, 6], [1, 6, 2, 5], [4, 3, 2, 1]), drums="rnb", swing=0.14,
+                      chords="epiano", crhythm="rnb", bass="808", brhythm="rnb", lead="lead",
+                      arp=None, pad="pad", sevenths=True, family="love"),
+    "ballad":    dict(label="Love ballad", bpm=68, scale="major", keys=("C", "D", "F", "G"),
+                      progs=([1, 5, 6, 4], [1, 6, 4, 5], [4, 1, 5, 6]), drums="ballad", swing=0.0,
+                      chords="piano", crhythm="arp8", bass="bass", brhythm="ballad", lead="violin",
+                      arp=None, pad="strings", sevenths=False, family="love"),
+    "kids":      dict(label="Kids song", bpm=116, scale="major", keys=("C", "F", "G", "D"),
+                      progs=([1, 4, 5, 1], [1, 5, 1, 4], [1, 4, 1, 5]), drums="kids", swing=0.0,
+                      chords="piano", crhythm="bouncy", bass="bass", brhythm="bouncy", lead="marimba",
+                      arp="bell", pad=None, sevenths=False, family="kids"),
+    "pop":       dict(label="Pop", bpm=110, scale="major", keys=("C", "G", "D", "A"),
+                      progs=([1, 5, 6, 4], [6, 4, 1, 5], [1, 6, 4, 5]), drums="pop", swing=0.0,
+                      chords="piano", crhythm="pop", bass="bass", brhythm="pop", lead="lead",
+                      arp="guitar", pad="pad", sevenths=False, family="party"),
+    "lofi":      dict(label="Lo-fi chill", bpm=78, scale="dorian", keys=("D", "F", "G", "A"),
+                      progs=([2, 5, 1, 6], [4, 3, 2, 1], [1, 6, 2, 5]), drums="lofi", swing=0.22,
+                      chords="epiano", crhythm="sustain", bass="ksbass", brhythm="root8", lead="epiano",
+                      arp=None, pad="pad", sevenths=True, family="calm"),
+    "cinematic": dict(label="Cinematic", bpm=70, scale="minor", keys=("D", "C", "E", "A"),
+                      progs=([1, 6, 3, 7], [6, 4, 1, 5], [1, 4, 6, 5]), drums="cine", swing=0.0,
+                      chords="strings", crhythm="sustain", bass="bass", brhythm="whole", lead="violin",
+                      arp="piano", pad="pad", sevenths=False, family="story"),
+    "dance":     dict(label="Dance", bpm=124, scale="minor", keys=("A", "F", "G", "C"),
+                      progs=([6, 4, 1, 5], [1, 6, 7, 5], [1, 4, 6, 5]), drums="four", swing=0.0,
+                      chords="lead", crhythm="offbeat", bass="bass", brhythm="offbeat", lead="lead",
+                      arp="pluck", pad="pad", sevenths=False, family="party"),
 }
-_PATTERNS = {  # 16 steps per bar: kick, snare/clap, hat
-    "pop":      ("x...x...x...x...", "....x.......x...", "x.x.x.x.x.x.x.x."),
-    "afro":     ("x..x..x...x..x..", "....x.......x..x", "xxx.xxx.xxx.xxx."),
-    "amapiano": ("x...x...x...x...", "....x.......x...", ".x.x.x.x.x.x.x.x"),
-    "lofi":     ("x......x..x.....", "....x.......x...", "x.x.x.x.x.x.x.x."),
-    "trap":     ("x......x..x.....", "........x.......", "xxxxxxxxxxxxxxxx"),
-    "halftime": ("x.........x.....", "........x.......", "x...x...x...x..."),
-    "none":     ("................", "................", "................"),
+_STYLE_WORDS = (  # checked in order: the first match wins
+    ("luganda praise", "praise"), ("kadongo", "kadongo"), ("dancehall", "dancehall"), ("dance hall", "dancehall"),
+    ("ragga", "dancehall"), ("amapiano", "amapiano"), ("ama piano", "amapiano"), ("piano", None),
+    ("afrobeat", "afrobeat"), ("afro beat", "afrobeat"), ("afro", "afrobeat"), ("hip hop", "hiphop"),
+    ("hiphop", "hiphop"), ("hip-hop", "hiphop"), ("rap", "hiphop"), ("trap", "hiphop"), ("drill", "hiphop"),
+    ("rnb", "rnb"), ("r&b", "rnb"), ("r and b", "rnb"), ("soul", "rnb"), ("love ballad", "ballad"),
+    ("ballad", "ballad"), ("kids", "kids"), ("kid", "kids"), ("children", "kids"), ("nursery", "kids"),
+    ("gospel", "gospel"), ("worship", "gospel"), ("hymn", "gospel"), ("praise", "praise"), ("tumutendereze", "praise"),
+    ("lofi", "lofi"), ("lo-fi", "lofi"), ("lo fi", "lofi"), ("chill", "lofi"), ("study", "lofi"),
+    ("cinematic", "cinematic"), ("epic", "cinematic"), ("movie", "cinematic"), ("film", "cinematic"),
+    ("edm", "dance"), ("house", "dance"), ("dance", "dance"), ("club", "dance"), ("pop", "pop"),
+)
+_FAMILY_STYLE = {"love": "rnb", "praise": "gospel", "party": "afrobeat", "kids": "kids", "mum": "ballad",
+                 "sad": "ballad", "hustle": "hiphop", "friends": "afrobeat", "story": "kadongo", "calm": "lofi"}
+
+_PAT = {  # 16 steps a bar. x = hit, o = soft ghost hit
+    "afro":     dict(kick="x..x..x...x..x..", snare="....x.......x...", rim="...x..x....x..x.",
+                     hat="x.xxx.xxx.xxx.xx", shaker="xoxoxoxoxoxoxoxo", conga="..x.o..x..x.o.x."),
+    "amapiano": dict(kick="x...x...x...x...", clap="....x.......x...", shaker="oxoxoxoxoxoxoxox",
+                     ohat="..x...x...x...x.", rim="......x.......x."),
+    "gospel":   dict(kick="x.....x...x.....", snare="....x.......x..o", hat="x.x.x.x.x.x.x.x.",
+                     shaker="..x...x...x...x."),
+    "praise":   dict(kick="x...x...x...x...", snare="....x.......x...", hat="xoxxxoxxxoxxxoxx",
+                     shaker="xoxoxoxoxoxoxoxo", conga="x..x.x..x..x.x.."),
+    "kadongo":  dict(kick="x.......x.......", rim="....x.......x...", shaker="x.xox.xox.xox.xo",
+                     ngoma="x..o..x.x..o..x."),
+    "dembow":   dict(kick="x...x...x...x...", snare="...x..x....x..x.", hat="x.x.x.x.x.x.x.x.",
+                     rim="..x.......x....."),
+    "boombap":  dict(kick="x.....x..x......", snare="....x.......x...", hat="x.x.x.x.x.xox.x."),
+    "trap":     dict(kick="x......x..x.....", clap="........x.......", hat="xxxxxxxxxxxxxxxx"),
+    "rnb":      dict(kick="x......x..x.....", snare="....x.......x...", hat="x.x.x.x.xxx.x.x.",
+                     rim="..o.......o....."),
+    "ballad":   dict(kick="x.........x.....", snare="........x.......", hat="x...x...x...x..."),
+    "kids":     dict(kick="x...x...x...x...", clap="....x.......x...", hat="x.x.x.x.x.x.x.x.",
+                     shaker="xoxoxoxoxoxoxoxo"),
+    "pop":      dict(kick="x.....x.x.......", snare="....x.......x...", hat="x.x.x.x.x.x.x.x.",
+                     shaker="oxoxoxoxoxoxoxox"),
+    "lofi":     dict(kick="x......x..x.....", snare="....x.......x...", hat="x.xox.xox.xox.xo"),
+    "cine":     dict(kick="x...............", tom="x.....x...x.....", hat="........x......."),
+    "four":     dict(kick="x...x...x...x...", clap="....x.......x...", ohat="..x...x...x...x.",
+                     hat="x.x.x.x.x.x.x.x."),
 }
+_CR = {  # chord rhythms: (start step, length in steps)
+    "sustain": [(0, 16)], "offbeat": [(2, 2), (6, 2), (10, 2), (14, 2)],
+    "piano_stab": [(0, 2), (3, 2), (6, 3), (10, 2), (12, 4)],
+    "gospel": [(0, 6), (6, 2), (8, 6), (14, 2)], "strum8": [(s, 2) for s in range(0, 16, 2)],
+    "dembow_stab": [(0, 2), (3, 2), (6, 2), (8, 2), (11, 2), (14, 2)], "sparse": [(0, 8), (10, 6)],
+    "rnb": [(0, 10), (10, 6)], "bouncy": [(0, 2), (4, 2), (8, 2), (12, 2)], "pop": [(0, 6), (6, 4), (10, 6)],
+    "arp8": "arp", "fingerpick": "arp",
+}
+_BR = {  # bass rhythms: (step, length, semitones above the chord root)
+    "afro": [(0, 3, 0), (3, 3, 0), (6, 2, 7), (10, 3, 0), (14, 2, 12)],
+    "amapiano": [(0, 4, 0), (3, 4, 0), (7, 3, 7), (10, 4, 0), (14, 2, -5)],
+    "gospel": [(0, 6, 0), (6, 2, 7), (8, 6, 0), (14, 2, 12)], "root8": [(0, 8, 0), (8, 8, 0)],
+    "whole": [(0, 16, 0)], "kadongo": [(0, 4, 0), (4, 4, 7), (8, 4, 0), (12, 4, 7)],
+    "dembow": [(0, 3, 0), (3, 5, 0), (8, 3, 0), (11, 5, 7)], "trap": [(0, 6, 0), (7, 3, 0), (10, 6, 12)],
+    "rnb": [(0, 7, 0), (7, 3, 0), (10, 6, -5)], "bouncy": [(0, 2, 0), (4, 2, 12), (8, 2, 7), (12, 2, 12)],
+    "pop": [(0, 3, 0), (3, 3, 0), (6, 2, 0), (8, 3, 0), (11, 3, 0), (14, 2, 7)],
+    "offbeat": [(2, 2, 0), (6, 2, 0), (10, 2, 0), (14, 2, 0)], "ballad": [(0, 8, 0), (8, 8, 7)],
+}
+_FORM = (("intro", 2), ("verse1", 4), ("chorus", 4), ("verse2", 4), ("chorus", 4),
+         ("bridge", 2), ("chorus", 4), ("outro", 2))
+_PAN = {"kick": 0.0, "snare": 0.05, "clap": -0.05, "rim": 0.3, "hat": 0.35, "ohat": 0.4, "shaker": -0.45,
+        "conga": 0.5, "ngoma": -0.35, "tom": -0.2, "crash": -0.3}
 
 
 def _freq(midi):
-    return 440.0 * 2 ** ((midi - 69) / 12)
+    return 440.0 * 2 ** ((midi - 69) / 12.0)
 
 
-def _env(n, a, rel=0.08, decay=None):
-    A, R = max(1, int(a * SR)), max(1, int(rel * SR))
-    out = [min(1.0, i / A) for i in range(n)]
-    if decay:
-        k = _m.exp(-1 / (decay * SR))
-        d = 1.0
-        for i in range(n):
-            out[i] *= d
-            d *= k
-    for i in range(max(0, n - R + 1), n):
-        out[i] *= max(0.0, (n - i) / R)
+# ---------- wavetables ----------
+_TN = 4096
+_TABS = {}
+
+
+def _table(kind):
+    if kind not in _TABS:
+        sin, c = _m.sin, 2 * _m.pi / _TN
+        if kind == "soft":
+            h = [(1, 1.0), (2, 0.35), (3, 0.15), (4, 0.07)]
+        elif kind == "saw":
+            h = [(k, 1.0 / k) for k in range(1, 13)]
+        elif kind == "dark":
+            h = [(k, 1.0 / (k * k ** 0.5)) for k in range(1, 9)]
+        elif kind == "organ":                         # drawbars 16' 8' 5 1/3' 4' 2 2/3' 2' (base = f/2)
+            h = [(1, 0.6), (2, 1.0), (3, 0.6), (4, 0.45), (6, 0.25), (8, 0.2)]
+        else:
+            h = [(1, 1.0)]
+        t = [sum(a * sin(k * i * c) for k, a in h) for i in range(_TN)]
+        pk = max(abs(x) for x in t) or 1.0
+        _TABS[kind] = [x / pk for x in t]
+    return _TABS[kind]
+
+
+def _osc(tab, f, n, detune=(1.0,), vib=0.0, vib_rate=5.5, vib_delay=0.0):
+    """Wavetable oscillator (one or more detuned voices, optional delayed vibrato)."""
+    out = [0.0] * n
+    mask, sin = _TN - 1, _m.sin
+    w = 2 * _m.pi * vib_rate / SR
+    vd = int(vib_delay * SR)
+    for dt in detune:
+        inc = f * dt * _TN / SR
+        ph = _r.random() * _TN
+        if vib:
+            for i in range(n):
+                v = vib * sin(i * w) * (min(1.0, (i - vd) / (0.3 * SR)) if i > vd else 0.0)
+                ph += inc * (1 + v)
+                out[i] += tab[int(ph) & mask]
+        else:
+            for i in range(n):
+                ph += inc
+                out[i] += tab[int(ph) & mask]
+    if len(detune) > 1:
+        g = 1.0 / len(detune) ** 0.5
+        out = [x * g for x in out]
     return out
 
 
+def _adsr(n, a, d, s, r=0.0):
+    A, D = max(1, int(a * SR)), max(1, int(d * SR))
+    out = []
+    for i in range(n):
+        if i < A:
+            out.append(i / A)
+        elif i < A + D:
+            out.append(1 - (1 - s) * (i - A) / D)
+        else:
+            out.append(s)
+    return out
+
+
+def _lp(x, passes=1):
+    for _ in range(passes):
+        x = [(a + b) * 0.5 for a, b in zip(x, [x[0]] + x[:-1])]
+    return x
+
+
+def _ks(f, n, decay_s, smooth=1, pick=0.2):
+    """Karplus-Strong plucked string, computed one period at a time (fast in pure Python)."""
+    p = max(2, int(SR / f + 0.5))
+    exc = _lp([_r.uniform(-1, 1) for _ in range(p)], smooth)
+    q = max(1, int(p * pick))
+    exc = [exc[i] - 0.7 * exc[i - q] for i in range(p)]           # pick position
+    g = 0.001 ** (1.0 / max(1.0, f * decay_s))
+    out, buf = [], exc
+    while len(out) < n:
+        out.extend(buf)
+        buf = [g * 0.5 * (a + b) for a, b in zip(buf, [buf[-1]] + buf[:-1])]
+    return out[:n]
+
+
+_CAP = {"piano": 2.0, "epiano": 1.6, "guitar": 2.0, "kora": 2.2, "ksbass": 1.6, "bass": 1.6, "808": 1.8,
+        "logdrum": 0.7, "marimba": 1.1, "bell": 1.8, "pluck": 1.0}   # decaying sounds: render once, cut to length
 _CACHE = {}
-_WT_N = 8192
-_WT = []
 
 
-def _wavetable():
-    """One cycle of sin(t)+0.35sin(2t)+0.15sin(3t)+0.07sin(4t): pads/strings read it instead of 12 sin() calls a sample."""
-    if not _WT:
-        sin, c = _m.sin, 2 * _m.pi / _WT_N
-        _WT.extend(sin(i * c) + 0.35 * sin(2 * i * c) + 0.15 * sin(3 * i * c) + 0.07 * sin(4 * i * c)
-                   for i in range(_WT_N))
-    return _WT
+def _base(inst, midi, n):
+    """Raw note, before the release fade. Decaying instruments render once per pitch."""
+    cap = _CAP.get(inst)
+    key = (inst, midi) if cap else (inst, midi, n)
+    if key in _CACHE:
+        return _CACHE[key]
+    f = _freq(midi)
+    N = int(cap * SR) if cap else n
+    sin, exp, w = _m.sin, _m.exp, 2 * _m.pi / SR
+    out = []
+    if inst == "piano":                                   # additive, stretched partials, 2 detuned strings, hammer
+        B = 0.00035
+        parts = [(k * (1 + B * k * k) ** 0.5, 1.0 / k ** 1.1, exp(-1 / (SR * 2.4 * (440.0 / f) ** 0.35 / (1 + 0.7 * (k - 1)))))
+                 for k in range(1, 7) if k * f < SR / 2.2]
+        amps, decs = [a for _, a, _ in parts], [d for _, _, d in parts]
+        incs = [w * f * m for m, _, _ in parts]
+        inc2 = w * f * 1.0013
+        lvl = list(amps)
+        for i in range(N):
+            s = 0.0
+            for j in range(len(incs)):
+                s += sin(i * incs[j]) * lvl[j]
+                lvl[j] *= decs[j]
+            s += 0.5 * sin(i * inc2) * lvl[0]
+            if i < 180:
+                s += _r.uniform(-1, 1) * 0.25 * (1 - i / 180.0)
+            out.append(s * min(1.0, i / 60.0) * 0.36)
+    elif inst == "epiano":                                # FM tine piano
+        inc = w * f
+        tine = 14 * f < SR / 2.2
+        for i in range(N):
+            t = i * inc
+            idx = 1.6 * exp(-i / (0.28 * SR)) + 0.25
+            s = sin(t + idx * sin(t))
+            if tine:
+                s += 0.12 * sin(14 * t) * exp(-i / (0.04 * SR))
+            out.append(s * exp(-i / (1.5 * SR)) * min(1.0, i / 40.0) * 0.6)
+    elif inst == "marimba":                               # modal bar: partials 1 : 3.93 : 9.2
+        a1, a2, a3 = w * f, w * f * 3.93, w * f * 9.2
+        hi = f * 9.2 < SR / 2.2
+        for i in range(N):
+            s = sin(i * a1) * exp(-i / (0.45 * SR)) + 0.35 * sin(i * a2) * exp(-i / (0.09 * SR))
+            if hi:
+                s += 0.12 * sin(i * a3) * exp(-i / (0.025 * SR))
+            out.append(s * min(1.0, i / 30.0) * 0.5)
+    elif inst == "bell":                                  # FM bell, ratio 3.5
+        inc = w * f
+        for i in range(N):
+            t = i * inc
+            out.append(sin(t + 2.0 * exp(-i / (0.35 * SR)) * sin(3.5 * t)) * exp(-i / (0.9 * SR)) * min(1.0, i / 30.0) * 0.38)
+    elif inst == "guitar":
+        out = [x * 0.8 for x in _lp(_ks(f, N, 2.2, smooth=2, pick=0.18), 1)]
+    elif inst == "kora":
+        k = _ks(f, N, 2.8, smooth=0, pick=0.11)
+        out = [x * 0.85 for x in _lp(k, 1)]
+    elif inst == "pluck":
+        out = [x * 0.45 for x in _ks(f, N, 0.8, smooth=1, pick=0.3)]
+    elif inst == "ksbass":
+        k = _lp(_ks(f, N, 1.2, smooth=4, pick=0.25), 2)
+        inc = w * f
+        out = [0.7 * a + 0.45 * sin(i * inc) * exp(-i / (0.9 * SR)) for i, a in enumerate(k)]
+    elif inst == "bass":                                  # finger bass
+        inc = w * f
+        th = _m.tanh
+        for i in range(N):
+            t = i * inc
+            e = exp(-i / (1.1 * SR)) * min(1.0, i / 90.0)
+            out.append(th(1.6 * (sin(t) + 0.3 * sin(2 * t) * exp(-i / (0.15 * SR)) + 0.1 * sin(3 * t))) * e * 0.38)
+    elif inst == "808":                                   # 808 bass: pitch drop + saturation (heard on phone speakers)
+        th = _m.tanh
+        ph = 0.0
+        for i in range(N):
+            fr = f * (1 + 0.8 * exp(-i / (0.012 * SR)))
+            ph += w * fr
+            out.append(th(2.2 * sin(ph)) * exp(-i / (0.9 * SR)) * min(1.0, i / 40.0) * 0.6)
+    elif inst == "logdrum":                               # amapiano log drum
+        th = _m.tanh
+        ph = 0.0
+        for i in range(N):
+            fr = f * (1 + 0.55 * exp(-i / (0.018 * SR)))
+            ph += w * fr
+            s = sin(ph) + 0.3 * sin(2 * ph) * exp(-i / (0.05 * SR))
+            out.append(th(1.7 * s) * exp(-i / (0.26 * SR)) * min(1.0, i / 25.0) * 0.7)
+    elif inst in ("pad", "strings"):
+        tab = _table("soft" if inst == "pad" else "saw")
+        o = _osc(tab, f, N, detune=(0.994, 1.0, 1.006), vib=0.0 if inst == "pad" else 0.003, vib_rate=5.0)
+        env = _adsr(N, 0.4 if inst == "pad" else 0.2, 0.3, 0.85)
+        o = _lp(o, 2 if inst == "strings" else 1)
+        out = [a * e * (0.22 if inst == "pad" else 0.18) for a, e in zip(o, env)]
+    elif inst == "violin":
+        o = _lp(_osc(_table("saw"), f, N, vib=0.006, vib_rate=5.6, vib_delay=0.18), 1)
+        env = _adsr(N, 0.07, 0.2, 0.8)
+        out = [a * e * 0.3 for a, e in zip(o, env)]
+    elif inst == "organ":                                 # drawbar organ with a slow Leslie wobble
+        o = _osc(_table("organ"), f / 2, N, vib=0.0035, vib_rate=6.2)
+        out = [a * (0.85 + 0.15 * sin(i * w * 6.2)) * min(1.0, i / 220.0) * 0.3 for i, a in enumerate(o)]
+    elif inst == "flute":
+        o = _osc(_table("soft"), f, N, vib=0.005, vib_rate=5.0, vib_delay=0.15)
+        env = _adsr(N, 0.06, 0.15, 0.8)
+        br = _lp([_r.uniform(-1, 1) for _ in range(N)], 3)
+        out = [(a * 0.9 + b * 0.12) * e * 0.32 for a, b, e in zip(o, br, env)]
+    elif inst == "lead":
+        o = _lp(_osc(_table("saw"), f, N, detune=(0.996, 1.004), vib=0.003, vib_delay=0.2), 1)
+        env = _adsr(N, 0.012, 0.25, 0.65)
+        out = [a * e * 0.26 for a, e in zip(o, env)]
+    elif inst == "brass":                                 # swell from dark to bright like a horn
+        o1, o2 = _osc(_table("dark"), f, N), _osc(_table("saw"), f, N, vib=0.003, vib_delay=0.2)
+        A = int(0.06 * SR)
+        out = []
+        for i in range(N):
+            e = min(1.0, i / A)
+            out.append((o1[i] * (1 - e * 0.6) + o2[i] * e * 0.6) * (0.4 + 0.6 * e) * 0.3)
+    else:
+        inc = w * f
+        out = [sin(i * inc) * 0.4 for i in range(N)]
+    _CACHE[key] = out
+    return out
 
 
 def _voice(inst, midi, n):
-    key = (inst, midi, n)
+    """A note of length n samples with a short natural release."""
+    key = ("v", inst, midi, n)
     if key in _CACHE:
         return _CACHE[key]
-    f, w, out = _freq(midi), 2 * _m.pi / SR, []
-    sin = _m.sin
-    if inst == "piano":
-        env = _env(n, 0.004, 0.12)
-        m1, m2, m3, m4, m5 = (k * 1.0008 ** k for k in (1, 2, 3, 4, 5))
-        dk = _m.exp(-1 / (1.3 * SR))          # per-sample decay of harmonic 1 (harmonic k decays as d**k)
-        d = 1.0
-        for i in range(n):
-            t = i * w * f
-            d2 = d * d
-            s = (sin(t * m1) * d + 0.45 * sin(t * m2) * d2 + 0.22 * sin(t * m3) * d2 * d
-                 + 0.12 * sin(t * m4) * d2 * d2 + 0.06 * sin(t * m5) * d2 * d2 * d)
-            out.append(s * env[i] * 0.5)
-            d *= dk
-    elif inst == "epiano":
-        env = _env(n, 0.003, 0.15, decay=1.6)
-        for i in range(n):
-            t = i * w * f
-            out.append((sin(t + 1.2 * _m.exp(-i / (0.25 * SR)) * sin(t * 2)) + 0.15 * sin(t * 3)) * env[i] * 0.45)
-    elif inst in ("pad", "strings"):
-        att = 0.35 if inst == "pad" else 0.18
-        env = _env(n, att, 0.4)
-        tab, TN = _wavetable(), _WT_N
-        k = TN / (2 * _m.pi)
-        strings = inst == "strings"
-        for i in range(n):
-            vib = 1 + (0.003 * sin(i * w * 5.2) if strings else 0)
-            t = i * w * f * vib * k                 # phase in table steps
-            s = (tab[int(t) % TN] + tab[int(t * 1.006) % TN] + tab[int(t * 0.994) % TN])
-            out.append(s * env[i] * 0.13)
-    elif inst == "bass":
-        env = _env(n, 0.006, 0.06, decay=1.2)
-        for i in range(n):
-            t = i * w * f
-            out.append((sin(t) + 0.25 * sin(2 * t) + 0.08 * sin(3 * t)) * env[i] * 0.6)
-    elif inst == "logdrum":
-        for i in range(min(n, int(0.5 * SR))):
-            fr = f * (1 + 0.6 * _m.exp(-i / (0.02 * SR)))
-            out.append(sin(2 * _m.pi * fr * i / SR) * _m.exp(-i / (0.22 * SR)) * 0.75)
-        out += [0.0] * (n - len(out))
-    elif inst == "marimba":
-        env = _env(n, 0.002, 0.05, decay=0.35)
-        for i in range(n):
-            t = i * w * f
-            out.append((sin(t) + 0.3 * sin(4 * t) * _m.exp(-i / (0.05 * SR))) * env[i] * 0.5)
-    elif inst == "pluck":  # Karplus-Strong string
-        p = max(2, int(SR / f))
-        buf = [_r.uniform(-1, 1) for _ in range(p)]
-        for i in range(n):
-            v = buf[i % p]
-            buf[i % p] = 0.996 * 0.5 * (v + buf[(i + 1) % p])
-            out.append(v * 0.35)
-        rel = int(0.05 * SR)
-        for i in range(max(0, n - rel), n):
-            out[i] *= (n - i) / rel
+    src = _base(inst, midi, n)
+    v = src[:n] if len(src) >= n else src + [0.0] * (n - len(src))
+    rel = min(len(v), int(0.07 * SR))
+    if rel > 1:
+        k = len(v) - rel
+        v = v[:k] + [x * (1 - i / rel) for i, x in enumerate(v[k:])]
+    _CACHE[key] = v
+    return v
+
+
+def _chord(inst, notes, n, spread=0, gains=None):
+    """All notes of a chord summed into one buffer (strummed by `spread` samples), mixed in one go."""
+    key = ("c", inst, tuple(notes), n, spread)
+    if key in _CACHE:
+        return _CACHE[key]
+    out = [0.0] * (n + spread * len(notes))
+    for k, nt in enumerate(notes):
+        v = _voice(inst, nt, n)
+        o = k * spread
+        g = gains[k] if gains else 1.0
+        out[o:o + n] = [a + b * g for a, b in zip(out[o:o + n], v)]
     _CACHE[key] = out
     return out
 
 
-def _drum(kind):
-    key = ("drum", kind)
+def _noise(n):
+    u = _r.uniform
+    return [u(-1, 1) for _ in range(n)]
+
+
+def _hp(x):
+    return [a - b for a, b in zip(x, [0.0] + x[:-1])]
+
+
+def _drum(kind, var=0):
+    key = ("drum", kind, var)
     if key in _CACHE:
         return _CACHE[key]
+    sin, exp, th = _m.sin, _m.exp, _m.tanh
     out = []
-    if kind == "kick":
+    if kind == "kick":                                    # pitch drop + beater click + saturation
         ph = 0.0
-        for i in range(int(0.35 * SR)):
-            fr = 45 + 90 * _m.exp(-i / (0.03 * SR))
+        for i in range(int(0.42 * SR)):
+            fr = 47 + 115 * exp(-i / (0.032 * SR))
             ph += 2 * _m.pi * fr / SR
-            out.append(_m.sin(ph) * _m.exp(-i / (0.12 * SR)) * 0.95)
-    elif kind == "snare":
-        for i in range(int(0.22 * SR)):
-            out.append((_r.uniform(-1, 1) * 0.6 + 0.4 * _m.sin(2 * _m.pi * 185 * i / SR)) * _m.exp(-i / (0.05 * SR)) * 0.5)
-    elif kind == "hat":
-        prev = 0.0
-        for i in range(int(0.05 * SR)):
-            x = _r.uniform(-1, 1)
-            out.append((x - prev) * _m.exp(-i / (0.012 * SR)) * 0.18)
-            prev = x
+            s = sin(ph) * exp(-i / (0.2 * SR))
+            if i < 160:
+                s += _r.uniform(-1, 1) * 0.35 * (1 - i / 160.0)
+            out.append(th(1.5 * s) * 0.75)
+    elif kind == "snare":                                 # two body tones + bright noise
+        nz = _hp(_noise(int(0.24 * SR)))
+        for i, x in enumerate(nz):
+            body = 0.55 * sin(2 * _m.pi * 182 * i / SR) * exp(-i / (0.05 * SR)) + 0.3 * sin(2 * _m.pi * 330 * i / SR) * exp(-i / (0.03 * SR))
+            out.append((body + 0.6 * x * exp(-i / (0.075 * SR))) * 0.55)
+    elif kind == "clap":                                  # 3 quick bursts and a tail
+        nz = _hp(_lp(_noise(int(0.3 * SR)), 1))
+        for i, x in enumerate(nz):
+            t = i / SR
+            e = sum(exp(-(t - o) / 0.006) for o in (0.0, 0.011, 0.022) if t >= o) * 0.5 + 0.6 * exp(-t / 0.09) * (t > 0.022)
+            out.append(x * e * 0.5)
+    elif kind in ("hat", "ohat", "crash"):                # metallic 808-style partials + noise
+        n = int((0.06 if kind == "hat" else 0.35 if kind == "ohat" else 1.4) * SR)
+        fr = [205.3, 304.4, 369.6, 522.7, 540.0, 800.0]
+        mult = 1.0 if kind != "crash" else 1.3
+        nz = _noise(n)
+        dec = 0.022 if kind == "hat" else 0.12 if kind == "ohat" else 0.55
+        for i in range(n):
+            m = sum(1.0 if sin(2 * _m.pi * f * mult * 8 * i / SR) > 0 else -1.0 for f in fr[:4]) * 0.12
+            out.append((m + nz[i] * 0.8) * exp(-i / (dec * SR)))
+        out = _hp(_hp(out))
+        g = 0.16 if kind == "hat" else 0.12 if kind == "ohat" else 0.10
+        out = [x * g for x in out]
     elif kind == "shaker":
-        prev = 0.0
-        for i in range(int(0.07 * SR)):
-            x = _r.uniform(-1, 1)
-            e = min(1, i / (0.01 * SR)) * _m.exp(-i / (0.025 * SR))
-            out.append((x - prev) * e * 0.10)
-            prev = x
+        nz = _hp(_hp(_noise(int(0.08 * SR))))
+        A = 0.012 * SR
+        out = [x * min(1.0, i / A) * exp(-i / (0.03 * SR)) * 0.12 for i, x in enumerate(nz)]
+    elif kind == "rim":
+        for i in range(int(0.05 * SR)):
+            out.append((sin(2 * _m.pi * 1700 * i / SR) * exp(-i / (0.008 * SR)) + 0.6 * sin(2 * _m.pi * 820 * i / SR)
+                        * exp(-i / (0.015 * SR)) + (_r.uniform(-1, 1) * 0.5 if i < 60 else 0)) * 0.3)
+    elif kind in ("conga", "ngoma", "tom"):               # hand drums: pitch drop + slap
+        f0 = {"conga": 215, "ngoma": 135, "tom": 105}[kind] * (1 + 0.04 * var)
+        dec = {"conga": 0.17, "ngoma": 0.26, "tom": 0.35}[kind]
+        ph = 0.0
+        for i in range(int(dec * 3 * SR)):
+            ph += 2 * _m.pi * f0 * (1 + 0.25 * exp(-i / (0.015 * SR))) / SR
+            s = sin(ph) * exp(-i / (dec * SR)) + (_r.uniform(-1, 1) * 0.4 * exp(-i / (0.004 * SR)))
+            out.append(th(1.3 * s) * 0.5)
     _CACHE[key] = out
     return out
 
 
-def _add(buf, src, pos, gain=1.0):
+# ---------- mixing helpers (float32 buffers keep memory low on phones) ----------
+def _buf(n):
+    return _array.array("f", bytes(4 * n))
+
+
+def _addm(buf, src, pos, g):
+    if pos < 0:
+        src, pos = src[-pos:], 0
     end = min(len(buf), pos + len(src))
     if end > pos:
-        buf[pos:end] = [a + b * gain for a, b in zip(buf[pos:end], src)]
+        buf[pos:end] = _array.array("f", [a + b * g for a, b in zip(buf[pos:end], src)])
 
 
-def music_plan(desc):
-    """The AI acts as producer: picks style, key, tempo, chords, melody and instruments."""
-    d = (desc or "").lower()
-    style = next((s for s in _STYLES if s in d), None)
+def _comb(x, d, fb):
+    """y[n] = x[n] + fb*y[n-d], one block of d samples at a time."""
+    y = _array.array("f", x)
+    n = len(y)
+    for i in range(d, n, d):
+        j = min(n, i + d)
+        y[i:j] = _array.array("f", [a + b * fb for a, b in zip(y[i:j], y[i - d:j - d])])
+    return y
+
+
+def _allpass(x, d, g=0.5):
+    y = _array.array("f", x)
+    n = len(y)
+    for i in range(0, n, d):
+        j = min(n, i + d)
+        if i < d:
+            y[i:j] = _array.array("f", [-g * a for a in x[i:j]])
+        else:
+            y[i:j] = _array.array("f", [-g * a + b + g * c for a, b, c in zip(x[i:j], x[i - d:j - d], y[i - d:j - d])])
+    return y
+
+
+def _reverb(send):
+    """Small hall: runs at half rate (the tail is dark anyway), 3 combs + allpass per side."""
+    h = _array.array("f", [(a + b) * 0.5 for a, b in zip(send[0::2], send[1::2])])
+    h = _array.array("f", _lp(list(h), 1))
+    sr2 = SR // 2
+    outs = []
+    for delays in ((0.0297, 0.0371, 0.0411), (0.0313, 0.0389, 0.0437)):
+        acc = None
+        for dl, fb in zip(delays, (0.82, 0.80, 0.78)):
+            c = _comb(h, int(dl * sr2), fb)
+            acc = c if acc is None else _array.array("f", [a + b for a, b in zip(acc, c)])
+        acc = _allpass(acc, int(0.0051 * sr2), 0.6)
+        full = _array.array("f", bytes(4 * len(send)))
+        half = len(full[0::2])
+        if len(acc) < half:
+            acc.extend([0.0] * (half - len(acc)))
+        full[0::2] = acc[:half]
+        full[1::2] = acc[:len(full[1::2])]
+        outs.append(full)
+    return outs
+
+
+# ---------- what the user asked for ----------
+_FAMILY_WORDS = (
+    ("mum", ("mum", "mom", "mother", "mama", "maama", "mummy", "mommy")),
+    ("family", ("dad", "father", "taata", "daddy", "family", "sister", "brother", "grandma", "jjajja", "parents")),
+    ("praise", ("god", "jesus", "lord", "praise", "worship", "katonda", "yesu", "mukama", "church", "blessing")),
+    ("sad", ("sad", "miss", "lost", "cry", "broken", "goodbye", "pain", "lonely")),
+    ("love", ("love", "girl", "boy", "baby", "heart", "crush", "darling", "omukwano", "wife", "husband", "valentine")),
+    ("kids", ("kid", "child", "abc", "alphabet", "count", "animals", "birthday", "school children")),
+    ("friends", ("friend", "friends", "mates", "crew", "squad", "mikwano")),
+    ("party", ("party", "dance", "weekend", "friday", "club", "celebrate", "fun", "vibe", "jaguza")),
+    ("hustle", ("school", "exam", "hustle", "money", "dream", "success", "work", "freelanc", "future", "study")),
+    ("home", ("uganda", "kampala", "home", "village", "africa", "buganda", "mityana")),
+)
+_LG_WORDS = ("luganda", "oluganda", "ganda", "katonda", "maama", "omukwano", "nkwagala", "webale", "tujaguze")
+_MOODS = {"happy": "major", "joy": "major", "bright": "major", "sad": "minor", "dark": "minor",
+          "emotional": "minor", "deep": "minor"}
+
+
+def song_request(desc):
+    """Read simple words like 'amapiano about my mum' or 'sad luganda love song'."""
+    d = " " + re.sub(r"\s+", " ", (desc or "").lower()) + " "
+    style = None
+    for word, st in _STYLE_WORDS:
+        if (" " + word + " " in d) or (len(word) > 4 and word in d):
+            if st is None:                       # plain 'piano' means piano music, not amapiano
+                if "ama" in d:
+                    style = "amapiano"
+                    break
+                continue
+            style = st
+            break
+    family = next((f for f, ws in _FAMILY_WORDS if any(re.search(r"\b" + re.escape(w), d) for w in ws)), None)
+    if family == "home":
+        family = None                            # 'about my village' keeps the genre's own feel
+    m = re.search(r"\b(?:about|for|to|on)\s+(.+)", d)
+    topic = m.group(1).strip(" .!?") if m else ""
+    topic = re.sub(r"\b(in luganda|in english|luganda|english|song|music|please|beat)\b", "", topic).strip(" ,.")
+    lang = "en"
+    if "english and luganda" in d or "luganda and english" in d or " mix" in d or "both" in d:
+        lang = "mix"
+    elif any(w in d for w in _LG_WORDS):
+        lang = "lg"
+    chosen = "you" if style else "genius"
     if not style:
-        style = ("amapiano" if "piano" in d and "ama" in d else "afrobeat" if any(w in d for w in ("afro", "uganda", "dance hall", "kadongo"))
-                 else "gospel" if any(w in d for w in ("god", "praise", "worship", "church")) else
-                 "lofi" if any(w in d for w in ("chill", "relax", "study", "sleep", "calm")) else
-                 "cinematic" if any(w in d for w in ("movie", "epic", "film", "sad")) else
-                 "kids" if any(w in d for w in ("kid", "child", "happy birthday")) else "pop")
-    plan = dict(_STYLES[style], style=style, key="C", title="Genius Song", melody=None, lyrics="")
+        style = _FAMILY_STYLE.get(family or "", "afrobeat")
+    if lang == "en" and _STYLES[style].get("lang") == "lg" and "english" not in d:
+        lang = "lg"
+    mood = next((v for k, v in _MOODS.items() if re.search(r"\b" + k + r"\b", d)), None)
+    family = family or _STYLES[style]["family"]
+    return dict(style=style, chosen=chosen, family=family, topic=topic[:60], lang=lang, mood=mood)
+
+
+# ---------- lyrics: built-in templates (rhymes stay at the line ends; the topic goes inside) ----------
+_LYR_EN = {
+    "mum": dict(
+        hook="Mama, you're my everything",
+        verse1=["You woke up early, before the sun", "Worked so hard till the day was done",
+                "When I was sick you stayed by me", "You gave me all so I could be"],
+        chorus=["Mama, you're my everything", "Your love's the reason that I sing",
+                "Mama, you're my everything", "For you my heart will always ring"],
+        verse2=["Every lesson, every prayer", "Every time I turned, you were there",
+                "Now I'm growing, standing tall", "{T}, you gave me it all"],
+        bridge=["Thank you, thank you, from my heart", "Nothing can tear our love apart"],
+        intro=["Ooh, this one's for {t}", "Yeah, listen"], outro=["Mama, you're my everything", "Forever, mama"]),
+    "family": dict(
+        hook="Family, we stand as one",
+        verse1=["Round the table, sharing food", "Laughing loud in a happy mood",
+                "When the rain falls, we hold on tight", "Together we turn the dark to light"],
+        chorus=["Family, we stand as one", "From the morning to the setting sun",
+                "Family, we stand as one", "Our love is never, never done"],
+        verse2=["{T} taught me how to stand", "Always ready with a helping hand",
+                "Through the hard days, through the pain", "We dance together in the rain"],
+        bridge=["Hold my hand and don't let go", "Home is where the love will grow"],
+        intro=["This one's for {t}", "Come on"], outro=["Family, we stand as one", "As one, yeah"]),
+    "praise": dict(
+        hook="Lift Him higher, sing it loud",
+        verse1=["When I was lost, You found my way", "You turned my night into the day",
+                "Your grace is new with every sun", "The battle's won, the battle's won"],
+        chorus=["Lift Him higher, sing it loud", "Raise your hands above the crowd",
+                "Lift Him higher, sing it loud", "Our God is good, we're singing proud"],
+        verse2=["Through every storm You hold my hand", "On solid rock I'm going to stand",
+                "{T}, You are my song", "In You, Lord, I belong"],
+        bridge=["Hallelujah, hallelujah", "Glory, glory, hallelujah"],
+        intro=["Ooh, hallelujah", "Lift your hands"], outro=["Lift Him higher, sing it loud", "Hallelujah"]),
+    "love": dict(
+        hook="You're the one, you're the one",
+        verse1=["The first time that I saw your face", "My heart was beating out of place",
+                "Your smile is shining like the sun", "I knew that you would be the one"],
+        chorus=["You're the one, you're the one", "My moonlight and my morning sun",
+                "You're the one, you're the one", "With you my life has just begun"],
+        verse2=["We walk together hand in hand", "You always seem to understand",
+                "{T}, you light my way", "I need you here with me to stay"],
+        bridge=["Hold me close, don't let me go", "Forever, baby, you should know"],
+        intro=["Ooh, baby", "This one's for you"], outro=["You're the one, you're the one", "Only you"]),
+    "sad": dict(
+        hook="I still hear you in the rain",
+        verse1=["The house is quiet, empty chair", "I turn around, you are not there",
+                "The nights are long, the stars are few", "And every song reminds me of you"],
+        chorus=["I still hear you in the rain", "I still feel you through the pain",
+                "I still hear you in the rain", "One day I'll smile again"],
+        verse2=["I keep the pictures on the wall", "I wish that I could hear you call",
+                "{T}, you're in my heart", "Even though we're far apart"],
+        bridge=["Time will heal, the sun will rise", "I'll see your light in morning skies"],
+        intro=["Mm, mm", "Listen"], outro=["I still hear you in the rain", "One day"]),
+    "kids": dict(
+        hook="Clap your hands and sing along",
+        verse1=["One, two, three, come and play", "It's a happy, sunny day",
+                "Jump up high and touch the sky", "Wave your hands and say hi"],
+        chorus=["Clap your hands and sing along", "Everybody join the song",
+                "Clap your hands and sing along", "Together we are big and strong"],
+        verse2=["Let's all sing about {t}", "Learning is a lot of fun",
+                "Stomp your feet and turn around", "Make a happy, happy sound"],
+        bridge=["La la la, la la la", "Ha ha ha, hooray"],
+        intro=["Hello friends", "Are you ready"], outro=["Clap your hands and sing along", "Yay"]),
+    "friends": dict(
+        hook="We ride together, all the way",
+        verse1=["From the classroom to the street", "My friends and me, we never cheat",
+                "When I fall you pick me up", "We share the joy, we share the cup"],
+        chorus=["We ride together, all the way", "Through every night and every day",
+                "We ride together, all the way", "My friends forever, here to stay"],
+        verse2=["Laughing loud on a boda ride", "With {t} right by my side",
+                "No matter where the road may bend", "I know I always have a friend"],
+        bridge=["Hands up if you got my back", "Hands up, we're on the right track"],
+        intro=["Yeah, my people", "Let's go"], outro=["We ride together, all the way", "All the way"]),
+    "party": dict(
+        hook="Everybody move tonight",
+        verse1=["The music's playing, feel the beat", "Kampala's dancing in the street",
+                "Put your worries on the shelf", "Come on and dance and free yourself"],
+        chorus=["Everybody move tonight", "Hands up, the vibe is right",
+                "Everybody move tonight", "We go dancing till the light"],
+        verse2=["We're singing about {t}", "We're here to party, have some fun",
+                "Left foot, right foot, side to side", "Feel the rhythm, enjoy the ride"],
+        bridge=["Drop it low and bring it back", "Genius on the music track"],
+        intro=["Eh eh, yeah", "Let's go"], outro=["Everybody move tonight", "Tonight, eh"]),
+    "hustle": dict(
+        hook="I'm rising up, I won't stop",
+        verse1=["Started from the bottom, little I had", "Turned every lesson, good and bad",
+                "Late night reading, morning grind", "I keep the future on my mind"],
+        chorus=["I'm rising up, I won't stop", "From the bottom to the top",
+                "I'm rising up, I won't stop", "Working hard till the money drop"],
+        verse2=["They said I'd never make it far", "Now I'm shining like a star",
+                "{T} keeps me strong", "I've been ready all along"],
+        bridge=["Step by step and day by day", "Nothing standing in my way"],
+        intro=["Yeah, uh", "Listen"], outro=["I'm rising up, I won't stop", "Won't stop"]),
+    "story": dict(
+        hook="Listen, let me tell you a story",
+        verse1=["In a village by the hill", "Lived a dreamer, quiet and still",
+                "Every evening by the fire", "He sang a song of his desire"],
+        chorus=["Listen, let me tell you a story", "Of the hard times and the glory",
+                "Listen, let me tell you a story", "Of {t}, so don't you worry"],
+        verse2=["Through the rain and through the sun", "He walked the road till it was done",
+                "Now the people sing his name", "And nothing ever stayed the same"],
+        bridge=["Every road has a turning", "Every heart has a learning"],
+        intro=["Mm, gather round", "Listen"], outro=["Listen, let me tell you a story", "That's my story"]),
+    "calm": dict(
+        hook="Breathe in, let it go",
+        verse1=["Rain is falling soft and slow", "Books are open, lights are low",
+                "Every worry fades away", "Here's a quiet, gentle day"],
+        chorus=["Breathe in, let it go", "Take it easy, take it slow",
+                "Breathe in, let it go", "Let the peaceful feeling grow"],
+        verse2=["Thinking softly of {t}", "Like the warmth of morning sun",
+                "Step by step, the work gets done", "One by one, by one"],
+        bridge=["Close your eyes and count to four", "Calm is waiting at the door"],
+        intro=["Mm", "Relax"], outro=["Breathe in, let it go", "Slow"]),
+}
+_LYR_LG = {   # simple, common Luganda (a fluent speaker should check before sharing widely)
+    "mum": dict(hook="Maama wange, nkwagala nnyo",
+                verse1=["Maama wange, webale nnyo", "Wankuza bulungi, ndi musanyufu nnyo",
+                        "Bwe nnali omulwadde wali nange", "Okwagala kwo kwe kunsanyusa"],
+                chorus=["Maama wange, nkwagala nnyo", "Webale, webale nnyo",
+                        "Maama wange, nkwagala nnyo", "Katonda akuwe emirembe"],
+                bridge=["Webale okunkuza, maama", "Webale, maama wange"]),
+    "praise": dict(hook="Katonda mulungi, bulijjo",
+                   verse1=["Katonda mulungi, bulijjo", "Yesu ye Mukama, ayagala nze",
+                           "Mu kizikiza ye musana gwange", "Tumutendereze ffenna leero"],
+                   chorus=["Katonda mulungi, bulijjo", "Tumutendereze, tumutendereze",
+                           "Katonda mulungi, bulijjo", "Aleluya, aleluya"],
+                   bridge=["Ayi Mukama, webale", "Aleluya, Mukama webale"]),
+    "love": dict(hook="Nkwagala nnyo, omukwano gwange",
+                 verse1=["Bwe nkulaba omutima gubuuka", "Ggwe wange, ggwe wange bulijjo",
+                         "Sijja kukuleka, sijja kukuleka", "Omukwano gwaffe gwa bulijjo"],
+                 chorus=["Nkwagala nnyo, omukwano gwange", "Ggwe wange bulijjo",
+                         "Nkwagala nnyo, omukwano gwange", "Sijja kukuleka"],
+                 bridge=["Tuli wamu, tuli wamu", "Omukwano gwaffe gwa bulijjo"]),
+    "party": dict(hook="Kale tujaguze, tuzine",
+                  verse1=["Ennyimba zino zituyita", "Kampala yonna ezina leero",
+                          "Ssa emikono waggulu", "Ffenna tuli wamu leero"],
+                  chorus=["Kale tujaguze, tuzine", "Ssa emikono waggulu",
+                          "Kale tujaguze, tuzine", "Essanyu lingi leero"],
+                  bridge=["Tuzine, tuzine", "Essanyu, essanyu lingi"]),
+    "generic": dict(hook="Tuli wamu, bulijjo",
+                    verse1=["Leero tuyimba wamu", "Essanyu lingi mu mutima",
+                            "Tukole nnyo, tuli wamu", "Ebirooto byaffe bijja"],
+                    chorus=["Tuli wamu, bulijjo", "Webale, webale nnyo",
+                            "Tuli wamu, bulijjo", "Katonda atukuume"],
+                    bridge=["Tuli wamu, tuli wamu", "Bulijjo, bulijjo"]),
+}
+_LG_FAMILY = {"mum": "mum", "family": "mum", "praise": "praise", "love": "love", "sad": "love",
+              "party": "party", "friends": "party"}
+_LG_TOPIC = {"my mum": "maama wange", "mum": "maama", "my mom": "maama wange", "my mother": "maama wange",
+             "my dad": "taata wange", "god": "Katonda", "jesus": "Yesu", "my friends": "mikwano gyange",
+             "love": "omukwano", "uganda": "Uganda"}
+
+
+def template_lyrics(req):
+    fam = req.get("family") or "party"
+    base = _LYR_EN.get(fam) or _LYR_EN.get("hustle" if fam == "home" else "party")
+    default_topic = {"mum": "my mum", "praise": "Jesus", "love": "my love", "sad": "you", "kids": "the ABC",
+                     "friends": "my friends", "family": "my family", "party": "the weekend",
+                     "hustle": "my dream", "story": "a dreamer", "calm": "the quiet"}.get(fam, "life")
+    t = (req.get("topic") or default_topic).strip()
+    t = re.sub(r"^(a song|song)\s*", "", t) or default_topic
+    T = t[:1].upper() + t[1:]
+    fill = lambda lines: [ln.replace("{t}", t).replace("{T}", T) for ln in lines]
+    L = {k: (fill(v) if isinstance(v, list) else v) for k, v in base.items()}
+    lang = req.get("lang", "en")
+    if lang in ("lg", "mix"):
+        lg = _LYR_LG[_LG_FAMILY.get(fam, "generic")]
+        if lang == "lg":
+            L.update(verse1=list(lg["verse1"]), verse2=list(lg["verse1"][2:] + lg["verse1"][:2]),
+                     chorus=list(lg["chorus"]), bridge=list(lg["bridge"]), hook=lg["hook"],
+                     intro=["Eh, eh", _LG_TOPIC.get(t.lower(), t)], outro=[lg["hook"], "Webale nnyo"])
+        else:                                       # English verses, Luganda hook
+            L.update(chorus=list(lg["chorus"]), hook=lg["hook"], outro=[lg["hook"], L["outro"][-1]])
+    L["title"] = L["hook"].strip()[:40]
+    return L
+
+
+_LYR_KEYS = (("intro", 2), ("verse1", 4), ("chorus", 4), ("verse2", 4), ("bridge", 2), ("outro", 2))
+
+
+def ai_lyrics(req, plan):
+    """Ask a connected AI to write the song. Returns a dict like template_lyrics, or None."""
+    lang = {"en": "English", "lg": "Luganda (Oluganda) - simple, natural, correct Luganda",
+            "mix": "English verses with a Luganda chorus/hook"}[req.get("lang", "en")]
+    prompt = (
+        "You are a hit songwriter from Uganda. Write an original, family-friendly song.\n"
+        f"Genre: {plan['label']} ({plan['bpm']} BPM). Topic: {req.get('topic') or req.get('family')}. "
+        f"Mood: {req.get('mood') or 'fits the genre'}. Language: {lang}.\n"
+        "Rules: every line 5 to 10 syllables so it is easy to sing on one bar of music; "
+        "simple everyday words; strong end rhymes (AABB or ABAB); the HOOK is a short catchy phrase (3-7 words); "
+        "chorus lines 1 and 3 are exactly the hook; verses tell a small story with concrete images; "
+        "bridge changes the feeling; outro repeats the hook. No profanity. No stage directions.\n"
+        "Reply JSON only: {\"title\": str, \"hook\": str, \"intro\": [2 short ad-lib lines], "
+        "\"verse1\": [4 lines], \"chorus\": [4 lines], \"verse2\": [4 lines], \"bridge\": [2 lines], "
+        "\"outro\": [2 lines]}")
     try:
-        r = ask_gemini(
-            "You are a hit music producer. Plan a short instrumental for: '" + (desc or "a beautiful song") + "'. "
-            "Reply JSON only: {\"title\": str, \"style\": one of " + str(list(_STYLES)) + ", \"key\": like \"C\" or \"F#\", "
-            "\"scale\": \"major\" or \"minor\", \"bpm\": 65-128, \"progression\": 4 scale degrees 1-7, "
-            "\"melody\": 32 scale degrees (1-7, 8 = high 1, 0 = rest) as eighth notes, singable and catchy, "
-            "\"lyrics\": 4 short lines for a chorus}", max_tokens=500, json_mode=True)
-        j = json.loads(re.search(r"\{.*\}", r, re.S).group(0))
-        if j.get("style") in _STYLES:
-            plan.update(_STYLES[j["style"]], style=j["style"])
-        if str(j.get("key", "")).upper() in _NOTE:
-            plan["key"] = str(j["key"]).upper()
-        if j.get("scale") in _SCALES:
-            plan["scale"] = j["scale"]
-        if 60 <= int(j.get("bpm", 0)) <= 132:
-            plan["bpm"] = int(j["bpm"])
-        pr = [int(x) for x in j.get("progression", []) if 1 <= int(x) <= 7]
-        if len(pr) >= 4:
-            plan["prog"] = pr[:4]
-        mel = [int(x) for x in j.get("melody", []) if 0 <= int(x) <= 8]
-        if len(mel) >= 16:
-            plan["melody"] = (mel * 2)[:32]
-        plan["title"] = str(j.get("title") or plan["title"])[:60]
-        plan["lyrics"] = "\n".join(j["lyrics"]) if isinstance(j.get("lyrics"), list) else str(j.get("lyrics", ""))
+        r = ask_gemini(prompt, max_tokens=900, json_mode=True)
+        j = json.loads(re.search(r"\{.*\}", r or "", re.S).group(0))
     except Exception as e:
-        log(f"MUSIC plan: {e}")
+        log(f"MUSIC lyrics AI: {e}")
+        return None
+    base = template_lyrics(req)
+    out = {}
+    for k, n in _LYR_KEYS:
+        got = [re.sub(r"\s+", " ", str(x)).strip()[:70] for x in (j.get(k) or []) if str(x).strip()]
+        out[k] = (got + base[k])[:n] if got else base[k]
+    out["hook"] = str(j.get("hook") or out["chorus"][0])[:60]
+    out["title"] = str(j.get("title") or out["hook"])[:50]
+    return out
+
+
+def music_plan(desc, use_ai=None):
+    """Picks the genre from simple words, then tempo, key, scale, chords and instruments to fit it,
+    and writes structured lyrics (AI if a key is connected, otherwise built-in templates)."""
+    req = song_request(desc)
+    st = _STYLES[req["style"]]
+    plan = dict(st)
+    plan.update(style=req["style"], chosen=req["chosen"], request=req)
+    plan["bpm"] = st["bpm"] + _r.randint(-3, 3)
+    plan["key"] = _r.choice(st["keys"])
+    plan["prog"] = list(_r.choice(st["progs"]))
+    if req["mood"] == "minor" and plan["scale"] == "major":
+        plan["scale"] = "minor"
+        plan["prog"] = [6, 4, 1, 5]
+    elif req["mood"] == "major" and plan["scale"] in ("minor", "dorian"):
+        plan["scale"], plan["prog"] = "major", [1, 5, 6, 4]
+    if req["style"] == "hiphop" and "trap" in (desc or "").lower():
+        plan["drums"] = "trap"
+    if use_ai is None:
+        try:
+            use_ai = bool(connected_ais())
+        except Exception:
+            use_ai = False
+    lyr = ai_lyrics(req, plan) if use_ai else None
+    plan["lyrics_by"] = "AI" if lyr else "Genius templates"
+    lyr = lyr or template_lyrics(req)
+    plan["sections"] = {k: lyr[k] for k, _ in _LYR_KEYS}
+    plan["hook"] = lyr["hook"]
+    plan["title"] = lyr.get("title") or "Genius Song"
+    plan["lyrics"] = "\n".join(lyr["chorus"])          # chorus text, as before
     return plan
 
 
-def make_song(desc):
-    plan = music_plan(desc)
-    root = 48 + _NOTE.get(plan["key"], 0)            # C3 area
+def _syllables(line):
+    words = re.findall(r"[a-zA-Z']+", line.lower())
+    n = 0
+    for w in words:
+        k = len(re.findall(r"[aeiouy]+", w))
+        if w.endswith("e") and k > 1 and not w.endswith(("le", "ee")):
+            k -= 1
+        n += max(1, k)
+    return n or 4
+
+
+def _line_melody(nsyl, chord, prev, seed, end_tonic=False):
+    """One sung line on one bar: syllables -> 16th-note rhythm; chord tones on strong beats."""
+    rnd = _r.Random(seed)
+    n = max(3, min(12, nsyl))
+    pos = sorted(set(int(round(i * 13.0 / max(1, n - 1))) for i in range(n)))
+    if rnd.random() < 0.5 and pos and pos[0] == 0:
+        pos[0] = 1 if 1 not in pos else 0                  # a little pickup/syncopation
+        pos = sorted(set(pos))
+    tones = sorted({(chord - 1 + k) % 7 + 1 for k in (0, 2, 4)})
+    cands = [t + 7 * o for o in (0, 1) for t in tones]     # degrees 1..14 around the lead octave
+    notes, cur = [], prev
+    for i, p in enumerate(pos):
+        last = i == len(pos) - 1
+        if last and end_tonic:
+            cur = min((1, 8), key=lambda c: abs(c - cur))
+        elif p % 4 == 0 or last:
+            cur = min(cands, key=lambda c: abs(c - cur) + rnd.random() * 1.5)
+        else:
+            cur = max(3, min(12, cur + rnd.choice((-1, -1, 1, 1, 2, -2, 0))))
+        ln = (pos[i + 1] - p) if not last else (16 - p)
+        notes.append((p, max(1, ln), cur))
+    return notes, cur
+
+
+def song_meta_path(wav):
+    return os.path.splitext(wav)[0] + ".json"
+
+
+def make_song(desc, plan=None, seconds_cb=None):
+    """Compose, arrange and master a full song. Returns (wav path, plan). Also writes <song>.json
+    with the lyrics and the time of every line for the karaoke view."""
+    plan = plan or music_plan(desc)
+    t_start = time.time()
+    root = 48 + _NOTE.get(plan["key"].upper(), 0)
+    if root > 53:
+        root -= 12
     sc = _SCALES[plan["scale"]]
-    deg = lambda d, base=root: base + 12 * ((d - 1) // 7) + sc[(d - 1) % 7]
-    step = int(SR * 60 / plan["bpm"] / 4)             # one 16th note
+    deg = lambda d, base: base + 12 * ((d - 1) // 7) + sc[(d - 1) % 7]
+    step = SR * 60.0 / plan["bpm"] / 4
     bar = step * 16
-    form = [("intro", 2), ("verse", 4), ("chorus", 4), ("verse", 4), ("chorus", 4), ("outro", 2)]
-    total = bar * sum(b for _, b in form) + SR * 3
-    L, R, verb = [0.0] * total, [0.0] * total, [0.0] * total
-    inst = plan["inst"]
-    if not plan["melody"]:                            # chord-aware fallback melody
-        mel, cur = [], 5
-        for i in range(32):
-            if i % 8 == 7 or _r.random() < 0.12:
-                mel.append(0)
-                continue
-            cur = max(1, min(8, cur + _r.choice((-2, -1, -1, 0, 1, 1, 2))))
-            mel.append(cur)
-        plan["melody"] = mel
-    kick, snare, hat = _PATTERNS.get(plan["drums"], _PATTERNS["none"])
-    pos = 0
-    for part, bars in form:
-        full = part == "chorus"
+    nbars = sum(b for _, b in _FORM)
+    total = int(bar * nbars + SR * 3.5)
+    total += total % 2
+    L, R, verb, dly = _buf(total), _buf(total), _buf(total), _buf(total)
+    rnd = _r.Random()
+    cos, sin, pi = _m.cos, _m.sin, _m.pi
+
+    def hit(src, t, gain, pan=0.0, rev=0.0, delay=0.0, jit=0.004):
+        p = int(t + rnd.uniform(-jit, jit) * SR)
+        a = (pan + 1) * pi / 4
+        if gain:
+            _addm(L, src, p, gain * cos(a))
+            _addm(R, src, p, gain * sin(a))
+        if rev:
+            _addm(verb, src, p, gain * rev)
+        if delay:
+            _addm(dly, src, p, gain * delay)
+
+    pat = _PAT.get(plan["drums"], _PAT["pop"])
+    swing = plan.get("swing", 0.0)
+    cinst, binst, linst = plan["chords"], plan["bass"], plan["lead"]
+    crh, brh = _CR.get(plan["crhythm"], _CR["sustain"]), _BR.get(plan["brhythm"], _BR["root8"])
+    lead_base = root + 12 if linst not in ("violin", "flute", "bell", "marimba", "kora") else root + 24
+    if linst == "organ":
+        lead_base = root + 12
+    lines_out = []
+    prev_deg = 5
+    bar_i = 0
+    sections = plan.get("sections") or {}
+    chorus_seen = 0
+    for part, bars in _FORM:
+        texts = list(sections.get(part) or [])
+        is_ch = part == "chorus"
+        if is_ch:
+            chorus_seen += 1
         for b in range(bars):
-            chord_deg = plan["prog"][b % 4]
-            triad = [deg(chord_deg + k, root + 12) for k in (0, 2, 4)]
-            # chords
-            for name in inst:
-                if name in ("piano", "epiano"):
-                    if name == "epiano" or part in ("intro", "outro"):
-                        for k, note in enumerate(triad):
-                            v = _voice(name, note, bar)
-                            _add(L, v, pos + k * 40, 0.55); _add(R, v, pos + k * 40 + 60, 0.55); _add(verb, v, pos, 0.3)
-                    else:
-                        for s in (0, 6, 8, 14) if full else (0, 8):
-                            for note in triad:
-                                v = _voice(name, note, step * 6)
-                                _add(L, v, pos + s * step, 0.42); _add(R, v, pos + s * step, 0.42); _add(verb, v, pos + s * step, 0.25)
-                elif name in ("pad", "strings") and (full or part in ("intro", "outro") or name == "strings"):
-                    for note in triad + [triad[0] + 12]:
-                        v = _voice(name, note, bar)
-                        _add(L, v, pos, 0.7 if full else 0.5); _add(R, v, pos + 260, 0.7 if full else 0.5); _add(verb, v, pos, 0.5)
-                elif name == "bass" and part not in ("intro",):
-                    bn = deg(chord_deg, root - 12)
-                    for s in (0, 3, 8, 11) if full else (0, 8):
-                        v = _voice("bass", bn, step * 3)
-                        _add(L, v, pos + s * step, 0.9); _add(R, v, pos + s * step, 0.9)
-                elif name == "logdrum" and part not in ("intro", "outro"):
-                    bn = deg(chord_deg, root - 12)
-                    for s in (0, 3, 7, 10, 14):
-                        v = _voice("logdrum", bn, step * 4)
-                        _add(L, v, pos + s * step, 0.8); _add(R, v, pos + s * step, 0.8)
-                elif name == "pluck" and part != "intro":
-                    for s in range(0, 16, 2):
-                        v = _voice("pluck", triad[(s // 2) % 3] + 12, step * 2)
-                        _add(L, v, pos + s * step, 0.5); _add(R, v, pos + s * step, 0.25); _add(verb, v, pos + s * step, 0.3)
-            # melody (lead): piano/marimba voice, octave up in chorus
-            if part in ("verse", "chorus"):
-                lead = "marimba" if "marimba" in inst else ("epiano" if "epiano" in inst else "piano")
+            pos = bar * bar_i
+            chord = plan["prog"][b % 4]
+            ext = (0, 2, 4, 6) if plan.get("sevenths") else (0, 2, 4)
+            voicing = []
+            for k in ext:
+                nt = deg(chord + k, root + 12)
+                while nt > root + 26:
+                    nt -= 12
+                while nt < root + 9:
+                    nt += 12
+                voicing.append(nt)
+            voicing.sort()
+            energy = {"intro": 0.55, "verse1": 0.8, "verse2": 0.85, "chorus": 1.0, "bridge": 0.65, "outro": 0.6}[part]
+            # ---- chords ----
+            if crh == "arp":
+                order = (0, 2, 1, 2, len(voicing) - 1, 2, 1, 2) if plan["crhythm"] == "fingerpick" else (0, 1, 2, 1, 0, 1, 2, len(voicing) - 1)
                 for s in range(8):
-                    dg = plan["melody"][(b % 4) * 8 + s]
-                    if dg:
-                        note = deg(dg, root + (24 if full else 12))
-                        v = _voice(lead, note, step * 2 + step // 2)
-                        g = 0.55 if full else 0.42
-                        _add(L, v, pos + s * 2 * step, g); _add(R, v, pos + s * 2 * step + 30, g); _add(verb, v, pos + s * 2 * step, 0.45)
-            # drums
-            if part not in ("intro", "outro") or (part == "outro" and b == 0):
-                for s in range(16):
-                    p = pos + s * step
-                    if kick[s] == "x": _add(L, _drum("kick"), p, 0.9); _add(R, _drum("kick"), p, 0.9)
-                    if snare[s] == "x": _add(L, _drum("snare"), p, 0.55); _add(R, _drum("snare"), p, 0.55); _add(verb, _drum("snare"), p, 0.3)
-                    if hat[s] == "x" and (full or s % 2 == 0):
-                        hk = "shaker" if "shaker" in inst else "hat"
-                        _add(L, _drum(hk), p, 0.8 if s % 4 else 1.0); _add(R, _drum(hk), p + 90, 0.6)
-            pos += bar
-    # reverb: 3 comb filters + allpass on the send bus (hall sound)
-    rv = [0.0] * total
-    for dl, fb in ((int(0.0297 * SR), 0.80), (int(0.0371 * SR), 0.78), (int(0.0411 * SR), 0.76)):
-        c = verb[:]
-        for i in range(dl, total):
-            c[i] += c[i - dl] * fb
-        rv = [a + b for a, b in zip(rv, c)]
-    ap = int(0.005 * SR)
-    y = rv[:]
-    for i in range(ap, total):
-        y[i] = -0.6 * rv[i] + rv[i - ap] + 0.6 * y[i - ap]
-    rv = y
-    # master: mix, glue, soft limiter, fades
-    L = [a + b * 0.10 for a, b in zip(L, rv)]
-    rv_r = rv[:120] + rv[:-120] if total > 120 else rv
-    R = [a + b * 0.10 for a, b in zip(R, rv_r)]
-    peak = max(1e-6, max(L), -min(L), max(R), -min(R))
-    g = 1.6 / peak
-    fade_in, fade_out = int(0.5 * SR), int(3 * SR)
-    import array as _array, sys as _sys
+                    nt = voicing[order[s] % len(voicing)] + (12 if s in (4,) and plan["crhythm"] == "fingerpick" else 0)
+                    v = _voice(cinst, nt, int(step * 4))
+                    hit(v, pos + s * 2 * step, 0.55 * energy * rnd.uniform(0.85, 1.0), -0.2 + 0.1 * (s % 3), rev=0.35)
+                if plan["crhythm"] == "fingerpick" and part != "intro":
+                    hit(_voice(cinst, voicing[0] - 12, int(step * 8)), pos, 0.35 * energy, 0.1, rev=0.2)
+            else:
+                strum = int(0.012 * SR if cinst == "guitar" else 0.004 * SR)
+                for hi, (s, ln) in enumerate(crh):
+                    if part == "intro" and hi % 2:
+                        continue
+                    up = cinst == "guitar" and hi % 2 == 1
+                    notes = voicing[::-1] if up else voicing
+                    vel = energy * (0.8 if up else 1.0) * rnd.uniform(0.85, 1.0)
+                    v = _chord(cinst, notes, int(step * ln), strum)
+                    hit(v, pos + (s + (swing if s % 2 else 0)) * step, 0.42 * vel, -0.25 if hi % 2 else -0.1, rev=0.3)
+            # ---- pad ----
+            if plan.get("pad") and part in ("intro", "chorus", "bridge", "outro"):
+                v = _chord(plan["pad"], voicing[:3], int(bar))
+                hit(v, pos, 0.26 * energy, -0.75, rev=0.5, jit=0)
+                hit(v, pos + 400, 0.26 * energy, 0.75, jit=0)
+            # ---- bass ----
+            if part != "intro" or binst == "ksbass":
+                bnote = deg(chord, root - 12)
+                while bnote < 33:
+                    bnote += 12
+                pattern = brh if part not in ("bridge", "outro") else brh[:1]
+                for s, ln, iv in pattern:
+                    v = _voice(binst, bnote + iv, int(step * ln))
+                    g = (0.5 if binst != "logdrum" else 0.45) * rnd.uniform(0.9, 1.0) * (1 if part != "intro" else 0.6)
+                    hit(v, pos + (s + (swing if s % 2 else 0)) * step, g, 0.0, jit=0.002)
+            # ---- arpeggio (chorus, and the 2nd half of verse 2) ----
+            if plan.get("arp") and (is_ch or (part == "verse2" and b >= 2)):
+                for s in range(0, 16, 2):
+                    nt = voicing[(s // 2) % len(voicing)] + 12
+                    v = _voice(plan["arp"], nt, int(step * 2))
+                    hit(v, pos + (s + (swing if s % 2 else 0)) * step, 0.22 * rnd.uniform(0.8, 1.0),
+                        0.55 if (s // 2) % 2 else 0.35, rev=0.3, delay=0.25)
+            # ---- lead melody: "sings" the lyric line on this bar ----
+            text = texts[b] if b < len(texts) else ""
+            first = None
+            if part in ("verse1", "verse2", "chorus", "bridge") or (part == "outro" and b == 0):
+                seed = hash((plan["title"], part if part != "verse2" else "verse1", b % 4)) & 0xffff
+                end_t = (is_ch and b == 3) or part == "outro"
+                mel, prev_deg = _line_melody(_syllables(text) if text else 7, chord, prev_deg, seed, end_t)
+                first = mel[0][0] if mel else 0
+                for p, ln, dg in mel:
+                    nt = deg(dg, lead_base)
+                    v = _voice(linst, nt, int(step * min(ln, 6)))
+                    g = (0.85 if is_ch else 0.72) * rnd.uniform(0.85, 1.0)
+                    t = pos + (p + (swing if p % 2 else 0)) * step
+                    hit(v, t, g, 0.05, rev=0.4, delay=0.18 if is_ch else 0.1, jit=0.008)
+                    if is_ch and dg > 2:                     # backing "voice" a third below
+                        hit(_voice(linst, deg(dg - 2, lead_base), int(step * min(ln, 6))), t, g * 0.4, -0.45,
+                            rev=0.5, jit=0.012)
+            if text:
+                start = pos + (first or 0) * step
+                lines_out.append(dict(t=round(max(0.0, start / SR - 0.15), 2), section=part, text=text))
+            # ---- drums ----
+            drum_on = part not in ("intro",) or b == bars - 1
+            if part == "outro" and b > 0:
+                drum_on = False
+            if drum_on:
+                for kind, row in pat.items():
+                    if part == "intro" and kind not in ("hat", "shaker", "rim"):
+                        continue
+                    if part == "bridge" and kind in ("snare", "clap", "conga") and b == 0:
+                        continue
+                    if part.startswith("verse") and kind == "ohat":
+                        continue
+                    for s in range(16):
+                        ch = row[s]
+                        if ch not in "xo":
+                            continue
+                        if part == "bridge" and kind == "kick" and s % 8:
+                            continue
+                        vel = (1.0 if ch == "x" else 0.45) * rnd.uniform(0.82, 1.0) * (0.95 + 0.1 * (s % 4 == 0))
+                        t = pos + (s + (swing if s % 2 else 0)) * step
+                        src = _drum(kind, rnd.randrange(3) if kind not in ("kick",) else 0)
+                        gain = {"kick": 0.72, "snare": 0.75, "clap": 0.7, "hat": 0.55, "ohat": 0.45,
+                                "shaker": 0.6, "rim": 0.45, "conga": 0.5, "ngoma": 0.6, "tom": 0.6}.get(kind, 0.6)
+                        hit(src, t, gain * vel, _PAN.get(kind, 0.0), rev=0.12 if kind in ("snare", "clap", "rim") else 0.0,
+                            jit=0.002)
+                # fill into each chorus
+                nxt_ch = (b == bars - 1) and part in ("verse1", "verse2", "bridge")
+                if nxt_ch:
+                    fk = "snare" if "snare" in pat else ("clap" if "clap" in pat else "conga")
+                    for s in range(12, 16):
+                        hit(_drum(fk, s % 3), pos + s * step, 0.35 + 0.1 * (s - 12), 0.1, rev=0.15)
+            if is_ch and b == 0:
+                hit(_drum("crash"), pos, 0.55, -0.3, rev=0.2)
+            bar_i += 1
+    # ---- effects: delay (dotted 8th ping-pong) and reverb ----
+    d = int(step * 3)
+    echo = _comb(dly, d, 0.38)
+    echo = _array.array("f", [a - b for a, b in zip(echo, dly)])       # only the echoes
+    _addm(L, echo, 0, 0.35)
+    _addm(R, echo, d // 2, 0.35)
+    rl, rr = _reverb(verb)
+    _addm(L, rl, 0, 0.11)
+    _addm(R, rr, 0, 0.11)
+    # ---- master: bus compression (block envelope), soft limiter, fades, 16-bit ----
+    blk = 1024
+    nb = (total + blk - 1) // blk
+    peak = max(1e-6, max(max(L), -min(L), max(R), -min(R)))
+    norm = 1.0 / peak
+    gains, peaks, g = [], [], 1.0
+    thr, ratio = 0.35, 3.0
+    for bi in range(nb):
+        s, e = bi * blk, min(total, (bi + 1) * blk)
+        p = max(max(L[s:e]), -min(L[s:e]), max(R[s:e]), -min(R[s:e])) * norm
+        want = (thr / p) ** (1 - 1 / ratio) if p > thr else 1.0
+        g = want if want < g else g + (want - g) * 0.08          # fast attack, slow release
+        gains.append(g)
+        peaks.append(p * g)
+    makeup = min(3.0, 1.0 / max(1e-6, max(peaks)))
     th = _m.tanh
-    k = 0.89 * 32767
-    pcm = _array.array("h", bytes(4 * total))
-    for i in range(total):
-        e = k * min(1.0, i / fade_in, (total - i) / fade_out)
-        pcm[2 * i] = int(th(L[i] * g) * e)
-        pcm[2 * i + 1] = int(th(R[i] * g) * e)
+    k = 0.92 * 32767
+    fade_in, fade_out = int(0.4 * SR), int(3.0 * SR)
+    pcm = _array.array("h")
+    for bi in range(nb):
+        s, e = bi * blk, min(total, (bi + 1) * blk)
+        f = min(1.0, (s + 1) / fade_in, max(0.0, (total - s) / fade_out))
+        gg = gains[bi] * norm * makeup * 1.15
+        kk = k * f
+        inter = [0] * (2 * (e - s))
+        inter[0::2] = [int(th(x * gg) * kk) for x in L[s:e]]
+        inter[1::2] = [int(th(x * gg) * kk) for x in R[s:e]]
+        pcm.extend(inter)
     if _sys.byteorder != "little":
         pcm.byteswap()
-    frames = pcm.tobytes()
+    L = R = verb = dly = None          # free the mix buffers before writing
     _CACHE.clear()
-    out = os.path.join(genius_dl("music"), re.sub(r"[^A-Za-z0-9]+", "_", plan["title"])[:40] + time.strftime("_%H%M%S") + ".wav")
+    out = os.path.join(genius_dl("music"), re.sub(r"[^A-Za-z0-9]+", "_", plan["title"]).strip("_")[:40]
+                       + time.strftime("_%H%M%S") + ".wav")
     with _wave.open(out, "wb") as w:
-        w.setnchannels(2); w.setsampwidth(2); w.setframerate(SR); w.writeframes(bytes(frames))
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes(pcm.tobytes())
+    dur = round(total / float(SR), 2)
+    for i, ln in enumerate(lines_out):
+        ln["end"] = lines_out[i + 1]["t"] if i + 1 < len(lines_out) else dur
+    if lines_out:
+        lines_out[0]["t"] = 0.0
+    meta = dict(title=plan["title"], style=plan["style"], label=plan.get("label", plan["style"]),
+                chosen=plan.get("chosen", "genius"), key=plan["key"], scale=plan["scale"], bpm=plan["bpm"],
+                instruments=list(dict.fromkeys(x for x in (cinst, binst, linst, plan.get("arp"), plan.get("pad")) if x)),
+                lyrics_by=plan.get("lyrics_by", ""), hook=plan.get("hook", ""), duration=dur, lines=lines_out,
+                made_in=round(time.time() - t_start, 1), version=VERSION)
+    try:
+        with open(song_meta_path(out), "w") as fh:
+            json.dump(meta, fh, ensure_ascii=False, indent=1)
+    except Exception as e:
+        log(f"MUSIC meta: {e}")
+    plan["duration"], plan["meta"] = dur, meta
     return out, plan
+
+
+def wav_seconds(path):
+    try:
+        with _wave.open(path, "rb") as w:
+            return w.getnframes() / float(w.getframerate())
+    except Exception:
+        return 0.0
+
+
+def spread_lines(texts, duration):
+    """Older songs have no timing: spread the lines evenly over the song."""
+    texts = [t for t in texts if t.strip()] or ["\u266a instrumental \u266a"]
+    n = len(texts)
+    seg = max(0.5, duration) / n
+    return [dict(t=round(i * seg, 2), end=round((i + 1) * seg, 2), section="", text=t) for i, t in enumerate(texts)]
+
+
+def load_song_timeline(wav, plan=None):
+    """(meta, lines) for the karaoke view; works for songs made before 109.5 too."""
+    meta = {}
+    try:
+        with open(song_meta_path(wav)) as fh:
+            meta = json.load(fh)
+    except Exception:
+        pass
+    dur = float(meta.get("duration") or wav_seconds(wav) or 0)
+    lines = meta.get("lines") or []
+    if not lines or "t" not in lines[0]:
+        texts = [l.get("text", "") if isinstance(l, dict) else str(l) for l in lines]
+        if not any(texts) and plan and plan.get("lyrics"):
+            texts = plan["lyrics"].split("\n")
+        lines = spread_lines(texts, dur)
+    meta.setdefault("title", os.path.splitext(os.path.basename(wav))[0].replace("_", " "))
+    meta["duration"] = dur
+    return meta, lines
+
+
+def current_line(lines, pos):
+    idx = -1
+    for i, ln in enumerate(lines):
+        if pos >= ln["t"]:
+            idx = i
+        else:
+            break
+    return idx
+
+
+def newest_song():
+    try:
+        d = genius_dl("music")
+        wavs = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith(".wav")]
+        return max(wavs, key=os.path.getmtime) if wavs else None
+    except Exception:
+        return None
 
 
 def ultra_process(im):
@@ -4508,6 +5320,261 @@ LUGANDA_CMDS = {
     "obuyambi": "help", "bbatule": "battery", "jjukiza": "remind", "bala": "calc",
     "yimirira": "stop", "ekisumuluzo": "key",
 }
+
+
+# ---------------- colours for words (per theme), suggestions, karaoke, sound control ----------------
+def _hx(c, a=None):
+    h = "".join("%02x" % int(max(0.0, min(1.0, v)) * 255 + 0.5) for v in c[:3])
+    return h + ("%02x" % int(max(0.0, min(1.0, a)) * 255 + 0.5) if a is not None else "")
+
+
+def theme_palette(name=None):
+    """Text colours for chat and lyrics. All are bright on the dark backgrounds of every theme."""
+    name = name or THEME
+    if name == "gold":
+        p = dict(accent=(1.00, 0.82, 0.30), accent2=(1.00, 0.58, 0.22), user=(1.00, 0.91, 0.72),
+                 num=(1.00, 0.87, 0.56), link=(1.00, 0.74, 0.46), cmd=(1.00, 0.80, 0.34),
+                 text=(1.0, 0.97, 0.88), hint=(0.80, 0.70, 0.48), chip=((1.00, 0.80, 0.26, 1), (0.86, 0.62, 0.16, 1),
+                                                                         (0.55, 0.34, 0.05, 1), (1.0, 0.85, 0.45, 0.18)))
+    elif name == "diamond":
+        p = dict(accent=(0.72, 0.93, 1.00), accent2=(0.76, 0.62, 1.00), user=(0.62, 0.82, 1.00),
+                 num=(0.58, 0.90, 1.00), link=(0.80, 0.72, 1.00), cmd=(0.72, 0.93, 1.00),
+                 text=(0.95, 0.99, 1.0), hint=(0.64, 0.78, 0.92), chip=((0.72, 0.93, 1.00, 1), (0.45, 0.72, 1.00, 1),
+                                                                          (0.68, 0.52, 1.00, 1), (0.75, 0.92, 1.0, 0.18)))
+    else:
+        p = dict(accent=(1.00, 0.78, 0.30), accent2=(0.78, 0.60, 1.00), user=(0.62, 0.71, 1.00),
+                 num=(0.45, 0.92, 0.68), link=(0.56, 0.80, 1.00), cmd=(1.00, 0.78, 0.30),
+                 text=(0.96, 0.96, 1.00), hint=(0.62, 0.64, 0.78), chip=((1.00, 0.78, 0.30, 1), (0.33, 0.42, 1.00, 1),
+                                                                          (0.62, 0.30, 0.98, 1), (1, 1, 1, 0.14)))
+    p["name"] = name
+    return p
+
+
+PAL = theme_palette()
+
+
+def _lum(c):
+    f = lambda v: v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2])
+
+
+def contrast(a, b):
+    la, lb = sorted((_lum(a), _lum(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def _esc(t):
+    return str(t).replace("&", "&amp;").replace("[", "&bl;").replace("]", "&br;")
+
+
+def gradient_word(word, c1, c2):
+    n = max(1, len(word) - 1)
+    return "".join(f"[color={_hx([a + (b - a) * i / n for a, b in zip(c1, c2)])}]{ch}[/color]"
+                   for i, ch in enumerate(word))
+
+
+_MARKUP_TAG = re.compile(r"(\[/?(?:b|i|u|s|sub|sup|color|size|font|ref|anchor|font_context|font_family|"
+                         r"font_features|text_language)(?:=[^\]]*)?\])")
+_HILITE = re.compile(
+    r"(?P<url>(?:https?://|www\.)[^\s\]]*[^\s\].,!?;:)'\"])"
+    r"|(?P<q>(?<![A-Za-z])'[^'\n]{2,40}'(?![A-Za-z]))"
+    r"|(?P<num>(?<![\w#.])(?:UGX\s?)?\d[\d,]*(?:\.\d+)?(?:\s?(?:%|BPM|MB|GB|UGX|sh)|k\b|K\b)?)"
+    r"|(?P<kw>\b(?:Tip|Important|Warning|Done|Saved|Ready|Note|Remember|Playing now)\b)")
+_CMD_WORDS = None
+
+
+def _cmd_words():
+    global _CMD_WORDS
+    if _CMD_WORDS is None:
+        _CMD_WORDS = {c.split()[0] for c, _ in _suggest_pool()} | set(LUGANDA_CMDS)
+    return _CMD_WORDS
+
+
+def colorize(text, pal=None):
+    """Kivy markup highlights for Genius's words: links, 'commands', numbers and a few key words.
+    Existing markup tags are left exactly as they are."""
+    if not text:
+        return text
+    pal = pal or PAL
+    link, num, cmd, kw = _hx(pal["link"]), _hx(pal["num"]), _hx(pal["cmd"]), _hx(pal["accent2"])
+
+    def rep(m):
+        g = m.lastgroup
+        s = m.group(0)
+        if g == "url":
+            return f"[color={link}][u]{s}[/u][/color]"
+        if g == "q":
+            first = s[1:-1].strip().split(" ")[0].lower() if s[1:-1].strip() else ""
+            return f"[b][color={cmd}]{s}[/color][/b]" if first in _cmd_words() else s
+        if g == "num":
+            return f"[color={num}]{s}[/color]"
+        return f"[b][color={kw}]{s}[/color][/b]"
+    parts = _MARKUP_TAG.split(text)
+    return "".join(p if i % 2 else _HILITE.sub(rep, p) for i, p in enumerate(parts))
+
+
+# ---- word / command suggestions while typing ----
+_SUGGEST_EXTRA = (
+    "play song", "stop music", "pause music", "lyrics", "music", "theme gold", "theme diamond", "theme classic",
+    "mic test", "help", "make song amapiano about ", "make song afrobeat about ", "make song gospel about ",
+    "make song kadongo kamu about ", "make song dancehall about ", "make song hip hop about ",
+    "make song rnb about ", "make song love ballad about ", "make song kids song about ",
+    "make song luganda praise about ", "make song pop about ", "draw ", "edit ", "studio", "camera", "home",
+    "premium", "everywhere", "share", "quick ", "mind ", "better: ", "teach skill ", "wealth", "market ",
+)
+_NO_SUGGEST = ("save ", "setkey", "setgroq", "setrouter", "setvoice", "setsunbird", "open ", "tereka ", "ggulawo ")
+_POOL = []
+
+
+def _suggest_pool():
+    if not _POOL:
+        seen = set()
+
+        def add(cmd, hint):
+            c = cmd.strip().lower()
+            if c and c != "+" and c not in seen:
+                seen.add(c)
+                _POOL.append((cmd.lower() if not cmd.endswith(" ") else cmd.lower(), hint))
+        for k, v in ALLOWED.items():
+            add(k + (" " if "e.g." in v or "YOURKEY" in v else ""), v)
+        for k, v in HELP_EXTRA.items():
+            for piece in k.split("/"):
+                piece = re.sub(r"\s+", " ", re.sub(r"<[^>]*>", "", piece)).strip()
+                if piece:
+                    add(piece + (" " if "<" in k else ""), v)
+        for k, v in LUGANDA_CMDS.items():
+            add(k, "Luganda for " + v)
+        for k in _SUGGEST_EXTRA:
+            add(k, "")
+    return _POOL
+
+
+def suggest_commands(text, limit=6):
+    """Commands that match what is being typed: [(text to fill in, hint), ...]. Fast enough for every key press."""
+    t = (text or "").lower().lstrip()
+    if not t or len(t) > 40 or t.startswith(_NO_SUGGEST) or len(t.split()) > 4:
+        return []
+    pool = _suggest_pool()
+    starts = [(c, h) for c, h in pool if c.startswith(t) and c.strip() != t.strip()]
+    starts.sort(key=lambda x: (len(x[0]), x[0]))
+    inner = [(c, h) for c, h in pool if (" " + t) in (" " + c) and not c.startswith(t)] if len(t) >= 3 else []
+    fuzzy = []
+    if len(starts) < 2 and " " not in t.strip() and len(t) >= 3:
+        import difflib
+        heads = {c.split()[0]: (c, h) for c, h in pool}
+        fuzzy = [heads[w] for w in difflib.get_close_matches(t.strip(), list(heads), n=3, cutoff=0.72)]
+    out, seen = [], set()
+    for c, h in starts + inner + fuzzy:
+        if c not in seen:
+            seen.add(c)
+            out.append((c, h))
+        if len(out) >= limit:
+            break
+    return out
+
+
+# ---- karaoke ----
+_SECTION_NAME = {"intro": "Intro", "verse1": "Verse 1", "verse2": "Verse 2", "chorus": "Chorus",
+                 "bridge": "Bridge", "outro": "Outro"}
+
+
+def karaoke_markup(lines, idx, pal=None):
+    """Current line big and bright in the theme accent, sung lines dimmed, coming lines soft."""
+    pal = pal or PAL
+    acc, acc2 = _hx(pal["accent"]), _hx(pal["accent2"])
+    past, soft, nxt, hint = _hx(pal["hint"], 0.62), _hx(pal["text"], 0.72), _hx(pal["text"], 0.92), _hx(pal["hint"])
+    out, last_sec = [], None
+    for i, ln in enumerate(lines):
+        sec = ln.get("section") or ""
+        if sec and sec != last_sec:
+            out.append(f"[size=12sp][b][color={hint}]{_SECTION_NAME.get(sec, sec.title()).upper()}[/color][/b][/size]")
+        last_sec = sec
+        t = _esc(ln.get("text", ""))
+        if i == idx:
+            out.append(f"[size=25sp][b][color={acc}]\u266a {t}[/color][/b][/size]")
+        elif i < idx:
+            out.append(f"[size=17sp][color={past}]{t}[/color][/size]")
+        elif i == idx + 1:
+            out.append(f"[size=19sp][color={nxt}]{t}[/color][/size]")
+        else:
+            out.append(f"[size=18sp][color={soft}]{t}[/color][/size]")
+    if idx >= len(lines) - 1 and lines:
+        out.append(f"[size=13sp][color={acc2}]\u2726 Genius[/color][/size]")
+    return "\n".join(out)
+
+
+def _fmt_time(s):
+    s = max(0, int(s))
+    return f"{s // 60}:{s % 60:02d}"
+
+
+# ---- what's playing (Kivy sound, or Android's MediaPlayer fallback) ----
+def sound_pos():
+    snd = _luganda.get("sound")
+    if snd is None:
+        return None
+    try:
+        if hasattr(snd, "getCurrentPosition"):
+            return snd.getCurrentPosition() / 1000.0
+        return float(snd.get_pos() or 0.0)
+    except Exception:
+        return None
+
+
+def sound_playing():
+    snd = _luganda.get("sound")
+    if snd is None:
+        return False
+    try:
+        if hasattr(snd, "isPlaying"):
+            return bool(snd.isPlaying())
+        return snd.state == "play"
+    except Exception:
+        return False
+
+
+def sound_pause():
+    snd = _luganda.get("sound")
+    if snd is None:
+        return None
+    pos = sound_pos() or 0.0
+    try:
+        if hasattr(snd, "isPlaying"):
+            snd.pause()
+        else:
+            snd.stop()
+    except Exception:
+        pass
+    _luganda["paused_at"] = pos
+    return pos
+
+
+def sound_resume():
+    """Returns the position playback restarted from (0 if the player can't seek)."""
+    snd = _luganda.get("sound")
+    if snd is None:
+        return None
+    at = _luganda.get("paused_at") or 0.0
+    try:
+        if hasattr(snd, "isPlaying"):
+            snd.start()
+            return at
+        snd.play()
+        if at:
+            snd.seek(at)
+        return at
+    except Exception:
+        return 0.0
+
+
+def sound_stop():
+    snd = _luganda.get("sound")
+    _luganda["paused_at"] = 0.0
+    try:
+        if snd is not None:
+            snd.stop()
+    except Exception:
+        pass
 
 
 # ---------------- native listening (works inside Pydroid, no extra modules) ----------------
@@ -5186,6 +6253,8 @@ def style_input(ti):
     ti.hint_text_color = HINT
     ti.padding = [18, 14, 18, 14]
     with ti.canvas.before:
+        Color(BG[0], BG[1], BG[2], 0.86)        # solid dark base: typed words stay readable over the wallpaper
+        base = RoundedRectangle(radius=[18])
         Color(1, 1, 1, 0.07)
         bgr = RoundedRectangle(radius=[18])
         edge_col = Color(1, 1, 1, 0.16)
@@ -5193,12 +6262,25 @@ def style_input(ti):
 
     def sync(*_):
         bgr.pos, bgr.size = ti.pos, ti.size
+        base.pos, base.size = ti.pos, ti.size
         edge.rounded_rectangle = (ti.x, ti.y, ti.width, ti.height, 18)
 
     def glow(_, focused):
         edge_col.rgba = (1.0, 0.78, 0.30, 0.85) if focused else (1, 1, 1, 0.16)
     ti.bind(pos=sync, size=sync, focus=glow)
     return ti
+
+
+class ChatInput(TextInput):
+    """Chat box that wraps and grows to 4 lines; Enter sends instead of adding a new line."""
+    def insert_text(self, substring, from_undo=False):
+        if "\n" in substring and not from_undo:
+            rest = substring.replace("\r", "").split("\n")[0]
+            if rest:
+                super().insert_text(rest, from_undo=from_undo)
+            Clock.schedule_once(lambda *_: self.dispatch("on_text_validate"), 0)
+            return
+        return super().insert_text(substring, from_undo=from_undo)
 
 
 def code_setup_popup(on_done=None, first=False):
@@ -5526,17 +6608,31 @@ class ChatScreen(BoxLayout):
         # every tool now lives in one place: the Tools button by the typing box
         self.deep_btn = RoundButton(text="Deep", bg=GREY, fg=TEXTCOL)   # not shown; keeps Deep's state
 
-        # input row
-        row = BoxLayout(size_hint_y=None, height="62dp", spacing=8, padding=[10, 4, 10, 10])
-        self.inp = style_input(TextInput(hint_text="Type here, or tap the menu to speak...",
-                               multiline=False, font_size="18sp"))
-        self.inp.bind(on_text_validate=self.send)
+        # suggestion strip: matching commands appear above the box while you type; tap one to fill it in
+        self.sugg_sv = ScrollView(size_hint_y=None, height=0, opacity=0, do_scroll_y=False, bar_width=0)
+        self.sugg_row = BoxLayout(orientation="horizontal", size_hint_x=None, spacing=6, padding=[10, 2, 10, 2])
+        self.sugg_row.bind(minimum_width=self.sugg_row.setter("width"))
+        self.sugg_sv.add_widget(self.sugg_row)
+        self.add_widget(self.sugg_sv)
+        self._sugg_ev = None
+
+        # input row: wraps and grows to 4 lines, stays above the keyboard
+        self.in_row = row = BoxLayout(size_hint_y=None, height="62dp", spacing=8, padding=[10, 4, 10, 10])
+        self.inp = style_input(ChatInput(hint_text="Type here, or tap the menu to speak...",
+                               multiline=True, do_wrap=True, font_size="18sp", size_hint_y=None,
+                               write_tab=False, text_validate_unfocus=False))
+        self.inp.bind(on_text_validate=self.send, text=self._typing, minimum_height=self._grow_input,
+                      width=self._grow_input)
+        send_col = BoxLayout(orientation="vertical", size_hint_x=None, width="96dp")
+        send_col.add_widget(Widget())
         send = RoundButton(text="Send", bg=GOLD, fg=(0.1, 0.1, 0.1, 1),
-                           size_hint_x=None, width="96dp", font_size="18sp", bold=True)
+                           size_hint_y=None, height="48dp", font_size="18sp", bold=True)
         send.bind(on_press=self.send)
+        send_col.add_widget(send)
         row.add_widget(self.inp)
-        row.add_widget(send)
+        row.add_widget(send_col)
         self.add_widget(row)
+        Clock.schedule_once(self._grow_input, 0)
 
         self.say(f"Welcome {CURRENT['name']}. You are in command. Tap the menu at the top right for Speak and everything else.")
 
@@ -6536,22 +7632,29 @@ class ChatScreen(BoxLayout):
 
     # ---------- Music maker ----------
     def music_menu(self, *_):
-        opts = [("Afrobeat", "afrobeat"), ("Amapiano", "amapiano"), ("Pop hit", "pop"), ("Gospel", "gospel"),
-                ("Lo-fi chill", "lofi"), ("Hip hop", "hiphop"), ("Love ballad", "ballad"), ("Cinematic", "cinematic"),
-                ("Dance", "dance"), ("Kids song", "kids")]
-        self._buttons_popup("Music maker", [(t, lambda k=k: self.make_music(k + " song"), GOLD if i < 2 else BLUE)
+        opts = [("Afrobeat", "afrobeat"), ("Amapiano", "amapiano"), ("Kadongo Kamu", "kadongo kamu"),
+                ("Luganda praise", "luganda praise"), ("Gospel", "gospel"), ("Dancehall", "dancehall"),
+                ("Hip hop", "hip hop"), ("RnB", "rnb"), ("Love ballad", "love ballad"), ("Kids song", "kids"),
+                ("Pop hit", "pop"), ("Lo-fi chill", "lofi"), ("Cinematic", "cinematic"), ("Dance", "dance")]
+        self._buttons_popup("Music maker", [(t, lambda k=k: self.make_music(k + " song"), GOLD if i < 4 else BLUE)
                                             for i, (t, k) in enumerate(opts)] +
-                            [("Describe my own...", lambda: self.say("Say 'sound' then describe it, like: "
-                                                                     "sound happy afrobeat about my friends"), GREY)],
-                            cols=2, hint="AI picks the key, chords, melody and instruments")
+                            [("Describe my own...", lambda: self.say("Say 'make song' then the style and what it's about, "
+                                                                     "like: make song amapiano about my mum. Add 'in Luganda' "
+                                                                     "or 'English and Luganda' if you like."), GREY),
+                             ("Play my last song + lyrics", self.open_player, GREY)],
+                            cols=2, hint="Pick a style. Genius writes the words and plays them with lyrics on screen")
 
     def make_music(self, desc=""):
         if self.busy:
             self.say("One moment, I'm still finishing the last job.")
             return
         self.busy = True
-        self.say("Composing your song: choosing the key, chords, melody and instruments, then mixing it "
-                 "like a studio. On a phone this takes 1 to 3 minutes, keep Genius open...")
+        req = song_request(desc)
+        st = _STYLES[req["style"]]
+        how = "you asked for" if req["chosen"] == "you" else "Genius picked for this idea"
+        self.say(f"Making a {st['label']} song ({how}). Writing the words, then playing {st['lead']}, "
+                 f"{st['chords']} and {st['bass']} at about {st['bpm']} BPM and mixing it like a studio. "
+                 "On a phone this takes about 1 to 3 minutes, keep Genius open...")
 
         def d(*_):
             try:
@@ -6569,15 +7672,127 @@ class ChatScreen(BoxLayout):
                     self.say(f"Sorry, the song didn't work. {err}")
                     return
                 self._last_song = out
-                playing = _play_file(out)
-                lyr = f"\n\nChorus idea:\n{plan['lyrics']}" if plan.get("lyrics") else ""
-                self.show("AI", f"\u266b [b]{plan['title']}[/b]\n{plan['style'].title()} in {plan['key']} "
-                                f"{plan['scale']}, {plan['bpm']} BPM. "
-                                + ("Playing now." if playing else "Saved, but I couldn't play it here; open it from your Files app.")
-                                + f"\nSaved in {nice_where(out)} as {os.path.basename(out)}. "
-                                f"Say 'play song' to hear it again or 'stop music'.{lyr}")
+                m = plan.get("meta", {})
+                chorus = "\n".join(plan.get("sections", {}).get("chorus", [])) or plan.get("lyrics", "")
+                self.show("AI", f"\u266b [b]{_esc(plan['title'])}[/b]\n"
+                                f"Style: {plan.get('label', plan['style'])} "
+                                f"({'your choice' if plan.get('chosen') == 'you' else 'Genius picked'}), "
+                                f"{plan['key']} {plan['scale']}, {plan['bpm']} BPM, "
+                                f"{_fmt_time(plan.get('duration', 0))} long.\n"
+                                f"Instruments: {', '.join(m.get('instruments', []))}. Words by {plan.get('lyrics_by', 'Genius')}.\n"
+                                f"Saved in {nice_where(out)} as {os.path.basename(out)}.\n"
+                                f"Say 'play song' or 'lyrics' to see the words again, 'pause music' or 'stop music'."
+                                + (f"\n\n[i]Chorus:[/i]\n{_esc(chorus)}" if chorus else ""))
+                self.open_player(out, plan)
             Clock.schedule_once(done, 0)
         threading.Thread(target=d, daemon=True).start()
+
+    def open_player(self, wav=None, plan=None, *_):
+        """Karaoke view: plays the song and lights up each line in time with the music."""
+        wav = wav if isinstance(wav, str) else None
+        wav = wav or getattr(self, "_last_song", None) or newest_song()
+        if not wav or not os.path.exists(wav):
+            self.say("No song yet. Say 'make song amapiano about my mum', or 'music' to pick a style.")
+            return
+        self._last_song = wav
+        meta, lines = load_song_timeline(wav, plan)
+        dur = meta.get("duration") or 1.0
+        if not (_luganda.get("file") == wav and sound_playing()):
+            if not _play_file(wav):
+                self.say("I couldn't play the song here. Open it from your Files app: "
+                         f"{nice_where(wav)}/{os.path.basename(wav)}")
+        st = dict(t0=time.time(), offset=0.0, paused=False, ended=False, clock=False, idx=-2)
+        acc, hint = _hx(PAL["accent"]), _hx(PAL["hint"])
+        box = BoxLayout(orientation="vertical", spacing=8, padding=12)
+        info = " \u00b7 ".join(x for x in (meta.get("label") or meta.get("style", "").title(),
+                                            f"{meta.get('key', '')} {meta.get('scale', '')}".strip(),
+                                            f"{meta['bpm']} BPM" if meta.get("bpm") else "") if x)
+        head = Label(text=f"[b][color={acc}]\u266b {_esc(meta.get('title', 'Your song'))}[/color][/b]\n"
+                          f"[size=13sp][color={hint}]{_esc(info)}[/color][/size]",
+                     markup=True, font_size="20sp", size_hint_y=None, height="62dp", halign="center", valign="middle")
+        head.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        box.add_widget(head)
+        sv = ScrollView(bar_color=(PAL["accent"][0], PAL["accent"][1], PAL["accent"][2], 0.6), bar_width="3dp")
+        lyr = Label(text=karaoke_markup(lines, -1), markup=True, size_hint_y=None, halign="center", valign="top",
+                    line_height=1.3, padding=(6, 40))
+        lyr.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)),
+                 texture_size=lambda w, *_: setattr(w, "height", w.texture_size[1]))
+        sv.add_widget(lyr)
+        box.add_widget(sv)
+        clock_lbl = Label(text=f"0:00 / {_fmt_time(dur)}", color=HINT, font_size="14sp", size_hint_y=None, height="22dp")
+        box.add_widget(clock_lbl)
+        prog = Widget(size_hint_y=None, height="6dp")
+        with prog.canvas:
+            Color(1, 1, 1, 0.12)
+            track = RoundedRectangle(radius=[3])
+            Color(*PAL["accent"], 1)
+            fill = RoundedRectangle(radius=[3])
+        box.add_widget(prog)
+        btns = BoxLayout(size_hint_y=None, height="54dp", spacing=8)
+        b_pause = RoundButton(text="Pause", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), bold=True, font_size="17sp")
+        b_stop = RoundButton(text="Stop", bg=BLUE, fg=TEXTCOL, bold=True, font_size="17sp")
+        b_close = RoundButton(text="Close", bg=GREY, fg=TEXTCOL, bold=True, font_size="17sp")
+        for b in (b_pause, b_stop, b_close):
+            btns.add_widget(b)
+        box.add_widget(btns)
+        pop = Popup(title="Genius karaoke", content=box, size_hint=(0.96, 0.92), separator_color=GOLD, title_color=GOLD)
+
+        def now():
+            if st["paused"] or st["ended"]:
+                return st["offset"]
+            el = st["offset"] + time.time() - st["t0"]
+            p = sound_pos()
+            if not st["clock"] and (p is None or (p <= 0.01 and el > 1.2)):
+                st["clock"] = True          # this player can't tell its position: follow the clock instead
+            return el if st["clock"] or p is None else p
+
+        def tick(*_):
+            pos = now()
+            if not st["paused"] and not st["ended"] and (time.time() - st["t0"] > 1.5) and \
+                    (not sound_playing() or pos >= dur - 0.05):
+                st["ended"], st["offset"] = True, min(pos, dur)
+                b_pause.text = "Play again"
+            pos = min(pos, dur)
+            idx = current_line(lines, pos)
+            clock_lbl.text = f"{_fmt_time(pos)} / {_fmt_time(dur)}"
+            track.pos, track.size = prog.pos, prog.size
+            fill.pos, fill.size = prog.pos, (prog.width * pos / max(0.1, dur), prog.height)
+            if idx != st["idx"]:
+                st["idx"] = idx
+                lyr.text = karaoke_markup(lines, idx)
+                if len(lines) > 1 and idx >= 0:
+                    Animation.cancel_all(sv, "scroll_y")
+                    Animation(scroll_y=max(0.0, min(1.0, 1 - idx / float(len(lines) - 1))), d=0.35).start(sv)
+
+        def pause(*_):
+            if st["ended"]:                  # play again from the start
+                if _play_file(wav):
+                    st.update(t0=time.time(), offset=0.0, paused=False, ended=False, clock=False, idx=-2)
+                    b_pause.text = "Pause"
+                return
+            if st["paused"]:
+                at = sound_resume()
+                st.update(t0=time.time(), offset=at if at is not None else st["offset"], paused=False)
+                b_pause.text = "Pause"
+            else:
+                st["offset"] = now()
+                sound_pause()
+                st["paused"] = True
+                b_pause.text = "Play"
+
+        def stop(*_):
+            sound_stop()
+            st.update(ended=True, offset=0.0, paused=False)
+            b_pause.text = "Play again"
+            tick()
+
+        b_pause.bind(on_press=pause)
+        b_stop.bind(on_press=stop)
+        b_close.bind(on_press=pop.dismiss)      # closing keeps the music playing; 'stop music' stops it
+        ev = Clock.schedule_interval(tick, 0.15)
+        pop.bind(on_dismiss=lambda *_: ev.cancel())
+        pop.open()
+        tick()
 
     def ultra_photo(self, *_):
         src = self._edit_src()
@@ -7290,20 +8505,23 @@ class ChatScreen(BoxLayout):
         pop.open()
 
     # output
-    def show(self, who, text):
+    def show(self, who, text, plain=False):
+        if who == "AI" and isinstance(text, str) and not plain:
+            text = colorize(text)
         if who == "AI" and CURRENT.get("owner") and isinstance(text, str) and _needs_key_text(text):
             text += "\n[ref=keywizard][b][color=ffc84d][u]\u27a4 Tap here to set up a free AI key[/u][/color][/b][/ref]"
             if text.startswith(NO_AI_MSG[:40]):
                 Clock.schedule_once(self.offer_key_wizard, 0.3)
         if who == "AI":
-            head = "[b][color=ffc84d]\u2726 Genius[/color][/b]"
+            head = f"[b][color={_hx(PAL['accent'])}]\u2726[/color] {gradient_word('Genius', PAL['accent'], PAL['accent2'])}[/b]"
         else:
-            head = f"[b][color=9db4ff]{who}[/color][/b]"
+            head = f"[b]{gradient_word(who, PAL['user'], PAL['accent2']) if who == 'You' else _esc(who)}[/b]"
+            text = f"[color={_hx(PAL['text'])}]{_esc(text)}[/color]"     # your words exactly as typed, never highlighted
         self.out.text += f"{head}\n{text}\n[size=6sp] [/size]\n"
         Clock.schedule_once(lambda *_: setattr(self.scroll, "scroll_y", 0), 0.1)
 
-    def say(self, text):
-        self.show("AI", text)
+    def say(self, text, plain=False):
+        self.show("AI", text, plain=plain)
         self._last_said = text
         q = getattr(self, "_pending_q", "")
         if q and text and len(text) > 30 and not text.startswith(("Still ", "Say it like")):
@@ -7318,8 +8536,51 @@ class ChatScreen(BoxLayout):
     def send(self, *_):
         text = self.inp.text.strip()
         self.inp.text = ""
+        self._show_suggestions([])
         if text:
             self.handle(text)
+
+    # ---------- typing: growing box + command suggestions ----------
+    def _grow_input(self, *_):
+        ti = self.inp
+        pad = ti.padding[1] + ti.padding[3] if len(ti.padding) == 4 else 2 * ti.padding[-1]
+        one = ti.line_height + pad
+        four = ti.line_height * 4 + ti.line_spacing * 3 + pad
+        h = max(one, min(four, ti.minimum_height))
+        if abs(ti.height - h) > 0.5:
+            ti.height = h
+        self.in_row.height = h + dp(14)
+
+    def _typing(self, _ti, text):
+        if self._sugg_ev is not None:
+            self._sugg_ev.cancel()
+        self._sugg_ev = Clock.schedule_once(lambda *_: self._show_suggestions(suggest_commands(self.inp.text)), 0.15)
+
+    def _show_suggestions(self, items):
+        row = self.sugg_row
+        row.clear_widgets()
+        if not items:
+            self.sugg_sv.height, self.sugg_sv.opacity = 0, 0
+            return
+        cols = PAL["chip"]
+        for i, (fill, hint) in enumerate(items):
+            col = cols[i % len(cols)]
+            dark = col[3] == 1 and _lum(col) > 0.45
+            fg = (0.08, 0.07, 0.05, 1) if dark else TEXTCOL
+            label = fill.strip()
+            if hint.startswith("Luganda for "):
+                label += f"  [size=11sp]{_esc(hint[12:])}[/size]"
+            b = RoundButton(text=label, bg=col, fg=fg, markup=True, size_hint_x=None, font_size="14sp", bold=True,
+                            width=dp(22) + dp(8.2) * len(re.sub(r"\[[^\]]*\]", "", label)))
+
+            def pick(_b, fill=fill):
+                self.inp.text = fill
+                self.inp.cursor = (len(fill), 0)
+                self.inp.focus = True
+                self._show_suggestions([])
+            b.bind(on_press=pick)
+            row.add_widget(b)
+        self.sugg_sv.height, self.sugg_sv.opacity = dp(40), 1
 
     # brain
     def handle(self, line):
@@ -7555,19 +8816,22 @@ class ChatScreen(BoxLayout):
             self.music_menu()
             return
         if lw in ("stop music", "stop song"):
-            try:
-                _luganda["sound"].stop()
-            except Exception:
-                pass
+            sound_stop()
             self.say("Music stopped.")
             return
-        if lw in ("play song", "play music", "play again"):
-            if getattr(self, "_last_song", None) and _play_file(self._last_song):
-                self.say("Playing your song again.")
+        if lw in ("pause music", "pause song", "pause"):
+            if sound_playing():
+                sound_pause()
+                self.say("Paused. Say 'play song' to open the player again.")
             else:
-                self.say("No song to play yet. Say 'music' to make one.")
+                self.say("Nothing is playing.")
             return
-        for pre in ("sound ", "music ", "make music ", "make a song ", "make song ", "song about ", "make a beat "):
+        if lw in ("play song", "play music", "play again", "lyrics", "show lyrics", "karaoke", "song words",
+                  "my song", "play my song"):
+            self.open_player()
+            return
+        for pre in ("sound ", "music ", "make music ", "make a song ", "make song ", "song about ", "make a beat ",
+                    "create song ", "create a song ", "sing about ", "sing ", "song ", "make me a song "):
             if lw.startswith(pre) and len(lw) > len(pre) + 2:
                 self.make_music(line.strip()[len(pre):])
                 return
@@ -7820,7 +9084,7 @@ class ChatScreen(BoxLayout):
             if arg:
                 key = clean_key(arg)
                 open(KEY_FILE, "w").write(key)
-                self.say(f"Key saved, ending in {key[-4:]}. Ask me anything.")
+                self.say(f"Key saved, ending in {key[-4:]}. Ask me anything.", plain=True)
             else:
                 self.say("Type setkey, a space, then your Gemini key.")
             return
@@ -7908,7 +9172,7 @@ class ChatScreen(BoxLayout):
                 self.say("Say which one, e.g. open wifi")
                 return
             val = vault_get(arg)
-            self.say(f"{arg}: {val}" if val is not None else f"Nothing saved under '{arg}'.")
+            self.say(f"{arg}: {val}" if val is not None else f"Nothing saved under '{arg}'.", plain=True)  # secrets stay uncoloured
             return
         elif action == "secrets":
             v = vault_load()
