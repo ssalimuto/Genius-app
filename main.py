@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "112.0"
+VERSION = "112.1"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -367,6 +367,7 @@ ALLOWED = MappingProxyType({
     "version": "Genius version and what's new",
     "setgroq": "setgroq YOURKEY - free, very fast AI from console.groq.com",
     "setrouter": "setrouter YOURKEY - many AIs from openrouter.ai",
+    "seteleven": "seteleven YOURKEY - lets Genius sing songs in your cloned voice (key from elevenlabs.io)",
     "setpolli": "setpolli YOURKEY - sharper free pictures (key from enter.pollinations.ai)",
     "turbo": "Turbo on/off: simple questions go to the fastest AI",
     "askall": "Ask every connected AI at once, e.g. askall what is gravity",
@@ -447,7 +448,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 112.0
+ABOUT_TEXT = """Genius 112.1
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -508,7 +509,12 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 112.0 (2026-10-26)
+CHANGELOG = """Genius 112.1 (2026-10-26)
+- AI sings in YOUR voice: record about a minute of your voice once (say clone my voice), and Genius makes your voice clone at ElevenLabs.
+- Then tap 'AI sings it in my voice' in the vocal studio (or say ai sing my song): your clone performs every line on the beat.
+- Needs your own ElevenLabs key with voice cloning (Starter plan): type seteleven and your key. Uses your ElevenLabs credits.
+
+Genius 112.0 (2026-10-26)
 - Vocal studio: make a song in YOUR voice. Genius makes the beat and words, then you sing over it with the words lighting up.
 - A live voice bar shows how loud you sing (green good, gold strong, red too loud), with REC time.
 - Record, Stop, Listen, Share and Record again. Your voice is mixed onto the beat with a little room echo and saved with the lyrics.
@@ -5522,14 +5528,14 @@ def _pcm_rms(data):
         return (sum(x * x for x in v) / len(v)) ** 0.5
 
 
-def mix_vocals(beat_wav, vocal_wav, out_wav, vocal_gain=1.0, beat_gain=0.55):
+def mix_vocals(beat_wav, vocal_wav, out_wav, vocal_gain=1.0, beat_gain=0.55, latency=None):
     """Put the recorded voice on top of the beat with a little room echo. Returns out_wav."""
     with _wave.open(beat_wav, "rb") as w:
         bch, bsr = w.getnchannels(), w.getframerate()
         beat = w.readframes(w.getnframes())
     with _wave.open(vocal_wav, "rb") as w:
         voc = w.readframes(w.getnframes())
-    cut = int(VOCAL_LATENCY * VOCAL_SR) * 2
+    cut = int((VOCAL_LATENCY if latency is None else latency) * VOCAL_SR) * 2
     voc = voc[cut:] if len(voc) > cut else voc
     try:
         import audioop
@@ -5577,6 +5583,141 @@ def mix_vocals(beat_wav, vocal_wav, out_wav, vocal_gain=1.0, beat_gain=0.55):
     except Exception as e:
         log(f"VOCAL meta: {e}")
     return out_wav
+
+
+# ---------------- 112.1: AI sings the song in YOUR voice (ElevenLabs voice clone, user's own key) ----------------
+ELEVEN_KEY_FILE = os.path.join(ROOT, "eleven_key.txt")
+ELEVEN_VOICE_FILE = os.path.join(ROOT, "eleven_voice.txt")
+ELEVEN_API = "https://api.elevenlabs.io/v1"
+
+
+def eleven_key():
+    try:
+        return open(ELEVEN_KEY_FILE).read().strip() or None
+    except Exception:
+        return None
+
+
+def eleven_voice():
+    try:
+        return open(ELEVEN_VOICE_FILE).read().strip() or None
+    except Exception:
+        return None
+
+
+def _eleven_err(e):
+    try:
+        body = e.read().decode("utf-8", "ignore")
+        msg = json.loads(body).get("detail")
+        msg = msg.get("message") if isinstance(msg, dict) else msg
+    except Exception:
+        msg = ""
+    code = getattr(e, "code", 0)
+    if code == 401:
+        return "ElevenLabs didn't accept your key. Type seteleven and your key again."
+    if code in (402, 403) or "subscription" in str(msg).lower() or "upgrade" in str(msg).lower():
+        return "Your ElevenLabs plan doesn't include voice cloning. The Starter plan has it."
+    if code == 429 or "quota" in str(msg).lower():
+        return "Your ElevenLabs credits are used up for this month."
+    return f"ElevenLabs said: {msg or code or e}"
+
+
+def eleven_clone(sample_wav, name="Genius - my voice"):
+    """Upload the voice sample, make an instant voice clone, save its id. Returns voice id."""
+    key = eleven_key()
+    if not key:
+        raise RuntimeError("Add your ElevenLabs key first: type seteleven, a space, then the key.")
+    bnd = "----genius" + hashlib.sha1(str(time.time()).encode()).hexdigest()[:16]
+    audio = open(sample_wav, "rb").read()
+    parts = [f'--{bnd}\r\nContent-Disposition: form-data; name="name"\r\n\r\n{name}\r\n'.encode(),
+             f'--{bnd}\r\nContent-Disposition: form-data; name="remove_background_noise"\r\n\r\ntrue\r\n'.encode(),
+             f'--{bnd}\r\nContent-Disposition: form-data; name="files"; filename="voice.wav"\r\n'
+             f'Content-Type: audio/wav\r\n\r\n'.encode() + audio + b"\r\n",
+             f"--{bnd}--\r\n".encode()]
+    req = urllib.request.Request(ELEVEN_API + "/voices/add", data=b"".join(parts), method="POST",
+                                 headers={"xi-api-key": key, "Content-Type": "multipart/form-data; boundary=" + bnd})
+    try:
+        r = json.load(urllib.request.urlopen(req, timeout=120, context=ssl_context()))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(_eleven_err(e))
+    vid = r.get("voice_id")
+    if not vid:
+        raise RuntimeError("ElevenLabs didn't return a voice. Try again.")
+    old = eleven_voice()
+    open(ELEVEN_VOICE_FILE, "w").write(vid)
+    if old and old != vid:                                      # don't fill the user's voice slots
+        try:
+            urllib.request.urlopen(urllib.request.Request(ELEVEN_API + "/voices/" + old, method="DELETE",
+                                                          headers={"xi-api-key": key}), timeout=20, context=ssl_context())
+        except Exception:
+            pass
+    return vid
+
+
+def _eleven_line(text, prev="", nxt=""):
+    """One lyric line in the user's cloned voice as mono 16-bit PCM at 22050 Hz."""
+    key, vid = eleven_key(), eleven_voice()
+    tries = [("eleven_v3", "[sings] " + text), ("eleven_multilingual_v2", text)]
+    if ELEVEN_STATE.get("model") == "eleven_multilingual_v2":
+        tries = tries[1:]
+    last = None
+    for model, words in tries:
+        body = {"text": words, "model_id": model,
+                "voice_settings": {"stability": 0.35, "similarity_boost": 0.9, "style": 0.6, "use_speaker_boost": True}}
+        if model != "eleven_v3":
+            body.update(previous_text=prev, next_text=nxt)
+        req = urllib.request.Request(ELEVEN_API + f"/text-to-speech/{vid}?output_format=pcm_22050",
+                                     data=json.dumps(body).encode(), method="POST",
+                                     headers={"xi-api-key": key, "Content-Type": "application/json"})
+        try:
+            data = urllib.request.urlopen(req, timeout=90, context=ssl_context()).read()
+            ELEVEN_STATE["model"] = model
+            return data
+        except urllib.error.HTTPError as e:
+            last = e
+            if e.code in (401, 402, 429):
+                break
+    raise RuntimeError(_eleven_err(last) if last is not None else "ElevenLabs failed.")
+
+
+ELEVEN_STATE = {}
+
+
+def ai_sing_song(beat_wav, progress=None):
+    """Your voice clone performs every lyric line at its place in the song, mixed onto the beat. Returns path."""
+    import audioop
+    if not eleven_key() or not eleven_voice():
+        raise RuntimeError("Set up your voice clone first: say clone my voice.")
+    meta, lines = load_song_timeline(beat_wav)
+    sung = [ln for ln in lines if ln.get("text", "").strip() and not ln["text"].strip().startswith("~")
+            and not re.match(r"^\(?\[?(verse|chorus|bridge|intro|outro|hook)\b", ln["text"].strip(), re.I)]
+    if not sung:
+        raise RuntimeError("This song has no words to sing.")
+    total = int((meta.get("duration") or wav_seconds(beat_wav)) * VOCAL_SR) + VOCAL_SR * 4
+    track = bytearray(total * 2)
+    pos_free = 0
+    for i, ln in enumerate(sung):
+        if progress:
+            progress(i, len(sung))
+        pcm = _eleven_line(ln["text"].strip(), sung[i - 1]["text"] if i else "",
+                           sung[i + 1]["text"] if i + 1 < len(sung) else "")
+        pcm, _ = audioop.ratecv(pcm, 2, 1, 22050, VOCAL_SR, None)
+        start = max(int(ln["t"] * VOCAL_SR), pos_free) * 2
+        end = min(len(track), start + len(pcm))
+        if start >= len(track):
+            break
+        seg = bytes(track[start:end])
+        track[start:end] = audioop.add(seg, pcm[:end - start], 2)
+        pos_free = end // 2
+    tmp = os.path.join(genius_dl("music"), "ai_vocals_" + time.strftime("%H%M%S") + ".wav")
+    with _wave.open(tmp, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(VOCAL_SR)
+        w.writeframes(bytes(track[:pos_free * 2 + VOCAL_SR * 2]))
+    out = os.path.splitext(beat_wav)[0][:60] + "_ai_my_voice_" + time.strftime("%H%M%S") + ".wav"
+    mix_vocals(beat_wav, tmp, out, latency=0.0)
+    return out
 
 
 def newest_song():
@@ -6760,7 +6901,7 @@ _SUGGEST_EXTRA = (
     "make song luganda praise about ", "make song pop about ", "draw ", "edit ", "studio", "camera", "home",
     "premium", "everywhere", "share", "quick ", "mind ", "better: ", "teach skill ", "wealth", "market ",
 )
-_NO_SUGGEST = ("save ", "setkey", "setgroq", "setrouter", "setpolli", "setvoice", "setsunbird", "open ", "tereka ", "ggulawo ")
+_NO_SUGGEST = ("save ", "seteleven", "setkey", "setgroq", "setrouter", "setpolli", "setvoice", "setsunbird", "open ", "tereka ", "ggulawo ")
 _POOL = []
 
 
@@ -10972,6 +11113,168 @@ class ChatScreen(BoxLayout):
         pop.open()
         tick()
 
+    def voice_clone_setup(self, *_):
+        """Record about a minute of the user's voice and make their ElevenLabs voice clone."""
+        if not eleven_key():
+            self.say("To let Genius sing in your voice you need an ElevenLabs key with voice cloning (Starter plan). "
+                     "Open elevenlabs.io, sign in, go to Developers, API keys, create a key, then type seteleven, "
+                     "a space, and the key.")
+            return
+        try:
+            if not mic_permission_ok():
+                self.say("Allow the microphone for Genius, then say clone my voice again.")
+                return
+        except Exception:
+            pass
+        rec = VocalRecorder()
+        st = dict(mode="ready", t0=0.0, take=None)
+        passage = ("Read this out loud in your normal voice, then sing a little of any song you like:\n\n"
+                   "Good morning! My name is me, and this is my voice. I love music, I love my family, "
+                   "and I love the beautiful hills of Uganda. Every day I wake up, I thank God, and I go out to "
+                   "chase my dreams. Some days are hard and some days are sweet, but I keep moving, I keep "
+                   "smiling, and I keep singing. Mama, thank you for everything. Friends, let us dance tonight!")
+        box = BoxLayout(orientation="vertical", spacing=8, padding=12)
+        txt = Label(text=passage, font_size="17sp", color=TEXTCOL, halign="left", valign="top")
+        txt.bind(size=lambda w, *_: setattr(w, "text_size", (w.width, None)))
+        box.add_widget(txt)
+        status = Label(text="Record 45 to 90 seconds in a quiet place.", color=HINT, font_size="15sp",
+                       size_hint_y=None, height="26dp")
+        box.add_widget(status)
+        meter = Widget(size_hint_y=None, height="26dp")
+        with meter.canvas:
+            Color(1, 1, 1, 0.10)
+            m_track = RoundedRectangle(radius=[13])
+            m_col = Color(0.3, 0.9, 0.45, 1)
+            m_fill = RoundedRectangle(radius=[13])
+        box.add_widget(meter)
+        row = BoxLayout(size_hint_y=None, height="56dp", spacing=8)
+        b_rec = RoundButton(text="\u25cf  Record", bg=RED, fg=TEXTCOL, bold=True, font_size="17sp")
+        b_stop = RoundButton(text="\u25a0  Stop", bg=BLUE, fg=TEXTCOL, bold=True, font_size="17sp")
+        row.add_widget(b_rec)
+        row.add_widget(b_stop)
+        box.add_widget(row)
+        row2 = BoxLayout(size_hint_y=None, height="54dp", spacing=8)
+        b_make = RoundButton(text="Make my voice clone", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), bold=True, font_size="16sp")
+        b_close = RoundButton(text="Close", bg=GREY, fg=TEXTCOL, bold=True, font_size="16sp", size_hint_x=0.4)
+        row2.add_widget(b_make)
+        row2.add_widget(b_close)
+        box.add_widget(row2)
+        pop = Popup(title="Clone my voice", content=box, size_hint=(0.97, 0.94), separator_color=GOLD, title_color=GOLD)
+
+        def tick(*_):
+            m_track.pos, m_track.size = meter.pos, meter.size
+            lv = rec.level if st["mode"] == "rec" else 0.0
+            m_fill.pos, m_fill.size = meter.pos, (max(meter.height, meter.width * lv) if lv > 0.01 else 0, meter.height)
+            m_col.rgba = (0.95, 0.3, 0.35, 1) if lv > 0.92 else (1, 0.78, 0.3, 1) if lv > 0.7 else (0.3, 0.9, 0.45, 1)
+            if st["mode"] == "rec":
+                sec = time.time() - st["t0"]
+                status.text = f"Recording {_fmt_time(sec)}" + ("  - good, you can stop" if sec >= 45 else "")
+                if rec.error:
+                    stop()
+                    status.text = f"The microphone stopped: {rec.error}"
+                elif sec >= 150:
+                    stop()
+
+        def record(*_):
+            if st["mode"] != "ready":
+                return
+            take = os.path.join(genius_dl("music"), "voice_sample.wav")
+            rec.start(take)
+            st.update(mode="rec", t0=time.time(), take=None)
+
+        def stop(*_):
+            if st["mode"] != "rec":
+                return
+            st["mode"] = "ready"
+            got = rec.stop()
+            if got and rec.seconds >= 20:
+                st["take"] = got
+                status.text = f"Got {int(rec.seconds)} seconds. Tap Make my voice clone."
+            else:
+                status.text = "That was too short. Record at least 30 seconds."
+
+        def make(*_):
+            if st["mode"] != "ready" or not st["take"]:
+                status.text = "Record your voice first."
+                return
+            st["mode"] = "busy"
+            status.text = "Making your voice clone at ElevenLabs..."
+
+            def work():
+                try:
+                    eleven_clone(st["take"])
+                    err = None
+                except Exception as e:
+                    err = str(e)
+
+                def done(*_):
+                    st["mode"] = "ready"
+                    if err:
+                        status.text = "It didn't work."
+                        self.say(err)
+                        return
+                    try:
+                        os.remove(st["take"])                 # the sample now lives only in the user's ElevenLabs account
+                    except Exception:
+                        pass
+                    pop.dismiss()
+                    self.say("Your voice clone is ready. Make a song, then tap 'AI sings in my voice' in the vocal studio, "
+                             "or say ai sing my song.")
+                Clock.schedule_once(done, 0)
+            threading.Thread(target=work, daemon=True).start()
+
+        def close(*_):
+            if st["mode"] == "rec":
+                rec.stop()
+            pop.dismiss()
+
+        b_rec.bind(on_press=record)
+        b_stop.bind(on_press=stop)
+        b_make.bind(on_press=make)
+        b_close.bind(on_press=close)
+        ev = Clock.schedule_interval(tick, 0.08)
+        pop.bind(on_dismiss=lambda *_: (ev.cancel(), rec.running and rec.stop()))
+        pop.open()
+
+    def ai_sing(self, wav=None, *_):
+        """The user's voice clone performs the song's words over the beat."""
+        wav = wav if isinstance(wav, str) else None
+        wav = wav or getattr(self, "_last_song", None) or newest_song()
+        if not eleven_key() or not eleven_voice():
+            self.voice_clone_setup()
+            return
+        if not wav or not os.path.exists(wav):
+            self.say("Make a song first, like: make song amapiano about my mum. Then say ai sing my song.")
+            return
+        if "_my_voice_" in os.path.basename(wav):
+            self.say("Pick a song without vocals: make a new song first.")
+            return
+        if self.busy:
+            self.say("One moment, I'm still finishing the last job.")
+            return
+        self.busy = True
+        self.say("Your voice clone is singing the words now. This takes about 1 to 2 minutes and uses your "
+                 "ElevenLabs credits...")
+
+        def work():
+            try:
+                out, err = ai_sing_song(wav), None
+            except Exception as e:
+                log(f"AI SING failed: {e}")
+                out, err = None, str(e)
+
+            def done(*_):
+                self.busy = False
+                if not out:
+                    self.say(f"Sorry, the AI singing didn't work. {err}")
+                    return
+                self._last_song = out
+                self.show("AI", f"Done! Your song is sung in your voice. Saved in {nice_where(out)} as "
+                                f"{os.path.basename(out)}.")
+                self.open_player(out)
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=work, daemon=True).start()
+
     def vocal_studio(self, wav=None, *_):
         """Record your own voice singing over a Genius beat, with the words on screen and a live voice meter."""
         wav = wav if isinstance(wav, str) else None
@@ -11033,8 +11336,12 @@ class ChatScreen(BoxLayout):
         b_close = RoundButton(text="Close", bg=GREY, fg=TEXTCOL, bold=True, font_size="16sp")
         for b in (b_play, b_share, b_close):
             row2.add_widget(b)
+        b_ai = RoundButton(text="AI sings it in my voice", bg=BLUE2, fg=TEXTCOL, bold=True, font_size="16sp",
+                           size_hint_y=None, height="48dp")
+        b_ai.bind(on_press=lambda *_: (st["mode"] == "ready") and (pop.dismiss(), self.ai_sing(wav)))
         box.add_widget(row1)
         box.add_widget(row2)
+        box.add_widget(b_ai)
         pop = Popup(title="Genius vocal studio", content=box, size_hint=(0.97, 0.94), separator_color=GOLD,
                     title_color=GOLD)
 
@@ -12281,13 +12588,13 @@ class ChatScreen(BoxLayout):
     # brain
     def handle(self, line):
         low = line.lower()
-        if not low.startswith(("setkey", "save ", "setvoice", "setgroq", "setrouter", "setpolli", "setsunbird", "better:",
+        if not low.startswith(("setkey", "save ", "setvoice", "setgroq", "setrouter", "setpolli", "seteleven", "setsunbird", "better:",
                                "correct:", "actually:", "wrong:", "teach")):
             self._pending_q = line
         if low.strip(" .!?") in ("mic test", "test mic", "test microphone", "microphone test"):
             self.mic_test()
             return
-        if (low.startswith(("setkey", "setvoice", "setgroq", "setrouter", "setpolli"))
+        if (low.startswith(("setkey", "setvoice", "setgroq", "setrouter", "setpolli", "seteleven"))
                 or (low.startswith("save ") and low.strip(" .!?") not in SAVE_PHRASES)):
             head = line.split()[0]
             self.show("You", f"{head} ********")
@@ -12413,7 +12720,7 @@ class ChatScreen(BoxLayout):
             self.say("Saved your face. Now say 'make me ...' and every picture keeps it." if f
                      else "I couldn't find a photo. Take a clear selfie first, then say setme.")
             return
-        if not CURRENT["owner"] and (action in OWNER_ONLY or low.startswith(("setkey", "setgroq", "setrouter", "setpolli", "setvoice", "setsunbird"))):
+        if not CURRENT["owner"] and (action in OWNER_ONLY or low.startswith(("setkey", "setgroq", "setrouter", "setpolli", "seteleven", "setvoice", "setsunbird"))):
             self.say("Only the owner of this phone can do that.")
             return
         if action in KEY_WIZARD_WORDS and (not arg or arg.lower() in KEY_WIZARD_INFO
@@ -12548,6 +12855,13 @@ class ChatScreen(BoxLayout):
             return
         if lw in ("zoom camera", "super zoom", "zoom"):
             self.zoom_camera()
+            return
+        if lw in ("clone my voice", "voice clone", "my voice clone", "make my voice clone", "new voice clone"):
+            self.voice_clone_setup()
+            return
+        if lw in ("ai sing", "ai sing my song", "ai sing it", "sing it for me", "sing for me in my voice",
+                  "ai sings in my voice", "sing my song in my voice"):
+            self.ai_sing()
             return
         if lw in ("record vocals", "record my voice", "vocal studio", "vocals", "sing my song", "sing it",
                   "song in my voice", "my voice song", "record song", "sing in my voice", "add my voice"):
@@ -12764,6 +13078,15 @@ class ChatScreen(BoxLayout):
                 self.say("Voice token saved. I'll use the Sunbird voice.")
             else:
                 self.say("Type setvoice, a space, then your Sunbird AI token.")
+            return
+        if action == "seteleven":
+            if not arg:
+                self.say("To let Genius sing in your voice: open elevenlabs.io, sign in, go to Developers, API keys, "
+                         "create a key, then type seteleven, a space, and the key.")
+                return
+            k = arg.strip().strip("'\"")
+            open(ELEVEN_KEY_FILE, "w").write(k)
+            self.say(f"ElevenLabs key saved, ending in {k[-4:]}. Now say clone my voice to record your voice sample.")
             return
         if action == "setpolli":
             if not arg:
