@@ -10,6 +10,21 @@ LIVE_INFO = os.path.join(LIVE_DIR, "genius_live.json")
 SHIP_VERSION = os.environ.get("GENIUS_SHIP_VERSION") or VERSION   # version of the installed app
 
 
+# 112.2: Cloudflare (in front of Groq and others) answers 403 to Python's default "Python-urllib" name,
+# so every web request from Genius now says who it is.
+if not getattr(urllib.request.urlopen, "_genius_ua", False):
+    _orig_urlopen = urllib.request.urlopen
+
+    def _urlopen_ua(url, *a, **k):
+        if isinstance(url, str):
+            url = urllib.request.Request(url)
+        if not url.has_header("User-agent"):
+            url.add_header("User-Agent", "Genius/" + VERSION + " (Android)")
+        return _orig_urlopen(url, *a, **k)
+    _urlopen_ua._genius_ua = True
+    urllib.request.urlopen = _urlopen_ua
+
+
 def _vt(v):
     try:
         return tuple(int(x) for x in str(v).split("."))
@@ -513,6 +528,7 @@ CHANGELOG = """Genius 112.2 (2026-10-26)
 - Pro songs with a REAL singing voice and band from ElevenLabs Music. Genius writes the words (Luganda, English or both), ElevenLabs sings and plays them.
 - Say: pro song amapiano about my mum. Words light up karaoke style while it plays.
 - About 2 minutes long, uses about 1,800 ElevenLabs credits (needs your key: seteleven).
+- Fixed: UNEB questions, marking and other AI tools said "couldn't reach the AI" even with internet. Groq was refusing Genius's requests; now they go through.
 
 Genius 112.1 (2026-10-26)
 - AI sings in YOUR voice: record about a minute of your voice once (say clone my voice), and Genius makes your voice clone at ElevenLabs.
@@ -3730,10 +3746,14 @@ def other_ai(name, text, system=None, convo=None, max_tokens=700):
         try:
             model = pick_model(name, key)
             t0 = time.time()
-            d = _http_json(PROVIDERS[name]["base"] + "/chat/completions", key,
-                           {"model": model, "messages": msgs, "max_tokens": max_tokens,
-                            "temperature": 0.6}, timeout=30)
-            out = d["choices"][0]["message"]["content"].strip()
+            body = {"model": model, "messages": msgs, "max_tokens": max_tokens, "temperature": 0.6}
+            if "gpt-oss" in model:            # thinking models: keep the thinking short so the answer fits
+                body["reasoning_effort"] = "low"
+                body["max_tokens"] = max_tokens + 1200
+            d = _http_json(PROVIDERS[name]["base"] + "/chat/completions", key, body, timeout=45)
+            out = (d["choices"][0]["message"].get("content") or "").strip()
+            if not out:
+                raise ValueError("empty answer")
             ai_record(name, bool(out), time.time() - t0)
             LAST_AI["name"] = name
             return out
