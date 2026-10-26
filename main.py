@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "109.7"
+VERSION = "109.8"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -386,7 +386,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 109.7
+ABOUT_TEXT = """Genius 109.8
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -447,7 +447,10 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 109.7 (2026-10-26)
+CHANGELOG = """Genius 109.8 (2026-10-26)
+- Fixed: in long chats the words could vanish and the chat turned into a black box. Genius now hides the oldest messages so your chat always stays visible.
+
+Genius 109.7 (2026-10-26)
 - Answers like Google's AI Mode: a clear first sentence, then tidy bullet points with bold labels and headings, the websites it searched, and tappable "ask next" questions.
 
 Genius 109.6 (2026-10-26)
@@ -6886,7 +6889,7 @@ class ChatScreen(BoxLayout):
         self.out = Label(text="", markup=True, font_size="18sp", size_hint_y=None,
                          halign="left", valign="top", color=TEXTCOL, padding=(8, 8))
         self.out.bind(width=lambda *a: setattr(self.out, "text_size", (self.out.width, None)),
-                      texture_size=lambda *a: setattr(self.out, "height", self.out.texture_size[1]))
+                      texture_size=self._chat_size)
         self.out.bind(on_ref_press=self._on_chat_ref)
         self.scroll.add_widget(self.out)
         body.add_widget(self.scroll)
@@ -8807,6 +8810,25 @@ class ChatScreen(BoxLayout):
             text = f"[color={_hx(PAL['text'])}]{_esc(text)}[/color]"     # your words exactly as typed, never highlighted
         self.out.text += f"{head}\n{text}\n[size=6sp] [/size]\n"
         Clock.schedule_once(lambda *_: setattr(self.scroll, "scroll_y", 0), 0.1)
+
+    CHAT_MAX_PX = 3400          # phone GPUs can't draw one text picture taller than ~4096 px: it turns black
+    _CHAT_SEP = "\n[size=6sp] [/size]\n"
+    _CHAT_OLD = "[size=12sp][i]Older messages are hidden to keep the chat clear.[/i][/size]" + "\n[size=6sp] [/size]\n"
+
+    def _chat_size(self, lbl, size):
+        """Keep the chat readable: when the text gets too tall for the phone to draw (it would show
+        as a black box), drop the oldest messages, never the newest one."""
+        if size[1] > self.CHAT_MAX_PX:
+            body = lbl.text.replace(self._CHAT_OLD, "", 1)
+            msgs = [m for m in body.split(self._CHAT_SEP) if m.strip()]
+            if len(msgs) > 1:
+                keep = max(1, int(len(msgs) * min(0.6, self.CHAT_MAX_PX * 0.6 / size[1])))
+                lbl.text = self._CHAT_OLD + self._CHAT_SEP.join(msgs[-keep:]) + self._CHAT_SEP
+                return
+            if len(body) > 4000:          # one huge message: show its end
+                lbl.text = self._CHAT_OLD + "..." + body[-3500:]
+                return
+        lbl.height = size[1]
 
     def say(self, text, plain=False):
         follow = []
