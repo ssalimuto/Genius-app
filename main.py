@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "109.3"
+VERSION = "109.4"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -285,6 +285,7 @@ ALLOWED = MappingProxyType({
     "edit": "Change your last picture, e.g. edit make it night. Or just say: make me near a building",
     "draw": "Draw a picture, e.g. draw a lion on Mount Elgon. Put your photo as Download/Genius/me.jpg, then 'draw me in a suit' keeps YOUR face",
     "log": "Show the log",
+    "key": "Set up a free AI key step by step (also: setup, getkey, apikey, ekisumuluzo)",
     "setkey": "setkey YOURKEY - lets me answer anything",
     "help": "List commands",
     "change code": "Create or change your hidden secret code for login",
@@ -382,7 +383,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 109.3
+ABOUT_TEXT = """Genius 109.4
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -409,6 +410,7 @@ Safety
 - Tripwires and an intruder log tell you when someone tried to break in.
 - A tamper check warns you if the code was changed.
 - Your API keys stay on this phone. Never share them.
+- 'key' opens a step-by-step helper to get a free AI key (Groq, Gemini or OpenRouter). It tests the key before saving and only ever shows its last 4 characters.
 - A watcher blocks dangerous actions (copying itself, deleting files, turning off stop).
 - 'stop' always shuts me down.
 
@@ -440,7 +442,13 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 109.3 (2026-10-26)
+CHANGELOG = """Genius 109.4 (2026-10-26)
+- New 'Set up AI key' helper: type key (or tap it in your profile or the menu) and Genius walks you through getting a free AI key in 3 easy steps.
+- Pick Groq (free, fastest), Google Gemini (free, needed for picture edits) or OpenRouter, open the key page with one tap, then Paste and Test.
+- Genius checks the key works before saving it, and tells you plainly if it's wrong, expired or there's no internet.
+- When an answer needs a key, Genius now offers a "Set up key" button instead of only text.
+
+Genius 109.3 (2026-10-26)
 - Pictures work again: when one free picture maker is busy, Genius tries a second one by itself.
 - Pictures, songs and effects save where your phone allows (Download/Genius, or Genius's own storage) and always show in the app.
 - Songs mix faster, and if one player can't play a song, Genius uses the phone's own player.
@@ -3019,11 +3027,139 @@ def other_ai(name, text, system=None, convo=None, max_tokens=700):
     return None
 
 
-NO_AI_MSG = ("I need an AI key to answer that. Type setkey and your free Gemini key from "
-             "aistudio.google.com/apikey (or setgroq with a free key from console.groq.com). "
+NO_AI_MSG = ("I need an AI key to answer that. Type key and I'll walk you through getting a free one "
+             "in about 2 minutes (or type setgroq / setkey if you already have one). "
              "Offline I can still do notes, calc, money, quiz, music, effects and more: type help.")
 NET_AI_MSG = ("I couldn't reach any AI just now. Check your internet or move to better signal, "
               "then ask again.")
+
+
+# ================= Key wizard: anyone can get and save a free AI key by themselves =================
+KEY_WIZARD = (
+    ("groq", {"name": "Groq", "tag": "Free and the fastest. Best first choice.",
+              "url": "https://console.groq.com/keys", "starts": ("gsk_",), "file": GROQ_KEY_FILE,
+              "steps": ("Tap 'Open the key page' below.",
+                        "Sign in with your Google account (or email).",
+                        "Tap 'Create API Key'. Type any name, like Genius, then tap Submit.",
+                        "Tap 'Copy' next to the new key. It starts with gsk_",
+                        "Come back to Genius and tap 'Paste', then 'Test and save'.")}),
+    ("gemini", {"name": "Google Gemini", "tag": "Free. Needed to change pictures (Nano Banana) and read photos.",
+                "url": "https://aistudio.google.com/apikey", "starts": ("AIza", "AQ."), "file": KEY_FILE,
+                "steps": ("Tap 'Open the key page' below.",
+                          "Sign in with your Google account and accept the terms if asked.",
+                          "Tap 'Create API key' (choose any project if it asks).",
+                          "Tap 'Copy' next to the new key. It starts with AIza",
+                          "Come back to Genius and tap 'Paste', then 'Test and save'.")}),
+    ("openrouter", {"name": "OpenRouter", "tag": "Many AIs with one key, including some free ones.",
+                    "url": "https://openrouter.ai/keys", "starts": ("sk-or-",), "file": ROUTER_KEY_FILE,
+                    "steps": ("Tap 'Open the key page' below.",
+                              "Sign in with Google.",
+                              "Tap 'Create API Key', give it any name, then tap Create.",
+                              "Tap 'Copy'. The key starts with sk-or- and is shown only once.",
+                              "Come back to Genius and tap 'Paste', then 'Test and save'.")}),
+)
+KEY_WIZARD_INFO = dict(KEY_WIZARD)
+KEY_WIZARD_WORDS = ("key", "setup", "getkey", "apikey", "ekisumuluzo")
+_KEY_PATTERNS = {"groq": r"gsk_[A-Za-z0-9]{20,}", "openrouter": r"sk-or-[A-Za-z0-9_\-]{20,}",
+                 "gemini": r"AIza[A-Za-z0-9_\-]{20,}|AQ\.[A-Za-z0-9_\-]{20,}"}
+
+
+def key_tail(key):
+    """Only ever show the last 4 characters of a key."""
+    return (key or "")[-4:]
+
+
+def wizard_clean_key(prov, text):
+    """Pull the key out of whatever was pasted (spaces, quotes, a whole sentence)."""
+    text = (text or "").strip()
+    m = re.search(_KEY_PATTERNS.get(prov, r"\S+"), text)
+    return m.group(0) if m else text.strip().strip("'\"")
+
+
+def key_format_check(prov, key):
+    """(ok, friendly_message). A quick check before any internet is used."""
+    info = KEY_WIZARD_INFO.get(prov)
+    if not info:
+        return False, "Pick Groq, Google Gemini or OpenRouter first."
+    if not key:
+        return False, "The box is empty. Copy your key on the website, then tap Paste."
+    if not key.startswith(info["starts"]):
+        for other, oi in KEY_WIZARD:
+            if other != prov and key.startswith(oi["starts"]):
+                return False, (f"That looks like a {oi['name']} key, not a {info['name']} key. "
+                               f"Go back and pick {oi['name']}.")
+        return False, (f"That doesn't look like a {info['name']} key. It should start with "
+                       f"{info['starts'][0]}. Copy the key itself, not the page address.")
+    if len(key) < 24 or re.search(r"\s", key):
+        return False, "That key looks cut short. Copy the whole key again and paste it."
+    return True, ""
+
+
+def key_test_request(prov, key):
+    """The tiny real request that proves a key works (never sent anywhere else)."""
+    if prov == "groq":
+        return urllib.request.Request("https://api.groq.com/openai/v1/models",
+                                      headers={"Authorization": "Bearer " + key})
+    if prov == "gemini":
+        return urllib.request.Request("https://generativelanguage.googleapis.com/v1beta/models?key="
+                                      + urllib.parse.quote(key, safe=""))
+    return urllib.request.Request("https://openrouter.ai/api/v1/auth/key",
+                                  headers={"Authorization": "Bearer " + key})
+
+
+def test_ai_key(prov, key, timeout=12, opener=None):
+    """(ok, friendly_message). Runs off the UI thread; never logs or returns the key."""
+    ok, why = key_format_check(prov, key)
+    if not ok:
+        return False, why
+    name = KEY_WIZARD_INFO[prov]["name"]
+    try:
+        req = key_test_request(prov, key)
+        if opener:
+            r = opener(req, timeout)
+        else:
+            r = urllib.request.urlopen(req, timeout=timeout, context=ssl_context())
+        with r:
+            r.read(2048)
+        return True, f"Key works! Ending in {key_tail(key)}."
+    except urllib.error.HTTPError as e:
+        code = e.code
+        log(f"KEY WIZARD: {prov} test said HTTP {code}")
+        if code == 429:
+            return True, f"Key works (it's busy right now, so wait a minute). Ending in {key_tail(key)}."
+        if code in (400, 401, 403):
+            return False, (f"{name} says this key is wrong, expired or deleted. "
+                           "Make a new key on the key page, copy it, and try again.")
+        if code >= 500:
+            return False, f"{name} is having trouble right now. Wait a few minutes and try again."
+        return False, f"{name} didn't accept the key (error {code}). Make a new key and try again."
+    except Exception as e:
+        log(f"KEY WIZARD: {prov} test failed: {type(e).__name__}")
+        if _is_net_error(e):
+            return False, ("I couldn't reach the internet. Turn on data or Wi-Fi, "
+                           "move to better signal, then tap Try again.")
+        return False, "Something went wrong while checking the key. Tap Try again."
+
+
+def save_ai_key(prov, key):
+    """Write a tested key to the right file, so every part of Genius uses it at once."""
+    path = KEY_WIZARD_INFO[prov]["file"]
+    with open(path, "w") as f:
+        f.write(key)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+    _model_cache.pop(prov, None)
+    log(f"KEY WIZARD: saved a {prov} key ending in {key_tail(key)}")
+    return path
+
+
+def _needs_key_text(text):
+    """True when a message is telling the user an AI key is missing."""
+    t = text.lower()
+    return ("ai key" in t or "gemini key" in t) and ("type key" in t or "setkey" in t or "need" in t) \
+        and "key saved" not in t and "key works" not in t
 
 
 def connected_ais():
@@ -4370,7 +4506,7 @@ LUGANDA_CMDS = {
     "tereka": "save", "ggulawo": "open", "wandiika": "note", "ebiwandiiko": "notes",
     "obudde": "weather", "lowooza": "deep", "sangula": "clear", "essaawa": "time",
     "obuyambi": "help", "bbatule": "battery", "jjukiza": "remind", "bala": "calc",
-    "yimirira": "stop",
+    "yimirira": "stop", "ekisumuluzo": "key",
 }
 
 
@@ -5381,6 +5517,7 @@ class ChatScreen(BoxLayout):
                          halign="left", valign="top", color=TEXTCOL, padding=(8, 8))
         self.out.bind(width=lambda *a: setattr(self.out, "text_size", (self.out.width, None)),
                       texture_size=lambda *a: setattr(self.out, "height", self.out.texture_size[1]))
+        self.out.bind(on_ref_press=self._on_chat_ref)
         self.scroll.add_widget(self.out)
         body.add_widget(self.scroll)
         outer.add_widget(body)
@@ -5830,6 +5967,7 @@ class ChatScreen(BoxLayout):
                 ("Genius Wealth (trading & money)", self.wealth_menu, GOLD),
                 ("Use last picture as my photo", set_photo, BLUE),
                 ("Take a selfie", self.zoom_camera, BLUE),
+                ("Set up AI key", self.key_wizard, GOLD),
                 ("My plan (Premium)", self.premium_popup, BLUE),
                 ("My storage", self.storage_box, BLUE),
                 ("My creations", self.creations, BLUE),
@@ -5882,6 +6020,7 @@ class ChatScreen(BoxLayout):
         lst = BoxLayout(orientation="vertical", spacing=8, size_hint_y=None)
         lst.bind(minimum_height=lst.setter("height"))
         more = [("Profile", self.profile_drawer, BLUE),
+                ("Set up AI key", self.key_wizard, GOLD),
                 ("Fun studio (collage, effects, video)", self.fun_studio, GOLD),
                 ("My creations (pictures)", self.creations, BLUE),
                 ("My storage", self.storage_box, BLUE),
@@ -7152,6 +7291,10 @@ class ChatScreen(BoxLayout):
 
     # output
     def show(self, who, text):
+        if who == "AI" and CURRENT.get("owner") and isinstance(text, str) and _needs_key_text(text):
+            text += "\n[ref=keywizard][b][color=ffc84d][u]\u27a4 Tap here to set up a free AI key[/u][/color][/b][/ref]"
+            if text.startswith(NO_AI_MSG[:40]):
+                Clock.schedule_once(self.offer_key_wizard, 0.3)
         if who == "AI":
             head = "[b][color=ffc84d]\u2726 Genius[/color][/b]"
         else:
@@ -7302,6 +7445,11 @@ class ChatScreen(BoxLayout):
             return
         if not CURRENT["owner"] and (action in OWNER_ONLY or low.startswith(("setkey", "setgroq", "setrouter", "setvoice", "setsunbird"))):
             self.say("Only the owner of this phone can do that.")
+            return
+        if action in KEY_WIZARD_WORDS and (not arg or arg.lower() in KEY_WIZARD_INFO
+                                           or arg.lower() in ("google", "openrouter", "router", "ai key", "key")):
+            want = {"google": "gemini", "router": "openrouter"}.get(arg.lower(), arg.lower())
+            self.key_wizard(want if want in KEY_WIZARD_INFO else None)
             return
         lw = low.strip(" .!")
         # Free access to the phone's apps: owner only, never other users
@@ -7844,11 +7992,198 @@ class ChatScreen(BoxLayout):
             Clock.schedule_once(done, 0)
         threading.Thread(target=work, daemon=True).start()
 
+    # ---------- Set up AI key: a friendly step-by-step wizard ----------
+    def key_wizard(self, prov=None, *_):
+        if not CURRENT["owner"]:
+            self.say("Only the owner of this phone can add an AI key. Ask the owner to set it up.")
+            return
+        dark = (0.1, 0.1, 0.1, 1)
+        root = BoxLayout(orientation="vertical", spacing=10, padding=[12, 10, 12, 12])
+        pop = Popup(title="Set up AI key", content=root, size_hint=(0.96, 0.94),
+                    separator_color=GOLD, title_color=GOLD, title_size="20sp", auto_dismiss=False)
+        state = {"prov": prov if prov in KEY_WIZARD_INFO else None, "busy": False, "open": True}
+
+        def text(t, size="18sp", col=TEXTCOL, bold=False):
+            lb = Label(text=t, markup=True, font_size=size, color=col, bold=bold, size_hint_y=None,
+                       halign="left", valign="top")
+            lb.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)),
+                    texture_size=lambda w, *_: setattr(w, "height", w.texture_size[1] + dp(6)))
+            return lb
+
+        def button(t, fn, col=BLUE, h="56dp", size="18sp"):
+            b = RoundButton(text=t, bg=col, fg=dark if col == GOLD else TEXTCOL, size_hint_y=None,
+                            height=h, font_size=size, bold=True, halign="center", valign="middle")
+            b.bind(size=lambda w, *_: setattr(w, "text_size", (w.width - dp(16), None)))
+            b.bind(on_press=lambda *_: fn())
+            return b
+
+        def page(title, items, nav):
+            root.clear_widgets()
+            sv = ScrollView(bar_color=(1.0, 0.78, 0.30, 0.7), bar_width="3dp")
+            col = GridLayout(cols=1, spacing=10, size_hint_y=None, padding=[2, 2, 2, 8])
+            col.bind(minimum_height=col.setter("height"))
+            col.add_widget(text(f"[b]{title}[/b]", "21sp", GOLD))
+            for w in items:
+                col.add_widget(w)
+            sv.add_widget(col)
+            root.add_widget(sv)
+            row = BoxLayout(size_hint_y=None, height="56dp", spacing=10)
+            for w in nav:
+                row.add_widget(w)
+            root.add_widget(row)
+
+        def close():
+            state["open"] = False
+            pop.dismiss()
+
+        def step1():
+            have = connected_ais()
+            items = [text("An AI key lets Genius answer anything. It's free and takes about 2 minutes. "
+                          "Pick one (the first is best):")]
+            if have:
+                items.append(text("Already connected: " + ", ".join(have) + ". You can add another.",
+                                  "15sp", HINT))
+            for i, (p, info) in enumerate(KEY_WIZARD):
+                star = "\u2605 Recommended\n" if i == 0 else ""
+                items.append(button(f"{star}{info['name']}\n[size=14sp]{info['tag']}[/size]",
+                                    lambda p=p: step2(p), GOLD if i == 0 else BLUE, h="88dp"))
+            for b in items:
+                if isinstance(b, RoundButton):
+                    b.markup = True
+            page("Step 1 of 3: Pick an AI", items, [button("Close", close, GREY)])
+
+        def step2(p):
+            state["prov"] = p
+            info = KEY_WIZARD_INFO[p]
+            items = [text(f"Get your free {info['name']} key:")]
+            for n, s in enumerate(info["steps"], 1):
+                items.append(text(f"[b][color=ffc84d]{n}.[/color][/b]  {s}"))
+            items.append(button("Open the key page", lambda: open_url(info["url"]), GOLD))
+            items.append(text("Your key is like a password. Keep it secret and never send it to anyone. "
+                              "Genius keeps it only on this phone.", "15sp", HINT))
+            page(f"Step 2 of 3: Get a {info['name']} key", items,
+                 [button("Back", step1, GREY), button("I copied it", lambda: step3(p), GOLD)])
+
+        def step3(p, keep=""):
+            info = KEY_WIZARD_INFO[p]
+            box = style_input(TextInput(hint_text=f"Your key starts with {info['starts'][0]}",
+                                        multiline=False, password=True, font_size="18sp",
+                                        size_hint_y=None, height="54dp", text=keep))
+            status = text("", "17sp", HINT)
+            tail = text("", "15sp", HINT)
+
+            def show_tail(*_):
+                k = wizard_clean_key(p, box.text)
+                tail.text = f"Pasted a key ending in {key_tail(k)}" if k else ""
+            box.bind(text=show_tail)
+            show_tail()
+
+            def paste():
+                try:
+                    from kivy.core.clipboard import Clipboard
+                    got = Clipboard.paste() or ""
+                except Exception:
+                    got = ""
+                if got.strip():
+                    box.text = wizard_clean_key(p, got)
+                    status.color, status.text = HINT, "Pasted. Now tap 'Test and save'."
+                else:
+                    status.color, status.text = RED, ("Nothing copied yet. On the key page tap 'Copy', "
+                                                      "then come back and tap Paste.")
+
+            def test():
+                if state["busy"]:
+                    return
+                key = wizard_clean_key(p, box.text)
+                ok, why = key_format_check(p, key)
+                if not ok:
+                    status.color, status.text = RED, why
+                    return
+                state["busy"] = True
+                status.color, status.text = GOLD, "Checking your key with " + info["name"] + "..."
+
+                def work():
+                    good, msg = test_ai_key(p, key)
+                    if good:
+                        try:
+                            save_ai_key(p, key)
+                        except Exception as e:
+                            log(f"KEY WIZARD: save failed: {type(e).__name__}")
+                            good, msg = False, "The key works, but I couldn't save it. Free some phone space and try again."
+
+                    def done(*_):
+                        state["busy"] = False
+                        if not state["open"]:
+                            return
+                        if good:
+                            finish(p, msg)
+                        else:
+                            fail(p, box.text, msg)
+                    Clock.schedule_once(done, 0)
+                threading.Thread(target=work, daemon=True).start()
+
+            items = [text("Paste the key you copied:"), box, tail,
+                     button("Paste", paste, BLUE), status]
+            page("Step 3 of 3: Paste and test", items,
+                 [button("Back", lambda: step2(p), GREY), button("Test and save", test, GOLD)])
+
+        def fail(p, keep, msg):
+            items = [text("[b][color=ff6b85]That didn't work.[/color][/b]"), text(msg)]
+            page("Key not saved", items,
+                 [button("Back", lambda: step2(p), GREY), button("Try again", lambda: step3(p, keep), GOLD)])
+
+        def finish(p, msg):
+            name = KEY_WIZARD_INFO[p]["name"]
+            items = [text(f"[b][color=ffc84d]{msg}[/color][/b]", "21sp"),
+                     text(f"{name} is connected. Ask me anything!")]
+            page("All set", items, [button("Done", close, GOLD)])
+            self.say(f"{name} key saved and tested, ending in {msg.split('Ending in ')[-1].rstrip('.')}. "
+                     "AIs connected: " + (", ".join(connected_ais()) or name) + ".")
+            Clock.schedule_once(lambda *_: close() if state["open"] else None, 4)
+
+        if state["prov"]:
+            step2(state["prov"])
+        else:
+            step1()
+        pop.open()
+
+    def offer_key_wizard(self, *_):
+        """When an answer needs a key, offer the wizard with one tap (once per session)."""
+        if not CURRENT["owner"] or getattr(self, "_key_offered", False):
+            return
+        self._key_offered = True
+        box = BoxLayout(orientation="vertical", spacing=12, padding=14)
+        lb = Label(text="I need a free AI key to answer that. Want me to walk you through getting one? "
+                        "It takes about 2 minutes.", font_size="18sp", color=TEXTCOL,
+                   halign="center", valign="middle")
+        lb.bind(size=lambda w, *_: setattr(w, "text_size", (w.width, None)))
+        box.add_widget(lb)
+        row = BoxLayout(size_hint_y=None, height="56dp", spacing=10)
+        later = RoundButton(text="Later", bg=GREY, fg=TEXTCOL, font_size="18sp")
+        go = RoundButton(text="Set up key", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), font_size="18sp", bold=True)
+        row.add_widget(later)
+        row.add_widget(go)
+        box.add_widget(row)
+        pop = Popup(title="Set up AI key", content=box, size_hint=(0.9, 0.42),
+                    separator_color=GOLD, title_color=GOLD)
+        later.bind(on_press=pop.dismiss)
+
+        def start(*_):
+            pop.dismiss()
+            Clock.schedule_once(lambda *_: self.key_wizard(), 0.1)
+        go.bind(on_press=start)
+        pop.open()
+
+    def _on_chat_ref(self, _w, ref):
+        if ref == "keywizard":
+            self.key_wizard()
+
     def _need_key(self):
         if connected_ais():
             return False
-        self.say("This one needs an AI key. Type setkey and your free Gemini key from aistudio.google.com/apikey "
-                 "(or setgroq / setrouter), then ask again.")
+        self.say("This one needs an AI key. Type key (or tap below) and I'll help you get a free one in 2 minutes, "
+                 "then ask again.")
+        Clock.schedule_once(self.offer_key_wizard, 0.3)
         return True
 
     def life(self, action, arg):
