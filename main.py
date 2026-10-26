@@ -7658,7 +7658,7 @@ NEWS_TOPICS = {
 NEWS_ALIASES = {"trending": "social", "viral": "social", "socialmedia": "social", "social media": "social",
                 "reddit": "social", "tiktok": "social", "x": "social", "twitter": "social", "technology": "tech", "sport": "sports", "football": "sports", "money": "business",
                 "ug": "uganda", "local": "uganda", "global": "world", "international": "world", "music": "entertainment"}
-_NEWS_JUNK = re.compile(r"viral video|video viral|\\^|\\+\\+|full video|leaked|video link|mms|[\u3000-\u9fff\u3010\u3011]|!!", re.I)
+_NEWS_JUNK = re.compile(r"viral video|video viral|\^|\+\+|full video|leaked|video link|mms|[\u3000-\u9fff\u3010\u3011]|!!", re.I)
 NEWS_LINKS = {}            # "news:N" -> url, for tapping a headline
 _NEWS_CACHE = {}
 
