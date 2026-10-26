@@ -528,6 +528,7 @@ CHANGELOG = """Genius 112.2 (2026-10-26)
 - Pro songs with a REAL singing voice and band from ElevenLabs Music. Genius writes the words (Luganda, English or both), ElevenLabs sings and plays them.
 - Say: pro song amapiano about my mum. Words light up karaoke style while it plays.
 - About 2 minutes long, uses about 1,800 ElevenLabs credits (needs your key: seteleven).
+- One download link that always gives the newest Genius, and old shared links now give the newest app too.
 - Fixed: UNEB questions, marking and other AI tools said "couldn't reach the AI" even with internet. Groq was refusing Genius's requests; now they go through.
 
 Genius 112.1 (2026-10-26)
@@ -7561,8 +7562,7 @@ def pin_shortcut(action, label):
     return True
 
 
-GENIUS_APK_FALLBACK = ("https://github.com/ssalimuto/Genius-app/releases/download/v109.1-build59/"
-                       "genius-109.1-arm64-v8a_armeabi-v7a-debug.apk")
+GENIUS_APK_FALLBACK = "https://github.com/ssalimuto/Genius-app/releases/download/android/Genius.apk"   # always the newest app
 GENIUS_LINK = GENIUS_APK_FALLBACK
 _APK_LINK = {}
 
@@ -7570,6 +7570,7 @@ _APK_LINK = {}
 def newest_apk_link():
     """Direct download of the newest Genius app (the newest release that has an APK). Opens straight to the
     download on any Android phone; after install, Genius updates itself to the latest version."""
+    return GENIUS_APK_FALLBACK          # 112.2: one fixed link that every new build refreshes
     hit = _APK_LINK.get("u")
     if hit and time.time() - hit[1] < 6 * 3600:
         return hit[0]
