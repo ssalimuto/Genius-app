@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "111.0"
+VERSION = "111.1"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -443,7 +443,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 111.0
+ABOUT_TEXT = """Genius 111.1
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -504,7 +504,10 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 111.0 (2026-10-26)
+CHANGELOG = """Genius 111.1 (2026-10-26)
+- Save and share: every picture now has Save to gallery, Save to files and Share buttons. Or just say 'save', 'save to files' or 'share picture'. Pictures go to your Gallery in a Genius album.
+
+Genius 111.0 (2026-10-26)
 - Camera fixed: say 'camera' for Selfie (front camera), Back camera or the live zoom camera. Say 'selfie' to open the front camera straight away.
 - 14 new social media effects: HD clear, Warm, Cool, Teal & orange, Cinematic, Fade, Dreamy, Film grain, Glitch, Neon, Cartoon, Duotone pink, Polaroid and Vignette. After you take a photo, tap 'Add effects'.
 
@@ -5167,6 +5170,100 @@ def beautify(path):
     return out, "Made it brighter, sharper and more colourful."
 
 
+# ---------------- 111.1 save to gallery / files, share a picture ----------------
+_MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif",
+         ".mp4": "video/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".pdf": "application/pdf",
+         ".txt": "text/plain"}
+
+
+def save_media(path, where="gallery"):
+    """Copy a Genius creation into the phone's Gallery (Pictures/Genius) or Files (Download/Genius).
+    Returns (content_uri_or_path, message)."""
+    import shutil
+    if not path or not os.path.exists(path):
+        return None, "I couldn't find that file. Make it again, then save."
+    ext = os.path.splitext(path)[1].lower()
+    mime = _MIME.get(ext, "application/octet-stream")
+    name = "Genius_" + time.strftime("%Y%m%d_%H%M%S") + ext
+    kind = mime.split("/")[0]
+    try:
+        from jnius import autoclass
+        CV = autoclass("android.content.ContentValues")
+        cr = autoclass("org.kivy.android.PythonActivity").mActivity.getContentResolver()
+        if android_sdk() >= 29:
+            if where == "files":
+                coll, rel = autoclass("android.provider.MediaStore$Downloads").EXTERNAL_CONTENT_URI, "Download/Genius"
+            elif kind == "video":
+                coll, rel = autoclass("android.provider.MediaStore$Video$Media").EXTERNAL_CONTENT_URI, "Movies/Genius"
+            elif kind == "audio":
+                coll, rel = autoclass("android.provider.MediaStore$Audio$Media").EXTERNAL_CONTENT_URI, "Music/Genius"
+            elif kind == "image":
+                coll, rel = autoclass("android.provider.MediaStore$Images$Media").EXTERNAL_CONTENT_URI, "Pictures/Genius"
+            else:
+                coll, rel = autoclass("android.provider.MediaStore$Downloads").EXTERNAL_CONTENT_URI, "Download/Genius"
+            cv = CV()
+            cv.put("_display_name", name)
+            cv.put("mime_type", mime)
+            cv.put("relative_path", rel)
+            uri = cr.insert(coll, cv)
+            out = cr.openOutputStream(uri)
+            try:
+                with open(path, "rb") as f:
+                    while True:
+                        chunk = f.read(65536)
+                        if not chunk:
+                            break
+                        out.write(bytearray(chunk), 0, len(chunk))
+            finally:
+                out.close()
+            place = "your Gallery (Genius album)" if where != "files" and kind in ("image", "video") else \
+                    ("Music > Genius" if where != "files" and kind == "audio" else "Files > Download > Genius")
+            return uri, f"Saved to {place}."
+        # older Android: plain copy, then tell the gallery about it
+        base = "/storage/emulated/0/" + ("Download/Genius" if where == "files" else
+                                         {"video": "Movies/Genius", "audio": "Music/Genius"}.get(kind, "Pictures/Genius"))
+        os.makedirs(base, exist_ok=True)
+        dest = os.path.join(base, name)
+        shutil.copyfile(path, dest)
+        try:
+            Intent = autoclass("android.content.Intent")
+            Uri = autoclass("android.net.Uri")
+            File = autoclass("java.io.File")
+            i = Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(File(dest)))
+            autoclass("org.kivy.android.PythonActivity").mActivity.sendBroadcast(i)
+        except Exception:
+            pass
+        return dest, f"Saved to {nice_where(dest)}."
+    except Exception as e:
+        log(f"SAVE media: {type(e).__name__}: {e}")
+        return None, "I couldn't save it. Allow Genius to use storage, then try again."
+
+
+def share_media(path):
+    """Send a picture, song or video to WhatsApp, TikTok, Facebook... (saves it to the gallery first)."""
+    uri, msg = save_media(path, "gallery")
+    if uri is None:
+        return False
+    try:
+        from jnius import autoclass, cast
+        act = autoclass("org.kivy.android.PythonActivity").mActivity
+        Intent = autoclass("android.content.Intent")
+        if isinstance(uri, str):
+            uri = autoclass("android.net.Uri").fromFile(autoclass("java.io.File")(uri))
+        i = Intent(Intent.ACTION_SEND)
+        i.setType(_MIME.get(os.path.splitext(path)[1].lower(), "*/*"))
+        i.putExtra(Intent.EXTRA_STREAM, cast("android.os.Parcelable", uri))
+        i.putExtra(Intent.EXTRA_TEXT, "Made with Genius")
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        ch = Intent.createChooser(i, "Share")
+        ch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        act.startActivity(ch)
+        return True
+    except Exception as e:
+        log(f"SHARE media: {type(e).__name__}: {e}")
+        return False
+
+
 def fun_out(prefix, ext=".jpg"):
     return os.path.join(genius_dl("fun"), f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}{ext}")
 
@@ -8324,6 +8421,19 @@ PRIVACY_TEXT = ("[b]Genius privacy shield[/b]\n"
 def v110_handle(screen, line, action, arg, low):
     """Genius 110 commands. Returns True when handled."""
     lw = low.strip(" .!?")
+    if lw in ("save", "save it", "save picture", "save photo", "save to gallery", "download", "download it",
+              "download picture", "save to files", "save to file", "download to files", "share picture", "share photo"):
+        src = LAST_IMAGE.get("path")
+        if not src or not os.path.exists(src):
+            screen.say("Make or add a picture first, then say save.")
+            return True
+        if lw.startswith("share"):
+            if not share_media(src):
+                screen.say("Sharing didn't open. Say save, then share it from your gallery.")
+            return True
+        _u, msg = save_media(src, "files" if "file" in lw else "gallery")
+        screen.say(msg)
+        return True
     if action in ("private", "privacy") or lw in ("privacy shield", "private screen"):
         a = arg.lower().strip()
         if a in ("on", "yes", "1"):
@@ -10186,6 +10296,8 @@ class ChatScreen(BoxLayout):
     def _all_tools(self):
         """Every Genius tool in one list, so the Search button can find them all."""
         return [("Share Genius", self.share_menu, GOLD), ("Privacy shield", lambda: self.handle("privacy"), GOLD),
+                ("Save last picture to gallery", lambda: self.handle("save"), GOLD),
+                ("Save last picture to files", lambda: self.handle("save to files"), BLUE),
                 ("Private screen on", lambda: self.handle("private on"), BLUE),
                 ("Private screen off", lambda: self.handle("private off"), GREY), ("Speak (talk to Genius)", self.speak_input, GOLD),
                 ("World news", self.news_menu, GOLD), ("Trending on social media", lambda: self.show_news("social"), GOLD), ("UNEB practice", lambda: self.handle("uneb"), BLUE),
@@ -10370,7 +10482,7 @@ class ChatScreen(BoxLayout):
             cv.put("mime_type", "image/jpeg")
             if android_sdk() >= 29:
                 cv.put("relative_path", "Pictures/Genius")
-            uri = cr.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv)
+            uri = cr.insert(autoclass("android.provider.MediaStore$Images$Media").EXTERNAL_CONTENT_URI, cv)
             if not getattr(self, "_cam_bound", False):
                 activity.bind(on_activity_result=self._on_cam_result)
                 self._cam_bound = True
@@ -10421,7 +10533,7 @@ class ChatScreen(BoxLayout):
             if not getattr(self, "_pick_bound", False):
                 activity.bind(on_activity_result=self._on_pick_result)
                 self._pick_bound = True
-            it = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+            it = Intent(Intent.ACTION_PICK, autoclass("android.provider.MediaStore$Images$Media").EXTERNAL_CONTENT_URI)
             it.setType("image/*")
             PA.mActivity.startActivityForResult(it, self.PICK_CODE)
         except Exception as e:
@@ -10623,10 +10735,27 @@ class ChatScreen(BoxLayout):
         box.add_widget(Label(text=f"{caption}\nSaved in {nice_where(path)}",
                              size_hint_y=None, height="72dp", font_size="15sp", color=TEXTCOL,
                              halign="center", valign="middle", text_size=(Window.width * 0.85, None)))
-        btn = RoundButton(text="Close", bg=GOLD, fg=(0.1, 0.1, 0.1, 1),
-                          size_hint_y=None, height="52dp", bold=True)
+        acts = BoxLayout(size_hint_y=None, height="52dp", spacing=6)
+        for label, where, col in (("Save to gallery", "gallery", GOLD), ("Save to files", "files", BLUE),
+                                  ("Share", "share", BLUE)):
+            b = RoundButton(text=label, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
+                            font_size="14sp", bold=True)
+
+            def act(_b, where=where):
+                if where == "share":
+                    if not share_media(path):
+                        self.say("Sharing didn't open. Save it to your gallery, then share it from there.")
+                    return
+                _u, msg = save_media(path, where)
+                _b.text = "Saved" if _u is not None else _b.text
+                self.say(msg)
+            b.bind(on_press=act)
+            acts.add_widget(b)
+        box.add_widget(acts)
+        btn = RoundButton(text="Close", bg=GREY, fg=TEXTCOL,
+                          size_hint_y=None, height="48dp", bold=True)
         box.add_widget(btn)
-        pop = Popup(title="Your drawing", content=box, size_hint=(0.95, 0.9),
+        pop = Popup(title="Your picture", content=box, size_hint=(0.95, 0.9),
                     separator_color=GOLD, title_color=GOLD)
         btn.bind(on_press=pop.dismiss)
         pop.open()
