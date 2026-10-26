@@ -40,6 +40,5 @@ jobs:
           tag_name: v${{ env.VER }}-build${{ github.run_number }}
           name: Genius ${{ env.VER }} (build ${{ github.run_number }})
           files: |
-            bin/*.apk
             bin/genius_live.py
             bin/genius_live.sha256
