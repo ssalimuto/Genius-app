@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "110.8"
+VERSION = "110.9"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -443,7 +443,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 110.8
+ABOUT_TEXT = """Genius 110.9
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -504,7 +504,11 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 110.8 (2026-10-26)
+CHANGELOG = """Genius 110.9 (2026-10-26)
+- Fixed news and Trending on social media not loading on phones.
+- Trending now also shows what people in Uganda and around the world are searching for, from Google Trends, and it loads faster.
+
+Genius 110.8 (2026-10-26)
 - Share now sends a link that downloads Genius straight onto any Android phone. After it's installed, Genius updates itself to the newest version.
 - Privacy shield: your chats, memory, notes and keys are locked so only Genius can read them. Sharing sends only the link.
 - 'private on' blocks screenshots, screen recorders and on-screen AI from seeing Genius. 'private off' turns it off.
@@ -7899,7 +7903,7 @@ _NEWS_CACHE = {}
 def _news_fetch(url):
     ua = "android:org.ssalimuto.geniu2:v110 (news reader)" if "reddit.com" in url else "Mozilla/5.0 (Linux; Android) Genius"
     req = urllib.request.Request(url, headers={"User-Agent": ua})
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with urllib.request.urlopen(req, timeout=12, context=ssl_context()) as r:   # phone needs Genius's own certificates
         return r.read()
 
 
@@ -7913,11 +7917,39 @@ def social_items(limit=10):
     import xml.etree.ElementTree as ET
     A = "{http://www.w3.org/2005/Atom}"
     out = []
-    for url, name in SOCIAL_FEEDS:
+    raw = {}
+
+    def grab(u):
         try:
-            root = ET.fromstring(_news_fetch(url))
+            raw[u] = _news_fetch(u)
         except Exception as e:
             log(f"SOCIAL feed failed: {type(e).__name__}")
+    trends = (("https://trends.google.com/trending/rss?geo=UG", "Trending in Uganda"),
+              ("https://trends.google.com/trending/rss?geo=US", "Trending worldwide"))
+    th = [threading.Thread(target=grab, args=(u,), daemon=True) for u, _ in SOCIAL_FEEDS + trends]
+    for t in th:
+        t.start()
+    for t in th:
+        t.join(14)
+    H = "{https://trends.google.com/trending/rss}"
+    for url, name in trends:                 # what people are searching for right now
+        try:
+            root = ET.fromstring(raw[url])
+        except Exception:
+            continue
+        for it in list(root.iter("item"))[:4]:
+            term = (it.findtext("title") or "").strip()
+            ni = it.find(H + "news_item")
+            head = (ni.findtext(H + "news_item_title") or "").strip() if ni is not None else ""
+            link = (ni.findtext(H + "news_item_url") or "").strip() if ni is not None else ""
+            src = (ni.findtext(H + "news_item_source") or "").strip() if ni is not None else ""
+            if term:
+                out.append((f"{term.title()}: {head}" if head else term.title(),
+                            name + (" · " + src if src else ""), link, (it.findtext("pubDate") or "")[5:22]))
+    for url, name in SOCIAL_FEEDS:
+        try:
+            root = ET.fromstring(raw[url])
+        except Exception:
             continue
         n = 0
         for e in root.iter(A + "entry"):
@@ -7930,7 +7962,7 @@ def social_items(limit=10):
             n += 1
             if n >= (5 if "worldnews" in url else 3):
                 break
-    return out[:limit]
+    return out[:limit + 4]
 
 
 def news_items(topic="world", limit=8):
@@ -7947,6 +7979,11 @@ def news_items(topic="world", limit=8):
             got += [x for x in news_items("viral OR trending on social media", 6) if x not in got]
         except Exception:
             pass
+        if not got:
+            try:
+                got = news_items("world", limit)
+            except Exception:
+                got = []
         if got:
             _NEWS_CACHE[t] = (got, time.time())
         return got[:limit]
