@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "109.2"
+VERSION = "109.3"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -353,6 +353,27 @@ ALLOWED = MappingProxyType({
     "theme": "Change the look: theme gold, theme diamond, or theme classic",
     "stop": "Shut down",
 })
+HELP_EXTRA = {
+    "music / sound <idea>": "Make a song, e.g. sound happy afrobeat about my friends (play song, stop music)",
+    "studio / banana": "Photo studio: AI edits, change clothes or place, blend photos (banana pro on/off)",
+    "transform / looks": "Instant effects and iPhone-style looks that work offline",
+    "ultra / zoom photo / ai zoom": "Make a photo sharper, or zoom into it",
+    "collage / slideshow": "Put pictures together, or make a looping video",
+    "camera": "Zoom camera",
+    "new picture / undo picture": "Start a fresh picture, or go back one",
+    "quick <question>": "Fastest answer from any connected AI",
+    "mind <question>": "Genius Mind: every AI plus web checks for one careful answer",
+    "teach skill <name>: step; step": "Teach Genius a job it can repeat with run <name>",
+    "better: <fix>": "Correct my last answer so I learn it",
+    "apps / open <app>": "List or open your phone's apps (owner only)",
+    "wealth / market <coin or currency>": "Money bot, crypto and exchange rates",
+    "home": "Home page with big buttons",
+    "premium": "Your plan and how to unlock premium",
+    "everywhere": "Floating bubble, 'Hey Genius' and home-screen shortcuts",
+    "share": "Share Genius with friends",
+    "accounts": "Manage guest accounts (owner)",
+    "mic test": "Find out why the microphone can't hear you",
+}
 LIFE_ACTIONS = ("life", "study", "subjects", "exam", "quiz", "explain", "studyplan",
                 "spent", "got", "money", "goal", "put", "brief",
                 "freelance", "skills", "cv", "proposal", "gigs", "price",
@@ -361,7 +382,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 107.0
+ABOUT_TEXT = """Genius 109.3
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -418,8 +439,17 @@ What this means
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
-VERSION_DATE = "2026-10-25"
-CHANGELOG = """Genius 109.0 (2026-10-26)
+VERSION_DATE = "2026-10-26"
+CHANGELOG = """Genius 109.3 (2026-10-26)
+- Pictures work again: when one free picture maker is busy, Genius tries a second one by itself.
+- Pictures, songs and effects save where your phone allows (Download/Genius, or Genius's own storage) and always show in the app.
+- Songs mix faster, and if one player can't play a song, Genius uses the phone's own player.
+- Faster answers: when the internet is down, Genius stops waiting and tells you at once.
+- Clearer messages that say what to do next. 'help' now lists every command, including theme.
+- Fixes: 'open wifi' opens your locker again, 'start fresh' works, calc understands 2^10, 12 x 3 and 15% of 40000.
+- Weather shows the chance of rain and remembers the last reading for 10 minutes.
+
+Genius 109.0 (2026-10-26)
 - Opens with your secret code: create it the first time, then just type it to unlock.
 - The three-bar menu at the top right holds Speak, Draw, Locker, Notes, Weather, Deep, Clear, Stop and the rest.
 - The top shows only your chat, Search and the menu.
@@ -624,10 +654,10 @@ def _user_mb():
     """MB of pictures, songs, videos and files this person has saved in Genius."""
     total = 0
     try:
-        for dp, _, fs in os.walk(genius_dl()):
+        for folder, _, fs in os.walk(genius_dl()):
             for f in fs:
                 try:
-                    total += os.path.getsize(os.path.join(dp, f))
+                    total += os.path.getsize(os.path.join(folder, f))
                 except OSError:
                     pass
     except Exception:
@@ -957,16 +987,35 @@ def _luganda_voice(token):
 
 
 def _play_file(path):
-    from kivy.core.audio import SoundLoader
+    """Play a sound file. Kivy first; if Kivy can't open it, Android's own MediaPlayer. Returns True if playing."""
     if _luganda["sound"] is not None:
         try:
             _luganda["sound"].stop()
         except Exception:
             pass
-    snd = SoundLoader.load(path)
-    if snd:
-        _luganda["sound"] = snd
-        snd.play()
+        _luganda["sound"] = None
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        from kivy.core.audio import SoundLoader
+        snd = SoundLoader.load(path)
+        if snd:
+            _luganda["sound"] = snd
+            snd.play()
+            return True
+    except Exception as e:
+        log(f"PLAY kivy failed: {e}")
+    try:
+        from jnius import autoclass
+        mp = autoclass("android.media.MediaPlayer")()
+        mp.setDataSource(path)
+        mp.prepare()
+        mp.start()
+        _luganda["sound"] = mp
+        return True
+    except Exception as e:
+        log(f"PLAY android failed: {e}")
+    return False
 
 
 def luganda_speak(text):
@@ -1310,12 +1359,24 @@ def clean_key(text):
     return m.group(1) if m else text.strip().strip("'\"")
 
 
+_SSL = []
+
+
 def ssl_context():
-    try:
-        import certifi
-        return ssl.create_default_context(cafile=certifi.where())
-    except Exception:
-        return ssl.create_default_context()
+    """One shared TLS context (building it reads the certificate file, so do it once)."""
+    if not _SSL:
+        try:
+            import certifi
+            _SSL.append(ssl.create_default_context(cafile=certifi.where()))
+        except Exception:
+            _SSL.append(ssl.create_default_context())
+    return _SSL[0]
+
+
+def _is_net_error(e):
+    """True for 'no internet / timed out' problems (not a server's answer): trying another model won't help."""
+    return (not isinstance(e, urllib.error.HTTPError)) and isinstance(
+        e, (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError))
 
 
 LUGANDA = ("Always reply in clear, simple English. ")
@@ -1342,35 +1403,159 @@ def image_models():
     return IMAGE_MODELS
 
 
-def free_image(prompt, tries=3):
-    """Free picture maker (Pollinations, no key). Busy at times, so it retries."""
-    q = urllib.parse.quote(prompt[:900])
-    url = f"https://image.pollinations.ai/prompt/{q}?width=640&height=896&nologo=true&enhance=false&seed={random.randint(1, 99999)}"
-    last = "The free picture maker is busy. Try again in a minute."
-    for i in range(tries):
+HORDE_URL = "https://aihorde.net/api/v2"      # free community picture maker, works with the anonymous key
+POLLI_URL = "https://image.pollinations.ai/prompt/"
+FREE_DRAW_FAIL = ("The free picture makers are very busy right now. Wait a minute and say it again, "
+                  "or add a Gemini key with billing (setkey) for faster, sharper pictures.")
+
+
+def _short_prompt(prompt, limit=380):
+    """Free makers want a short prompt: keep the description, drop the long camera wording."""
+    p = (prompt or "").replace(PHOTO_STYLE, "").strip(" .,")
+    p = re.sub(r"\s+", " ", p)[:limit].strip(" .,") or "a beautiful real photograph"
+    return p + ", real photograph, photorealistic, natural light, sharp focus"
+
+
+def _retry_after(body, default=0):
+    m = re.search(r"[Rr]etry after (\d+)\s*s", body or "")
+    return int(m.group(1)) if m else default
+
+
+def save_picture(data, prefix="drawing"):
+    """Save picture bytes as a JPG/PNG Kivy can always show (WebP/odd formats are converted).
+    Goes to Download/Genius/pictures when the phone allows it, else Genius's own folder."""
+    ext = ".png" if data[:8] == b"\x89PNG\r\n\x1a\n" else ".jpg"
+    if not (data[:3] == b"\xff\xd8\xff" or ext == ".png"):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Genius/101"})
-            try:
-                r = urllib.request.urlopen(req, timeout=90, context=ssl_context())
-            except urllib.error.URLError as e:
-                if "CERTIFICATE" not in str(e).upper():
-                    raise
-                r = urllib.request.urlopen(req, timeout=90, context=ssl._create_unverified_context())
-            with r:
-                data = r.read()
-                ctype = r.headers.get("Content-Type", "")
+            import io
+            from PIL import Image
+            im = Image.open(io.BytesIO(data)).convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=93)
+            data, ext = buf.getvalue(), ".jpg"
+        except Exception as e:
+            log(f"PICTURE convert failed: {e}")
+    name = f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}_{random.randint(100, 999)}{ext}"
+    for d in (genius_dl("pictures"), private_dir("pictures")):
+        try:
+            out = os.path.join(d, name)
+            with open(out, "wb") as f:
+                f.write(data)
+            return os.path.abspath(out)
+        except Exception as e:
+            log(f"PICTURE save failed in {d}: {e}")
+    out = os.path.abspath(name)
+    with open(out, "wb") as f:
+        f.write(data)
+    return out
+
+
+def _fetch(url, timeout=45, data=None, headers=None, method=None):
+    """GET/POST with a timeout; retries once without certificate checks on old phones. Returns (code, ctype, bytes)."""
+    h = {"User-Agent": "Genius/" + VERSION}
+    h.update(headers or {})
+    req = urllib.request.Request(url, data=data, headers=h, method=method)
+    try:
+        r = urllib.request.urlopen(req, timeout=timeout, context=ssl_context())
+    except urllib.error.URLError as e:
+        if isinstance(e, urllib.error.HTTPError) or "CERTIFICATE" not in str(e).upper():
+            raise
+        r = urllib.request.urlopen(req, timeout=timeout, context=ssl._create_unverified_context())
+    with r:
+        return r.status, r.headers.get("Content-Type", ""), r.read()
+
+
+def _pollinations(prompt):
+    """Pollinations (no key). Free use is limited to about 1 picture per 45 s per phone, so wait once if asked."""
+    q = urllib.parse.quote(prompt)
+    for attempt in range(2):
+        url = f"{POLLI_URL}{q}?width=640&height=896&nologo=true&enhance=false&seed={random.randint(1, 99999)}"
+        try:
+            code, ctype, data = _fetch(url, timeout=60)
             if ctype.startswith("image") and len(data) > 2000:
-                name = f"drawing_{int(time.time())}.jpg"
-                with open(name, "wb") as f:
-                    f.write(data)
-                return os.path.abspath(name), None
+                return save_picture(data), None
+            return None, "busy"
         except urllib.error.HTTPError as e:
+            body = e.read().decode("utf8", "ignore")
             if e.code == 400:
-                return None, "The picture maker refused that description. Try different words."
+                return None, "refused"
+            wait = _retry_after(body, 0)
+            log(f"POLLINATIONS {e.code}: retry after {wait}s")
+            if attempt == 0 and e.code in (402, 429, 503) and 0 < wait <= 15:
+                time.sleep(wait + 1)
+                continue
+            return None, "busy"
+        except Exception as e:
+            log(f"POLLINATIONS failed: {e}")
+            return None, "net"
+    return None, "busy"
+
+
+def _horde_image(prompt, budget=150):
+    """AI Horde (free, anonymous key): send the job, wait for a volunteer computer, download the picture."""
+    hdr = {"apikey": "0000000000", "Client-Agent": "Genius:" + VERSION + ":ssalimuto",
+           "Content-Type": "application/json"}
+    body = json.dumps({"prompt": prompt + " ### cartoon, drawing, anime, painting, text, watermark, blurry, deformed",
+                       "params": {"width": 512, "height": 704, "steps": 22, "n": 1},
+                       "nsfw": False, "censor_nsfw": True, "r2": True}).encode()
+    try:
+        _, _, raw = _fetch(HORDE_URL + "/generate/async", timeout=30, data=body, headers=hdr)
+        jid = json.loads(raw)["id"]
+    except Exception as e:
+        log(f"HORDE submit failed: {e}")
+        return None, "net"
+    t_end = time.time() + budget
+    done = False
+    while time.time() < t_end:
+        time.sleep(4)
+        try:
+            _, _, raw = _fetch(f"{HORDE_URL}/generate/check/{jid}", timeout=20, headers=hdr)
+            st = json.loads(raw)
         except Exception:
-            last = "Your internet is too slow for drawing right now. Try better signal."
-        time.sleep(11)
-    return None, last
+            continue
+        if st.get("faulted") or st.get("is_possible") is False:
+            break
+        if st.get("done"):
+            done = True
+            break
+    try:
+        if not done:
+            _fetch(f"{HORDE_URL}/generate/status/{jid}", timeout=15, headers=hdr, method="DELETE")
+            return None, "busy"
+        _, _, raw = _fetch(f"{HORDE_URL}/generate/status/{jid}", timeout=30, headers=hdr)
+        gen = (json.loads(raw).get("generations") or [{}])[0]
+        if gen.get("censored"):
+            return None, "refused"
+        img = gen.get("img", "")
+        if img.startswith("http"):
+            _, _, data = _fetch(img, timeout=60)
+        else:
+            data = base64.b64decode(img)
+        if len(data) > 2000:
+            return save_picture(data), None
+    except Exception as e:
+        log(f"HORDE result failed: {e}")
+    return None, "busy"
+
+
+def free_image(prompt, tries=2):
+    """Free picture makers (no key): Pollinations first, then AI Horde. Returns (path, friendly_error)."""
+    short = _short_prompt(prompt)
+    reasons = []
+    path, why = _pollinations(short)
+    if path:
+        return path, None
+    reasons.append(why)
+    if why != "refused":
+        path, why = _horde_image(short)
+        if path:
+            return path, None
+        reasons.append(why)
+    if "refused" in reasons:
+        return None, "The picture maker won't draw that description. Try different, gentler words."
+    if all(r == "net" for r in reasons):
+        return None, "I couldn't reach the picture makers. Check your internet (or move to better signal) and try again."
+    return None, FREE_DRAW_FAIL
 
 
 NOT_REAL_WORDS = ("cartoon", "anime", "manga", "comic", "illustration", "illustrated", "drawing",
@@ -1406,18 +1591,56 @@ def realistic_prompt(prompt):
 ME_WORDS = re.compile(r"\b(me|my face|myself|my photo|like me|of me)\b", re.I)
 
 
-def genius_dl(sub=""):
-    """Download/Genius for the owner, Download/Genius/users/<name> for other accounts."""
-    base = "/storage/emulated/0/Download/Genius" if os.path.isdir("/storage/emulated/0") else os.path.join(ROOT, "genius_files")
+_DIR_OK = {}
+
+
+def _dir_writable(d):
+    """True if we can really create files in d (Android 10+ may refuse shared folders). Cached."""
+    if d in _DIR_OK:
+        return _DIR_OK[d]
+    ok = False
+    try:
+        os.makedirs(d, exist_ok=True)
+        probe = os.path.join(d, f".genius_probe_{os.getpid()}_{random.randint(1000, 9999)}")
+        with open(probe, "wb") as f:
+            f.write(b"ok")
+        os.remove(probe)
+        ok = True
+    except Exception as e:
+        log(f"STORAGE not writable {d}: {e}")
+    _DIR_OK[d] = ok
+    return ok
+
+
+def private_dir(sub=""):
+    """Genius's own folder inside the app: always writable, even when Android blocks Download."""
+    base = os.path.join(ROOT, "genius_files")
     if not CURRENT["owner"]:
         base = os.path.join(base, "users", CURRENT["name"])
     d = os.path.join(base, sub) if sub else base
-    try:
-        os.makedirs(d, exist_ok=True)
-    except Exception:
-        d = os.path.abspath(sub or ".")
-        os.makedirs(d, exist_ok=True)
+    os.makedirs(d, exist_ok=True)
     return d
+
+
+def genius_dl(sub=""):
+    """Download/Genius for the owner, Download/Genius/users/<name> for other accounts.
+    Falls back to Genius's own folder when the phone doesn't allow writing to Download."""
+    if os.path.isdir("/storage/emulated/0"):
+        base = "/storage/emulated/0/Download/Genius"
+        if not CURRENT["owner"]:
+            base = os.path.join(base, "users", CURRENT["name"])
+        d = os.path.join(base, sub) if sub else base
+        if _dir_writable(d):
+            return d
+    return private_dir(sub)
+
+
+def nice_where(path):
+    """Where a saved file is, in words a person can follow."""
+    p = os.path.dirname(os.path.abspath(path or ""))
+    if p.startswith("/storage/emulated/0/"):
+        return p.replace("/storage/emulated/0/", "") + " on your phone"
+    return "Genius's own storage (type 'storage' to see it)"
 
 
 def set_my_photo(src=None):
@@ -1439,21 +1662,29 @@ def set_my_photo(src=None):
         src = best
     if not src or not os.path.exists(src):
         return None
-    d = genius_dl()
-    out = os.path.join(d, "me.png" if src.lower().endswith(".png") else "me.jpg")
-    for n in ("me.jpg", "me.jpeg", "me.png"):
+    data = open(src, "rb").read()
+    for d in (genius_dl(), private_dir()):
+        out = os.path.join(d, "me.png" if src.lower().endswith(".png") else "me.jpg")
+        if os.path.abspath(out) == os.path.abspath(src):
+            return out
+        for n in ("me.jpg", "me.jpeg", "me.png"):
+            for dd in (genius_dl(), private_dir()):
+                try:
+                    os.remove(os.path.join(dd, n))
+                except Exception:
+                    pass
         try:
-            os.remove(os.path.join(d, n))
-        except Exception:
-            pass
-    with open(src, "rb") as a, open(out, "wb") as b:
-        b.write(a.read())
-    return out
+            with open(out, "wb") as b:
+                b.write(data)
+            return out
+        except Exception as e:
+            log(f"SETME save failed in {d}: {e}")
+    return None
 
 
 def my_photo():
     """The user's own reference photo: Download/Genius/me.jpg (or .png)."""
-    for d in (genius_dl(), "."):
+    for d in (genius_dl(), private_dir(), "."):
         for n in ("me.jpg", "me.jpeg", "me.png"):
             f = os.path.join(d, n)
             if os.path.exists(f):
@@ -1469,10 +1700,13 @@ def gemini_image(prompt):
         path, err = _gemini_image(prompt, ref)
         if path:
             return path, None
-        return None, ("To keep YOUR face I need Gemini picture access (" + str(err) + "). "
-                      "The free maker can't copy a real face, it only invents new people. "
-                      "Add billing to your Gemini key at aistudio.google.com, then try again.")
-    real = realistic_prompt(prompt)
+        if err == "no key":
+            return None, ("To keep YOUR face I need a Gemini key with picture access. Type setkey and your key "
+                          "from aistudio.google.com/apikey. The free maker can only invent new people.")
+        return None, ("To keep YOUR face I need Gemini picture access, and it said: " + str(err) + "\n"
+                      "The free maker can't copy a real face, only invent new people. "
+                      "Turn on billing for your key at aistudio.google.com, then try again.")
+    real = realistic_prompt(prompt) if connected_ais() else _short_prompt(prompt)
     path, err = _gemini_image(real)
     if path:
         return path, None
@@ -1513,6 +1747,8 @@ def is_image_edit(low):
 
 def blend_images(paths, instruction):
     path, err = _gemini_image(instruction, blend=paths)
+    if not path and err == "no key":
+        err = "Blending photos needs a Gemini key. Type setkey and your key from aistudio.google.com/apikey."
     return path, (None if path else err)
 
 
@@ -1523,9 +1759,11 @@ def edit_image(instruction):
     if path:
         return path, None
     log(f"EDIT: Gemini couldn't ({err}); not redrawing, so the face and position never change")
-    return None, ("I couldn't edit it without changing how you look, so I left your picture as it is. "
-                  f"({err}) True editing needs Nano Banana: turn on billing for your key at aistudio.google.com, "
-                  "or try again later. Instant looks and effects in Fun studio always keep your picture the same.")
+    why = ("there's no Gemini key yet (type setkey and your key from aistudio.google.com/apikey)"
+           if err == "no key" else str(err))
+    return None, ("I couldn't make that AI change, so your picture is unchanged. Reason: " + why + "\n"
+                  "AI edits need Nano Banana (a Gemini key with billing). Instant looks and effects in "
+                  "Fun studio (say 'transform' or 'looks') work offline and keep your picture the same.")
 
 
 def _img_part(path):
@@ -1594,10 +1832,7 @@ def _gemini_image(prompt, ref=None, edit=None, blend=None):
             for part in parts:
                 data = part.get("inlineData") or part.get("inline_data")
                 if data and data.get("data"):
-                    name = f"drawing_{int(time.time())}.png"
-                    with open(name, "wb") as f:
-                        f.write(base64.b64decode(data["data"]))
-                    return os.path.abspath(name), None
+                    return save_picture(base64.b64decode(data["data"])), None
             last = "The model sent no picture. Try a simpler description."
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf8", "ignore")
@@ -1611,9 +1846,10 @@ def _gemini_image(prompt, ref=None, edit=None, blend=None):
             else:
                 last = "Google is busy. Try again shortly."
             continue
-        except Exception:
-            last = "Your internet is too slow for drawing right now. Try better signal."
-            continue
+        except Exception as e:
+            log(f"DRAW net error on {model}: {e}")
+            last = "Your internet is too slow for drawing right now. Move to better signal and try again."
+            break                          # the network is the problem: other models won't help
     return None, last
 
 
@@ -1660,10 +1896,12 @@ def _gemini_try(key, use_search, max_tokens, timeout, deep):
                     continue               # busy: retry same model once
                 err = "Google is busy right now. Ask again in a moment."
                 break                      # try next model
-            except Exception:
+            except Exception as e:
                 err = ("Your internet is slow right now. Move to better signal, "
                        "or turn data off and on, then ask again.")
-                break                      # try next (lighter) model
+                if _is_net_error(e):
+                    return None, err, False    # no internet: don't wait on more models
+                break                      # odd reply: try next (lighter) model
     return None, err, False
 
 
@@ -1776,12 +2014,14 @@ def _search_web(key, query):
                "generationConfig": {"maxOutputTokens": 600}}
     for model in ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite"):
         try:
-            d = _post_gemini(key, model, payload, 60)
+            d = _post_gemini(key, model, payload, 45)
             parts = d["candidates"][0]["content"]["parts"]
             t = "\n".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
             if t:
                 return t
-        except Exception:
+        except Exception as e:
+            if _is_net_error(e):
+                break
             continue
     return "Search failed right now."
 
@@ -2016,9 +2256,11 @@ def agent_reply(text, ui, deep=False):
             if e.code == 429:
                 err = "Free limit reached for now. Wait a minute and ask again."
             continue
-        except Exception:
+        except Exception as e:
             err = ("Your internet is slow right now. Move to better signal, "
                    "or turn data off and on, then ask again.")
+            if _is_net_error(e):
+                return None, err               # fail fast: the next AI in the chain takes over
             continue
     # last resort: plain answer without tools
     reply, e2 = gemini_reply(text, False)
@@ -2082,12 +2324,14 @@ def _ask_gemini_only(prompt, max_tokens=600, json_mode=False, search=False, syst
                "generationConfig": cfg}
     for model in ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite"):
         try:
-            d = _post_gemini(key, model, payload, 60)
+            d = _post_gemini(key, model, payload, 45)
             parts = d["candidates"][0]["content"]["parts"]
             t = "\n".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
             if t:
                 return t
-        except Exception:
+        except Exception as e:
+            if _is_net_error(e):
+                break                      # no internet: let the next provider try at once
             continue
     return None
 
@@ -2121,12 +2365,21 @@ def make_quiz(topic, subjects):
         f'"a": "A"|"B"|"C"|"D", "topic": "Subject: topic", "why": one-sentence explanation}}.',
         500, json_mode=True)
     try:
-        q = json.loads(raw)
-        if len(q["o"]) == 4 and q["a"] in "ABCD":
+        q = json.loads(raw) if raw and connected_ais() else None
+        if q and len(q["o"]) == 4 and str(q["a"]).strip().upper() in ("A", "B", "C", "D") and q.get("q"):
+            q["a"] = str(q["a"]).strip().upper()
+            q.setdefault("topic", str(want).title())
             return q
     except Exception:
         pass
-    return dict(random.choice(OFFLINE_QUIZ))
+    # offline: prefer a question from the asked subject, and don't repeat the last one
+    w = str(want).lower().split(":")[0].strip()
+    pool = [x for x in OFFLINE_QUIZ if w and w in x["topic"].lower()] or OFFLINE_QUIZ
+    last = getattr(make_quiz, "_last", None)
+    pool = [x for x in pool if x["q"] != last] or pool
+    q = dict(random.choice(pool))
+    make_quiz._last = q["q"]
+    return q
 
 
 def exam_countdown(d):
@@ -2707,7 +2960,11 @@ _answer_cache = {}
 
 def provider_key(name):
     f = PROVIDERS[name]["file"]
-    return clean_key(open(f).read()) if os.path.exists(f) else None
+    try:
+        k = clean_key(open(f).read()) if os.path.exists(f) else None
+    except Exception:
+        return None
+    return k or None
 
 
 def _http_json(url, key, body=None, timeout=30):
@@ -2752,12 +3009,21 @@ def other_ai(name, text, system=None, convo=None, max_tokens=700):
             model = pick_model(name, key)
             d = _http_json(PROVIDERS[name]["base"] + "/chat/completions", key,
                            {"model": model, "messages": msgs, "max_tokens": max_tokens,
-                            "temperature": 0.6}, timeout=40)
+                            "temperature": 0.6}, timeout=30)
             return d["choices"][0]["message"]["content"].strip()
         except Exception as e:
             log(f"{name} failed: {e}")
+            if _is_net_error(e):
+                break                          # no internet: retrying only wastes time
             _model_cache.pop(name, None)       # maybe the model was retired; re-pick once
     return None
+
+
+NO_AI_MSG = ("I need an AI key to answer that. Type setkey and your free Gemini key from "
+             "aistudio.google.com/apikey (or setgroq with a free key from console.groq.com). "
+             "Offline I can still do notes, calc, money, quiz, music, effects and more: type help.")
+NET_AI_MSG = ("I couldn't reach any AI just now. Check your internet or move to better signal, "
+              "then ask again.")
 
 
 def connected_ais():
@@ -2800,7 +3066,7 @@ def ask_all(question):
     for t in th:
         t.join(70)
     if not results:
-        return "No AIs connected. Use setkey (Gemini), setgroq or setrouter."
+        return NO_AI_MSG
     return "\n\n".join(f"[b]{k}[/b] ({sec:.1f}s)\n{r}" for k, (r, sec) in
                        sorted(results.items(), key=lambda x: x[1][1]))
 
@@ -2820,7 +3086,9 @@ def fast_answer(question):
             "gemini": lambda: _ask_gemini_only(question, 400),
             "openrouter": lambda: other_ai("openrouter", question, max_tokens=400)}
     have = connected_ais()
-    jobs = {k: v for k, v in jobs.items() if k in have} or {"gemini": jobs["gemini"]}
+    jobs = {k: v for k, v in jobs.items() if k in have}
+    if not jobs:
+        return NO_AI_MSG
     t0 = time.time()
 
     def run(k, fn):
@@ -2841,11 +3109,13 @@ def fast_answer(question):
             if len(_FAST_CACHE) > 200:
                 _FAST_CACHE.pop(next(iter(_FAST_CACHE)))
             return r.strip() + f"\n[size=11sp][color=9aa0c0]\u26a1 {time.time() - t0:.1f}s[/color][/size]"
-    return "No AI answered fast enough. Check your internet."
+    return NET_AI_MSG
 
 
 def genius_mind(question):
     """Genius Mind: plan, ask every AI, cross-check with live web search, critique, then one best answer."""
+    if not connected_ais():
+        return NO_AI_MSG
     plan = ask_gemini("Break this question into the key sub-questions and facts needed. Short list only."
                       + brain_recall(question) + "\n\n" + question,
                       300) or ""
@@ -2881,6 +3151,8 @@ def _ai_text(prompt, tokens=900, search=False):
 
 def genius_agent(task, steps=None):
     """Plans a job, does each step (with web search), checks itself, and saves the result."""
+    if not connected_ais():
+        return NO_AI_MSG
     if not steps:
         raw = _ai_text("Plan this job as 3 to 6 short, concrete steps an assistant can do with thinking and "
                        "web search only (no payments, no sending messages). Reply ONLY a JSON list of strings.\n\n"
@@ -2895,6 +3167,8 @@ def genius_agent(task, steps=None):
         done = "\n".join(f"Step {j}: {n[:700]}" for j, n in enumerate(notes, 1))
         out = _ai_text(f"Overall job: {task}\nResults so far:\n{done or 'none'}\n\nNow do step {i}: {st}\n"
                        "Give the actual result (facts, numbers, text), not advice about how to do it.", 900, search=True)
+        if not out and not notes:
+            return NET_AI_MSG                 # first step got nothing: the AIs are unreachable
         notes.append(out or "(no result)")
     body = "\n\n".join(f"Step {i}: {st}\n{n}" for i, (st, n) in enumerate(zip(steps, notes), 1))
     final = _ai_text(f"Job: {task}\n\nWork done:\n{body[:7000]}\n\nAs a strict reviewer, fix any mistakes and write "
@@ -3174,7 +3448,7 @@ def pro_look(path, look):
 
 
 # ================= Genius Music Maker =================
-import math as _m, random as _r, struct as _st, wave as _wave
+import math as _m, random as _r, wave as _wave
 
 SR = 22050
 _NOTE = {"C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3, "E": 4, "F": 5, "F#": 6, "GB": 6,
@@ -3209,18 +3483,30 @@ def _freq(midi):
 
 def _env(n, a, rel=0.08, decay=None):
     A, R = max(1, int(a * SR)), max(1, int(rel * SR))
-    out = []
-    for i in range(n):
-        e = min(1.0, i / A)
-        if decay:
-            e *= _m.exp(-i / (decay * SR))
-        if i > n - R:
-            e *= max(0.0, (n - i) / R)
-        out.append(e)
+    out = [min(1.0, i / A) for i in range(n)]
+    if decay:
+        k = _m.exp(-1 / (decay * SR))
+        d = 1.0
+        for i in range(n):
+            out[i] *= d
+            d *= k
+    for i in range(max(0, n - R + 1), n):
+        out[i] *= max(0.0, (n - i) / R)
     return out
 
 
 _CACHE = {}
+_WT_N = 8192
+_WT = []
+
+
+def _wavetable():
+    """One cycle of sin(t)+0.35sin(2t)+0.15sin(3t)+0.07sin(4t): pads/strings read it instead of 12 sin() calls a sample."""
+    if not _WT:
+        sin, c = _m.sin, 2 * _m.pi / _WT_N
+        _WT.extend(sin(i * c) + 0.35 * sin(2 * i * c) + 0.15 * sin(3 * i * c) + 0.07 * sin(4 * i * c)
+                   for i in range(_WT_N))
+    return _WT
 
 
 def _voice(inst, midi, n):
@@ -3231,13 +3517,16 @@ def _voice(inst, midi, n):
     sin = _m.sin
     if inst == "piano":
         env = _env(n, 0.004, 0.12)
-        hs = [(1, 1.0), (2, 0.45), (3, 0.22), (4, 0.12), (5, 0.06)]
+        m1, m2, m3, m4, m5 = (k * 1.0008 ** k for k in (1, 2, 3, 4, 5))
+        dk = _m.exp(-1 / (1.3 * SR))          # per-sample decay of harmonic 1 (harmonic k decays as d**k)
+        d = 1.0
         for i in range(n):
             t = i * w * f
-            s = 0.0
-            for k, a in hs:
-                s += a * sin(t * k * 1.0008 ** k) * _m.exp(-i * k / (1.3 * SR))
+            d2 = d * d
+            s = (sin(t * m1) * d + 0.45 * sin(t * m2) * d2 + 0.22 * sin(t * m3) * d2 * d
+                 + 0.12 * sin(t * m4) * d2 * d2 + 0.06 * sin(t * m5) * d2 * d2 * d)
             out.append(s * env[i] * 0.5)
+            d *= dk
     elif inst == "epiano":
         env = _env(n, 0.003, 0.15, decay=1.6)
         for i in range(n):
@@ -3246,13 +3535,13 @@ def _voice(inst, midi, n):
     elif inst in ("pad", "strings"):
         att = 0.35 if inst == "pad" else 0.18
         env = _env(n, att, 0.4)
-        det = (1.0, 1.006, 0.994)
+        tab, TN = _wavetable(), _WT_N
+        k = TN / (2 * _m.pi)
+        strings = inst == "strings"
         for i in range(n):
-            vib = 1 + (0.003 * sin(i * w * 5.2) if inst == "strings" else 0)
-            s = 0.0
-            for d in det:
-                t = i * w * f * d * vib
-                s += sin(t) + 0.35 * sin(2 * t) + 0.15 * sin(3 * t) + 0.07 * sin(4 * t)
+            vib = 1 + (0.003 * sin(i * w * 5.2) if strings else 0)
+            t = i * w * f * vib * k                 # phase in table steps
+            s = (tab[int(t) % TN] + tab[int(t * 1.006) % TN] + tab[int(t * 0.994) % TN])
             out.append(s * env[i] * 0.13)
     elif inst == "bass":
         env = _env(n, 0.006, 0.06, decay=1.2)
@@ -3316,8 +3605,8 @@ def _drum(kind):
 
 def _add(buf, src, pos, gain=1.0):
     end = min(len(buf), pos + len(src))
-    for i in range(pos, end):
-        buf[i] += src[i - pos] * gain
+    if end > pos:
+        buf[pos:end] = [a + b * gain for a, b in zip(buf[pos:end], src)]
 
 
 def music_plan(desc):
@@ -3443,26 +3732,30 @@ def make_song(desc):
         c = verb[:]
         for i in range(dl, total):
             c[i] += c[i - dl] * fb
-        for i in range(total):
-            rv[i] += c[i]
+        rv = [a + b for a, b in zip(rv, c)]
     ap = int(0.005 * SR)
     y = rv[:]
     for i in range(ap, total):
         y[i] = -0.6 * rv[i] + rv[i - ap] + 0.6 * y[i - ap]
     rv = y
     # master: mix, glue, soft limiter, fades
-    peak = 1e-6
-    for i in range(total):
-        L[i] += rv[i] * 0.10
-        R[i] += rv[i - 120 if i >= 120 else i] * 0.10
-        peak = max(peak, abs(L[i]), abs(R[i]))
+    L = [a + b * 0.10 for a, b in zip(L, rv)]
+    rv_r = rv[:120] + rv[:-120] if total > 120 else rv
+    R = [a + b * 0.10 for a, b in zip(R, rv_r)]
+    peak = max(1e-6, max(L), -min(L), max(R), -min(R))
     g = 1.6 / peak
     fade_in, fade_out = int(0.5 * SR), int(3 * SR)
-    frames = bytearray()
+    import array as _array, sys as _sys
     th = _m.tanh
+    k = 0.89 * 32767
+    pcm = _array.array("h", bytes(4 * total))
     for i in range(total):
-        e = min(1.0, i / fade_in, (total - i) / fade_out)
-        frames += _st.pack("<hh", int(th(L[i] * g) * 0.89 * e * 32767), int(th(R[i] * g) * 0.89 * e * 32767))
+        e = k * min(1.0, i / fade_in, (total - i) / fade_out)
+        pcm[2 * i] = int(th(L[i] * g) * e)
+        pcm[2 * i + 1] = int(th(R[i] * g) * e)
+    if _sys.byteorder != "little":
+        pcm.byteswap()
+    frames = pcm.tobytes()
     _CACHE.clear()
     out = os.path.join(genius_dl("music"), re.sub(r"[^A-Za-z0-9]+", "_", plan["title"])[:40] + time.strftime("_%H%M%S") + ".wav")
     with _wave.open(out, "wb") as w:
@@ -3699,14 +3992,19 @@ def open_url(url):
 def newest_photos(n=6):
     found = []
     for d in ("/storage/emulated/0/DCIM/Camera", "/storage/emulated/0/Pictures",
-              "/storage/emulated/0/Download", "/storage/emulated/0/Pictures/Screenshots", genius_dl("fun"), "."):
+              "/storage/emulated/0/Download", "/storage/emulated/0/Pictures/Screenshots", genius_dl("fun"), genius_dl("pictures"), "."):
         try:
             for x in os.listdir(d):
                 if x.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
                     found.append(os.path.join(d, x))
         except Exception:
             pass
-    found = sorted(set(found), key=lambda f: os.path.getmtime(f), reverse=True)
+    def mt(f):
+        try:
+            return os.path.getmtime(f)
+        except Exception:
+            return 0
+    found = sorted(set(found), key=mt, reverse=True)
     return found[:n]
 
 
@@ -3752,11 +4050,16 @@ def ask_about_file(path, kind, question):
         try:
             content = open(path, encoding="utf8", errors="ignore").read()[:24000]
         except Exception:
-            return "I couldn't read that file."
+            return "I couldn't open that file any more. Add it again with +."
+        if not connected_ais():
+            return NO_AI_MSG
         return ask_gemini("File " + os.path.basename(path) + ":\n" + content +
-                          "\n\nQuestion: " + q, 900) or "No AI answered. Check your internet."
+                          "\n\nQuestion: " + q, 900) or NET_AI_MSG
     if not os.path.exists(KEY_FILE):
-        return "To read pictures and PDFs I need your Gemini key. Use setkey first."
+        return ("To read pictures and PDFs I need a Gemini key. Type setkey and your free key from "
+                "aistudio.google.com/apikey, then ask again.")
+    if not os.path.exists(path):
+        return "I can't find that file any more. Add it again with +."
     key = clean_key(open(KEY_FILE).read())
     mime = "application/pdf" if kind == "pdf" else (
         "image/png" if path.lower().endswith(".png") else "image/webp" if path.lower().endswith(".webp") else "image/jpeg")
@@ -3787,8 +4090,10 @@ def ask_about_file(path, kind, question):
             if e.code in (401, 403) or (e.code == 400 and "API key" in detail):
                 return key_reason(e.code, detail)
             last = "Free limit reached. Wait a minute." if e.code == 429 else "Google is busy. Try again shortly."
-        except Exception:
-            last = "Your internet is too slow right now. Try better signal."
+        except Exception as e:
+            last = "Your internet is too slow right now. Move to better signal and ask again."
+            if _is_net_error(e):
+                break
     return last
 
 
@@ -3813,7 +4118,7 @@ def think_together(question):
     """Several AIs answer, then one AI checks them and writes the best combined answer."""
     have = connected_ais()
     if not have:
-        return "No AIs connected. Use setkey, setgroq or setrouter."
+        return NO_AI_MSG
     drafts = ask_all(question)
     if len(have) < 2:
         return drafts
@@ -3948,45 +4253,83 @@ CALM_STEPS = ["Let's slow down together. Sit comfortably.",
 def do_calc(expr):
     import ast, operator as op
     ops = {ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul, ast.Div: op.truediv,
-           ast.Pow: op.pow, ast.Mod: op.mod, ast.USub: op.neg, ast.FloorDiv: op.floordiv}
+           ast.Pow: op.pow, ast.Mod: op.mod, ast.USub: op.neg, ast.UAdd: op.pos, ast.FloorDiv: op.floordiv}
 
     def ev(n):
-        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) and not isinstance(n.value, bool):
             return n.value
         if isinstance(n, ast.BinOp):
-            return ops[type(n.op)](ev(n.left), ev(n.right))
+            a, b = ev(n.left), ev(n.right)
+            if isinstance(n.op, ast.Pow) and (abs(b) > 100 or abs(a) > 1e6):
+                raise OverflowError                     # 9**9**9 would freeze the phone
+            return ops[type(n.op)](a, b)
         if isinstance(n, ast.UnaryOp):
             return ops[type(n.op)](ev(n.operand))
         raise ValueError
+    clean = (expr or "").strip().rstrip("=?").replace("\u00d7", "*").replace("\u00f7", "/").replace("^", "**")
+    clean = re.sub(r"(?<=\d),(?=\d{3}\b)", "", clean)          # 12,000 -> 12000
+    clean = re.sub(r"(?<=[\d)\s])[xX](?=[\d(\s])", "*", clean)   # 12 x 3 -> 12*3
+    clean = re.sub(r"(\d+(?:\.\d+)?)\s*%", r"(\1/100)", clean)   # 15% -> 0.15
+    clean = re.sub(r"\s+of\s+", "*", clean, flags=re.I)              # 15% of 40000
     try:
-        val = ev(ast.parse(expr, mode="eval").body)
-        return f"{expr} = {val:g}"
+        val = ev(ast.parse(clean, mode="eval").body)
+        if isinstance(val, float) and val.is_integer() and abs(val) < 1e15:
+            val = int(val)
+        return f"{expr.strip()} = {val:,}" if isinstance(val, int) else f"{expr.strip()} = {val:,.6g}"
+    except ZeroDivisionError:
+        return "You can't divide by zero. Try another sum."
+    except OverflowError:
+        return "That number is too big for me. Try a smaller sum."
     except Exception:
-        return "I can do numbers like: calc 12*8+5"
+        return "I can do sums like: calc 12*8+5, calc 2^10 or calc 15% of 40000"
+
+
+_WEATHER_CACHE = {}
+WEATHER_CODES = {0: "clear sky", 1: "mostly clear", 2: "partly cloudy", 3: "cloudy",
+                 45: "fog", 48: "fog", 51: "light drizzle", 53: "drizzle", 55: "heavy drizzle",
+                 56: "freezing drizzle", 57: "freezing drizzle", 61: "light rain", 63: "rain",
+                 65: "heavy rain", 66: "freezing rain", 67: "freezing rain", 71: "light snow", 73: "snow",
+                 75: "heavy snow", 77: "snow grains", 80: "rain showers", 81: "rain showers",
+                 82: "heavy rain showers", 85: "snow showers", 86: "snow showers", 95: "a thunderstorm",
+                 96: "a thunderstorm with hail", 99: "a strong thunderstorm with hail"}
 
 
 def weather_report(city):
-    city = city or "Kampala"
+    city = (city or "Kampala").strip(" .?!") or "Kampala"
+    ck = city.lower()
+    hit = _WEATHER_CACHE.get(ck)
+    if hit and time.time() - hit[1] < 600:                 # same city within 10 minutes: instant
+        return hit[0]
     try:
         g = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(city)}&count=1"
-        loc = json.load(urllib.request.urlopen(g, timeout=20, context=ssl_context()))["results"][0]
+        with urllib.request.urlopen(g, timeout=12, context=ssl_context()) as r:
+            res = json.load(r).get("results") or []
+        if not res:
+            return f"I couldn't find a place called '{city}'. Check the spelling, e.g. weather Mityana."
+        loc = res[0]
         w = (f"https://api.open-meteo.com/v1/forecast?latitude={loc['latitude']}"
              f"&longitude={loc['longitude']}&current=temperature_2m,relative_humidity_2m,"
-             f"wind_speed_10m,weather_code&daily=temperature_2m_max,temperature_2m_min"
-             f"&timezone=auto")
-        d = json.load(urllib.request.urlopen(w, timeout=20, context=ssl_context()))
+             f"wind_speed_10m,weather_code&daily=temperature_2m_max,temperature_2m_min,"
+             f"precipitation_probability_max&timezone=auto")
+        with urllib.request.urlopen(w, timeout=12, context=ssl_context()) as r:
+            d = json.load(r)
         c = d["current"]
         hi = d["daily"]["temperature_2m_max"][0]
         lo = d["daily"]["temperature_2m_min"][0]
-        codes = {0: "clear sky", 1: "mostly clear", 2: "partly cloudy", 3: "cloudy",
-                 45: "foggy", 48: "foggy", 51: "light drizzle", 61: "light rain",
-                 63: "rain", 65: "heavy rain", 80: "rain showers", 95: "a thunderstorm"}
-        sky = codes.get(c.get("weather_code"), "mixed weather")
-        return (f"{loc['name']}: {c['temperature_2m']:.0f} degrees now with {sky}, "
-                f"humidity {c['relative_humidity_2m']:.0f} percent, wind "
-                f"{c['wind_speed_10m']:.0f} km/h. Today {lo:.0f} to {hi:.0f} degrees.")
-    except Exception:
-        return "I couldn't get the weather. Check your internet and the city name."
+        rain = (d["daily"].get("precipitation_probability_max") or [None])[0]
+        sky = WEATHER_CODES.get(c.get("weather_code"), "mixed weather")
+        place = loc["name"] + (f", {loc['country']}" if loc.get("country") and loc["country"] != "Uganda" else "")
+        out = (f"{place}: {c['temperature_2m']:.0f} degrees now and {sky}, "
+               f"humidity {c['relative_humidity_2m']:.0f} percent, wind "
+               f"{c['wind_speed_10m']:.0f} km/h. Today {lo:.0f} to {hi:.0f} degrees"
+               + (f", {rain:.0f} percent chance of rain." if rain is not None else "."))
+        _WEATHER_CACHE[ck] = (out, time.time())
+        return out
+    except Exception as e:
+        log(f"WEATHER failed: {e}")
+        if hit:
+            return hit[0] + " (from a little earlier: I couldn't refresh it)"
+        return "I couldn't get the weather right now. Check your internet and try again."
 
 
 def _vault_key():
@@ -4055,10 +4398,11 @@ def _ui(fn, on_fail=None):
             try:
                 fn()
             except Exception as e:
+                msg = f"start failed: {e}"          # bind now: 'e' is cleared when the except block ends
                 log(f"UI RUN error: {e}")
-                MIC_STATE["last"] = f"start failed: {e}"
+                MIC_STATE["last"] = msg
                 if on_fail:
-                    Clock.schedule_once(lambda *_: on_fail(f"start failed: {e}", -1), 0)
+                    Clock.schedule_once(lambda *_, m=msg: on_fail(m, -1), 0)
     r = _Run()
     _mic["runs"] = (_mic["runs"] + [r])[-5:]      # keep alive
     autoclass("org.kivy.android.PythonActivity").mActivity.runOnUiThread(r)
@@ -4994,6 +5338,7 @@ class LoginScreen(BoxLayout):
 
 class ChatScreen(BoxLayout):
     attached = None
+    busy = False                 # one slow job at a time (set before any worker starts)
     _to_storage = False
 
     def __init__(self, app, **kw):
@@ -5857,6 +6202,9 @@ class ChatScreen(BoxLayout):
         Clock.schedule_once(layout, 0.2)
 
     def _zoom_and_show(self, src, z):
+        if getattr(self, "busy", False):
+            self.say("One moment, I'm still finishing the last job.")
+            return
         self.busy = True
         self.say(f"Zooming {z:g}x and sharpening...")
 
@@ -5864,7 +6212,8 @@ class ChatScreen(BoxLayout):
             try:
                 out, msg = super_zoom(src, z)
             except Exception as e:
-                out, msg = None, f"Zoom didn't work: {e}"
+                log(f"ZOOM failed: {e}")
+                out, msg = None, "Zoom didn't work on this photo. Add it again with + and retry."
 
             def done(*_):
                 self.busy = False
@@ -6063,26 +6412,31 @@ class ChatScreen(BoxLayout):
             return
         self.busy = True
         self.say("Composing your song: choosing the key, chords, melody and instruments, then mixing it "
-                 "like a studio. This takes about a minute...")
+                 "like a studio. On a phone this takes 1 to 3 minutes, keep Genius open...")
 
         def d(*_):
             try:
                 out, plan = make_song(desc)
                 err = None
+            except MemoryError:
+                out, plan, err = None, None, "The phone ran low on memory. Close other apps and try again."
             except Exception as e:
-                out, plan, err = None, None, str(e)
+                log(f"MUSIC failed: {e}")
+                out, plan, err = None, None, "Something went wrong while mixing. Try again, or pick another style."
 
             def done(*_):
                 self.busy = False
                 if not out:
-                    self.say(f"The song didn't work: {err}")
+                    self.say(f"Sorry, the song didn't work. {err}")
                     return
-                _play_file(out)
                 self._last_song = out
+                playing = _play_file(out)
                 lyr = f"\n\nChorus idea:\n{plan['lyrics']}" if plan.get("lyrics") else ""
                 self.show("AI", f"\u266b [b]{plan['title']}[/b]\n{plan['style'].title()} in {plan['key']} "
-                                f"{plan['scale']}, {plan['bpm']} BPM. Playing now.\nSaved in Download/Genius/music. "
-                                f"Say 'play song' again or 'stop music'.{lyr}")
+                                f"{plan['scale']}, {plan['bpm']} BPM. "
+                                + ("Playing now." if playing else "Saved, but I couldn't play it here; open it from your Files app.")
+                                + f"\nSaved in {nice_where(out)} as {os.path.basename(out)}. "
+                                f"Say 'play song' to hear it again or 'stop music'.{lyr}")
             Clock.schedule_once(done, 0)
         threading.Thread(target=d, daemon=True).start()
 
@@ -6091,6 +6445,9 @@ class ChatScreen(BoxLayout):
         if not src:
             self.say("Add a photo with + first, then say 'ultra'.")
             return
+        if getattr(self, "busy", False):
+            self.say("One moment, I'm still finishing the last job.")
+            return
         self.busy = True
         self.say("Genius Ultra is working: HDR, true colour, clarity, fine detail...")
 
@@ -6098,7 +6455,8 @@ class ChatScreen(BoxLayout):
             try:
                 out, msg = ultra_hd(src)
             except Exception as e:
-                out, msg = None, f"Ultra didn't work: {e}"
+                log(f"ULTRA failed: {e}")
+                out, msg = None, "Ultra didn't work on this photo. Add it again with + and retry."
 
             def done(*_):
                 self.busy = False
@@ -6195,7 +6553,11 @@ class ChatScreen(BoxLayout):
             self.say("Blending your photos with Nano Banana...")
 
             def d(*_):
-                out, err = blend_images(paths, t)
+                try:
+                    out, err = blend_images(paths, t)
+                except Exception as e:
+                    log(f"BLEND failed: {e}")
+                    out, err = None, "Blending didn't work. Choose the photos again and retry."
 
                 def done(*_):
                     self.busy = False
@@ -6282,14 +6644,15 @@ class ChatScreen(BoxLayout):
             except ImportError:
                 out, msg = None, "The picture tools aren't installed in this version."
             except Exception as e:
-                out, msg = None, f"That didn't work: {e}"
+                log(f"FUN {job} failed: {e}")
+                out, msg = None, "That didn't work with these pictures. Try choosing them again, or fewer pictures."
 
             def done(*_):
                 self.busy = False
                 if out:
                     remember_image(out, job)
-                    self.show_image(out, msg + "\nSaved in Download/Genius/fun")
-                    self.say(msg + " Saved in Download/Genius/fun." +
+                    self.show_image(out, msg)
+                    self.say(msg + f" Saved in {nice_where(out)}." +
                              (" Say 'transform' to add an effect." if job == "collage" else ""))
                 else:
                     self.say(msg)
@@ -6311,6 +6674,9 @@ class ChatScreen(BoxLayout):
                             hint="Blue = instant. Gold = AI (needs internet)")
 
     def fun_transform(self, src, style):
+        if getattr(self, "busy", False):
+            self.say("One moment, I'm still finishing the last job.")
+            return
         self.busy = True
 
         def d(*_):
@@ -6322,7 +6688,8 @@ class ChatScreen(BoxLayout):
             except ImportError:
                 out, msg = None, "The picture tools aren't installed in this version."
             except Exception as e:
-                out, msg = None, f"That effect didn't work: {e}"
+                log(f"EFFECT {style} failed: {e}")
+                out, msg = None, "That effect didn't work on this picture. Try another effect, or add the picture again with +."
 
             def done(*_):
                 self.busy = False
@@ -6341,14 +6708,16 @@ class ChatScreen(BoxLayout):
 
     def creation_files(self):
         found = []
-        for d in (".", attach_dir(), genius_dl("fun")):
+        for d in (".", attach_dir(), genius_dl("fun"), genius_dl("pictures"), private_dir("pictures"),
+                  private_dir("fun")):
             try:
                 for n in os.listdir(d):
                     if n.lower().endswith(IMG_EXTS) and (n.startswith("drawing_") or d != "."):
                         found.append(os.path.abspath(os.path.join(d, n)))
             except Exception:
                 pass
-        return sorted(set(found), key=lambda f: os.path.getmtime(f), reverse=True)
+        found = [f for f in set(found) if os.path.exists(f)]
+        return sorted(found, key=lambda f: os.path.getmtime(f), reverse=True)
 
     def creations(self, query=""):
         files = self.creation_files()
@@ -6560,11 +6929,15 @@ class ChatScreen(BoxLayout):
         self.say("Searching the internet...")
 
         def d(*_):
-            r = ask_gemini("Search the internet and answer briefly with the key facts: " + q, 700, search=True)
+            try:
+                r = ask_gemini("Search the internet and answer briefly with the key facts: " + q, 700, search=True)
+            except Exception as e:
+                log(f"WEB search failed: {e}")
+                r = None
 
             def done(*_):
                 self.busy = False
-                self.say(r or "The search didn't work. Check your internet.")
+                self.say(r or "The search didn't work. Check your internet, or add an AI key with setkey.")
             Clock.schedule_once(done, 0)
         threading.Thread(target=d, daemon=True).start()
 
@@ -6718,7 +7091,12 @@ class ChatScreen(BoxLayout):
         self.say("Reading your " + ("picture" if a["kind"] == "image" else "file") + "...")
 
         def d(*_):
-            r = ask_about_file(a["path"], a["kind"], question)
+            try:
+                r = ask_about_file(a["path"], a["kind"], question)
+            except Exception as e:
+                log(f"FILE question failed: {e}")
+                r = None
+            r = r or "I couldn't read that file right now. Check your internet, or add the file again with +."
             history.append({"role": "user", "parts": [{"text": "[About " + os.path.basename(a["path"]) + "] " + question}]})
             history.append({"role": "model", "parts": [{"text": r}]})
             try:
@@ -6737,7 +7115,11 @@ class ChatScreen(BoxLayout):
         self.say("Changing your picture... this takes a moment.")
 
         def d(*_):
-            path, note = edit_image(instruction)
+            try:
+                path, note = edit_image(instruction)
+            except Exception as e:
+                log(f"EDIT failed: {e}")
+                path, note = None, "I couldn't change the picture this time. Check your internet and try again."
 
             def done(*_):
                 self.busy = False
@@ -6753,9 +7135,13 @@ class ChatScreen(BoxLayout):
 
     def show_image(self, path, caption):
         box = BoxLayout(orientation="vertical", spacing=10, padding=12)
-        box.add_widget(KivyImage(source=path, allow_stretch=True, keep_ratio=True))
-        box.add_widget(Label(text=f"{caption}\nSaved as {os.path.basename(path)}",
-                             size_hint_y=None, height="60dp", font_size="15sp", color=TEXTCOL))
+        if not path or not os.path.exists(path):
+            self.say("I made it, but couldn't find the picture file. Please try once more.")
+            return
+        box.add_widget(KivyImage(source=path, allow_stretch=True, keep_ratio=True, nocache=True))
+        box.add_widget(Label(text=f"{caption}\nSaved in {nice_where(path)}",
+                             size_hint_y=None, height="72dp", font_size="15sp", color=TEXTCOL,
+                             halign="center", valign="middle", text_size=(Window.width * 0.85, None)))
         btn = RoundButton(text="Close", bg=GOLD, fg=(0.1, 0.1, 0.1, 1),
                           size_hint_y=None, height="52dp", bold=True)
         box.add_widget(btn)
@@ -6828,6 +7214,16 @@ class ChatScreen(BoxLayout):
 
         # Genius Brain: it learns and improves itself
         lw = low.strip(" .!?")
+        if action in ("do", "agent", "job", "run") and not arg and lw in ("do", "agent", "job", "run"):
+            self.say("Tell me the job, e.g. do compare 3 phones under 800k. "
+                     "For a skill you taught, say run and its name (see skillbook).")
+            return
+        if action == "speak" and not arg:
+            self.speak_input()
+            return
+        if action == "clear" and not arg:
+            self.clear_chat()
+            return
         if action in ("do", "agent", "job") and arg:
             self._bg(lambda: genius_agent(arg), "\U0001F916 Genius Agent is planning and doing your job step by step...",
                      speak=False)
@@ -6909,7 +7305,13 @@ class ChatScreen(BoxLayout):
             return
         lw = low.strip(" .!")
         # Free access to the phone's apps: owner only, never other users
-        if lw in ("apps", "my phone apps", "phone apps", "list apps") or lw.startswith(("open ", "launch ", "start ")):
+        # 'open wifi' shows a locked secret when one is saved under that name (vault before apps)
+        if action == "open" and arg and vault_get(arg) is not None:
+            self.run(line, "open", arg)
+            return
+        if lw in ("apps", "my phone apps", "phone apps", "list apps") or (
+                lw.startswith(("open ", "launch ", "start ")) and lw not in ("start fresh", "open storage",
+                                                                             "open camera")):
             if not CURRENT["owner"]:
                 self.say("Only the owner of this phone can open its apps through Genius.")
                 return
@@ -6923,14 +7325,16 @@ class ChatScreen(BoxLayout):
                         else:
                             self.say(f"I couldn't find an app called {target}. Say apps to see them all.")
                     except Exception as e:
-                        self.say(f"Opening apps only works on the phone: {e}")
+                        log(f"OPEN app failed: {e}")
+                        self.say(f"I couldn't open {target} just now. Say apps to see what's installed.")
                     return
             else:
                 try:
                     names = sorted(phone_apps(refresh=True), key=str.lower)
                     self.say(f"You have {len(names)} apps. Say open and a name, e.g. open WhatsApp.\n" + ", ".join(names))
                 except Exception as e:
-                    self.say(f"Listing apps only works on the phone: {e}")
+                    log(f"LIST apps failed: {e}")
+                    self.say("I couldn't list your apps just now. Please try again in a moment.")
                 return
         if lw.startswith(("quick ", "fast ", "q ")):
             q = line.split(" ", 1)[1]
@@ -7009,8 +7413,11 @@ class ChatScreen(BoxLayout):
                 pass
             self.say("Music stopped.")
             return
-        if lw in ("play song", "play music", "play again") and getattr(self, "_last_song", None):
-            _play_file(self._last_song)
+        if lw in ("play song", "play music", "play again"):
+            if getattr(self, "_last_song", None) and _play_file(self._last_song):
+                self.say("Playing your song again.")
+            else:
+                self.say("No song to play yet. Say 'music' to make one.")
             return
         for pre in ("sound ", "music ", "make music ", "make a song ", "make song ", "song about ", "make a beat "):
             if lw.startswith(pre) and len(lw) > len(pre) + 2:
@@ -7149,7 +7556,9 @@ class ChatScreen(BoxLayout):
             self.toggle_deep()
             return
         if action == "help":
-            self.show("AI", "\n".join(f"{k} - {v}" for k, v in ALLOWED.items()))
+            self.show("AI", "[b]Commands[/b]\n" + "\n".join(f"{k} - {v}" for k, v in ALLOWED.items())
+                      + "\n\n[b]More things you can say[/b]\n" + "\n".join(f"{k} - {v}" for k, v in HELP_EXTRA.items())
+                      + "\n\nOr just talk to me normally.")
             return
         if action == "about":
             self.show("AI", ABOUT_TEXT)
@@ -7302,11 +7711,18 @@ class ChatScreen(BoxLayout):
             if not arg:
                 self.say("Tell me what to draw, e.g. draw a blue car in Kampala")
                 return
+            if getattr(self, "busy", False):
+                self.say("One moment, I'm still finishing the last job.")
+                return
             self.busy = True
-            self.say("Drawing... this takes a moment.")
+            self.say("Drawing... usually under a minute (the free picture maker can take up to 3).")
 
             def d(*_):
-                path, err = gemini_image(arg)
+                try:
+                    path, err = gemini_image(arg)
+                except Exception as e:
+                    log(f"DRAW failed: {e}")
+                    path, err = None, "Drawing didn't work this time. Check your internet and say it again."
 
                 def done(*_):
                     self.busy = False
@@ -7431,7 +7847,8 @@ class ChatScreen(BoxLayout):
     def _need_key(self):
         if connected_ais():
             return False
-        self.say("This needs an AI key. Type setkey (Gemini), setgroq or setrouter first.")
+        self.say("This one needs an AI key. Type setkey and your free Gemini key from aistudio.google.com/apikey "
+                 "(or setgroq / setrouter), then ask again.")
         return True
 
     def life(self, action, arg):
@@ -7934,9 +8351,13 @@ class ChatScreen(BoxLayout):
                     save_memory()
                     _answer_cache[ck] = r
                 else:
-                    r, err = agent_reply(text, ui_hooks, self.deep) if os.path.exists(KEY_FILE) \
-                        else (None, "No AI answered. Check your internet.")
-                    r = r or err
+                    try:
+                        r, err = agent_reply(text, ui_hooks, self.deep) if os.path.exists(KEY_FILE) \
+                            else (None, NET_AI_MSG)
+                    except Exception as e:
+                        log(f"CHAT agent failed: {e}")
+                        r, err = None, NET_AI_MSG
+                    r = r or err or NET_AI_MSG
 
                 def done(*_):
                     self.busy = False
@@ -7945,9 +8366,8 @@ class ChatScreen(BoxLayout):
             ui_hooks = self._ui_hooks()
             threading.Thread(target=turbo, daemon=True).start()
             return
-        if not os.path.exists(KEY_FILE) and not connected_ais():
-            self.say("I don't know that yet. Type setkey and your free Gemini key "
-                     "from aistudio.google.com so I can answer anything.")
+        if not connected_ais():
+            self.say(NO_AI_MSG)
             return
         if getattr(self, "busy", False):
             self.say("Still thinking about your last question. One moment.")
@@ -7963,7 +8383,20 @@ class ChatScreen(BoxLayout):
         }
 
         def work():
+            try:
+                r = answer()
+            except Exception as e:
+                log(f"CHAT failed: {e}")
+                r = NET_AI_MSG
+
+            def done(*_):
+                self.busy = False
+                self.say(r)
+            Clock.schedule_once(done, 0)
+
+        def answer():
             reply, err = None, None
+            tried = set()
             fast_ok = not self.deep and not needs_tools(text)
             try:
                 have = connected_ais() if fast_ok else []
@@ -7978,6 +8411,7 @@ class ChatScreen(BoxLayout):
                     racers.append(lambda: agent_reply(text, ui, False)[0])
                 for prov in ("groq", "openrouter"):
                     if prov in have:
+                        tried.add(prov)
                         racers.append(lambda prov=prov: other_ai(prov, text, convo=history))
 
                 def run(fn):
@@ -7995,22 +8429,20 @@ class ChatScreen(BoxLayout):
                     if r_ and r_.strip():
                         reply = r_
                         break
-            if not reply:
-                reply, err = agent_reply(text, ui, self.deep) if os.path.exists(KEY_FILE) \
-                    else (None, "No Gemini key.")
-            if not reply:                       # backup AIs
+            if not reply and os.path.exists(KEY_FILE):
+                reply, err = agent_reply(text, ui, self.deep)
+            if not reply:                       # backup AIs not already tried in the race
                 for prov in ("groq", "openrouter"):
+                    if prov in tried:
+                        continue
                     reply = other_ai(prov, text, convo=history)
                     if reply:
                         break
             if reply and not needs_tools(text):
                 _answer_cache[ck] = reply
-            r = reply or err
-
-            def done(*_):
-                self.busy = False
-                self.say(r)
-            Clock.schedule_once(done, 0)
+                if len(_answer_cache) > 300:
+                    _answer_cache.pop(next(iter(_answer_cache)))
+            return reply or err or NET_AI_MSG
         threading.Thread(target=work, daemon=True).start()
 
 
