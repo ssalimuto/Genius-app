@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "112.1"
+VERSION = "112.2"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -448,7 +448,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 112.1
+ABOUT_TEXT = """Genius 112.2
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -509,7 +509,12 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 112.1 (2026-10-26)
+CHANGELOG = """Genius 112.2 (2026-10-26)
+- Pro songs with a REAL singing voice and band from ElevenLabs Music. Genius writes the words (Luganda, English or both), ElevenLabs sings and plays them.
+- Say: pro song amapiano about my mum. Words light up karaoke style while it plays.
+- About 2 minutes long, uses about 1,800 ElevenLabs credits (needs your key: seteleven).
+
+Genius 112.1 (2026-10-26)
 - AI sings in YOUR voice: record about a minute of your voice once (say clone my voice), and Genius makes your voice clone at ElevenLabs.
 - Then tap 'AI sings it in my voice' in the vocal studio (or say ai sing my song): your clone performs every line on the beat.
 - Needs your own ElevenLabs key with voice cloning (Starter plan): type seteleven and your key. Uses your ElevenLabs credits.
@@ -5720,10 +5725,69 @@ def ai_sing_song(beat_wav, progress=None):
     return out
 
 
+def eleven_music_song(desc):
+    """112.2: a full song WITH a real singing voice from ElevenLabs Music, using Genius's own words.
+    Returns (mp3 path, plan)."""
+    key = eleven_key()
+    if not key:
+        raise RuntimeError("Add your ElevenLabs key first: type seteleven, a space, then the key.")
+    plan = music_plan(desc)
+    secs = plan.get("sections", {})
+    beat = 60000.0 / max(60, plan.get("bpm", 100))
+    line_ms = int(beat * 8)
+    order = [("Intro", "intro", True), ("Verse 1", "verse1", False), ("Chorus", "chorus", False),
+             ("Verse 2", "verse2", False), ("Chorus", "chorus", False), ("Bridge", "bridge", False),
+             ("Chorus", "chorus", False), ("Outro", "outro", False)]
+    lang = plan.get("request", {}).get("lang", "en")
+    voice_lang = {"lg": "Luganda vocals", "mix": "Luganda and English vocals"}.get(lang, "English vocals")
+    label = plan.get("label", plan.get("style", "afrobeat"))
+    glob = [label, f"{plan.get('bpm')} bpm", voice_lang, "East African", "catchy melody", "clear lead vocals",
+            "great production quality"]
+    sections, timeline, t = [], [], 0
+    for name, k, inst in order:
+        lines = [] if inst else [str(x)[:190] for x in secs.get(k, []) if str(x).strip()][:12]
+        dur = max(6000, min(110000, len(lines) * line_ms or int(beat * 16)))
+        sections.append({"section_name": name, "positive_local_styles": ["instrumental"] if inst else [],
+                         "negative_local_styles": [], "duration_ms": dur, "lines": lines})
+        if lines:
+            step = dur / float(len(lines))
+            for i, ln in enumerate(lines):
+                timeline.append({"t": round((t + i * step) / 1000.0, 2), "section": name, "text": ln})
+        t += dur
+    body = {"model_id": "music_v1", "composition_plan": {
+        "positive_global_styles": glob, "negative_global_styles": ["low quality", "distorted"], "sections": sections}}
+    req = urllib.request.Request(ELEVEN_API + "/music?output_format=mp3_44100_128", data=json.dumps(body).encode(),
+                                 method="POST", headers={"xi-api-key": key, "Content-Type": "application/json"})
+    try:
+        audio = urllib.request.urlopen(req, timeout=420, context=ssl_context()).read()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(_eleven_err(e))
+    if len(audio) < 20000:
+        raise RuntimeError("ElevenLabs sent back an empty song. Try again.")
+    out = os.path.join(genius_dl("music"), re.sub(r"[^A-Za-z0-9]+", "_", plan["title"]).strip("_")[:40]
+                       + time.strftime("_%H%M%S") + "_sung.mp3")
+    open(out, "wb").write(audio)
+    dur = round(t / 1000.0, 2)
+    for i, ln in enumerate(timeline):
+        ln["end"] = timeline[i + 1]["t"] if i + 1 < len(timeline) else dur
+    meta = dict(title=plan["title"], style=plan["style"], label=label, chosen=plan.get("chosen", "genius"),
+                key=plan.get("key", ""), scale=plan.get("scale", ""), bpm=plan.get("bpm"),
+                instruments=["ElevenLabs singer and band"], lyrics_by=plan.get("lyrics_by", ""), duration=dur,
+                lines=timeline, made_by="ElevenLabs Music", version=VERSION)
+    try:
+        with open(song_meta_path(out), "w") as fh:
+            json.dump(meta, fh, ensure_ascii=False, indent=1)
+    except Exception as e:
+        log(f"MUSIC meta: {e}")
+    plan["duration"], plan["meta"] = dur, meta
+    return out, plan
+
+
 def newest_song():
     try:
         d = genius_dl("music")
-        wavs = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith(".wav")]
+        wavs = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith((".wav", ".mp3"))
+                and not f.startswith(("vocals_", "ai_vocals_", "voice_sample"))]
         return max(wavs, key=os.path.getmtime) if wavs else None
     except Exception:
         return None
@@ -10955,6 +11019,9 @@ class ChatScreen(BoxLayout):
                                                                      "like: make song amapiano about my mum. Add 'in Luganda' "
                                                                      "or 'English and Luganda' if you like."), GREY),
                              ("Sing it in my voice (record)", self.vocal_studio, RED),
+                             ("Real singer song (ElevenLabs)", lambda: self.say(
+                                 "Say 'pro song' then the style and topic, like: pro song amapiano about my mum. "
+                                 "It needs your ElevenLabs key (seteleven)."), BLUE2),
                              ("Play my last song + lyrics", self.open_player, GREY)],
                             cols=2, hint="Pick a style. Genius writes the words and plays them with lyrics on screen")
 
@@ -11113,6 +11180,42 @@ class ChatScreen(BoxLayout):
         pop.open()
         tick()
 
+    def pro_song(self, desc=""):
+        """Real singer + band from ElevenLabs Music, with Genius's lyrics and karaoke."""
+        if not eleven_key():
+            self.say("For songs with a real singing voice, add your ElevenLabs key: open elevenlabs.io, sign in, "
+                     "go to Developers, API keys, create a key, then type seteleven, a space, and the key.")
+            return
+        if self.busy:
+            self.say("One moment, I'm still finishing the last job.")
+            return
+        self.busy = True
+        self.say("Writing the words, then ElevenLabs is singing and playing your song. This takes 1 to 3 minutes "
+                 "and uses about 900 ElevenLabs credits per minute of song. Keep Genius open...")
+
+        def work():
+            try:
+                out, plan = eleven_music_song(desc or "afrobeat song")
+                err = None
+            except Exception as e:
+                log(f"PRO SONG failed: {e}")
+                out, plan, err = None, None, str(e)
+
+            def done(*_):
+                self.busy = False
+                if not out:
+                    self.say(f"Sorry, the song didn't work. {err}")
+                    return
+                self._last_song = out
+                chorus = "\n".join(plan.get("sections", {}).get("chorus", []))
+                self.show("AI", f"[b]{_esc(plan['title'])}[/b]\nSung and played by ElevenLabs, words by "
+                                f"{plan.get('lyrics_by', 'Genius')}. {plan.get('label', '')}, about "
+                                f"{_fmt_time(plan.get('duration', 0))}.\nSaved in {nice_where(out)} as "
+                                f"{os.path.basename(out)}." + (f"\n\n[i]Chorus:[/i]\n{_esc(chorus)}" if chorus else ""))
+                self.open_player(out, plan)
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=work, daemon=True).start()
+
     def voice_clone_setup(self, *_):
         """Record about a minute of the user's voice and make their ElevenLabs voice clone."""
         if not eleven_key():
@@ -11246,8 +11349,8 @@ class ChatScreen(BoxLayout):
         if not wav or not os.path.exists(wav):
             self.say("Make a song first, like: make song amapiano about my mum. Then say ai sing my song.")
             return
-        if "_my_voice_" in os.path.basename(wav):
-            self.say("Pick a song without vocals: make a new song first.")
+        if "_my_voice_" in os.path.basename(wav) or not wav.lower().endswith(".wav"):
+            self.say("That song already has singing. Make a new Genius beat first: make song amapiano about my mum.")
             return
         if self.busy:
             self.say("One moment, I'm still finishing the last job.")
@@ -11289,6 +11392,9 @@ class ChatScreen(BoxLayout):
                 return
         except Exception:
             pass
+        if not wav.lower().endswith(".wav"):
+            self.say("That song already has a singer. Make a Genius beat to sing on: song in my voice amapiano about my mum.")
+            return
         sound_stop()
         meta, lines = load_song_timeline(wav)
         dur = meta.get("duration") or wav_seconds(wav) or 1.0
@@ -12866,6 +12972,14 @@ class ChatScreen(BoxLayout):
         if lw in ("record vocals", "record my voice", "vocal studio", "vocals", "sing my song", "sing it",
                   "song in my voice", "my voice song", "record song", "sing in my voice", "add my voice"):
             self.vocal_studio()
+            return
+        for pre in ("pro song ", "real song ", "eleven song ", "elevenlabs song ", "ai song ", "song with singing ",
+                    "sung song ", "make a pro song ", "make a real song "):
+            if lw.startswith(pre) and len(lw) > len(pre) + 2:
+                self.pro_song(line.strip()[len(pre):])
+                return
+        if lw in ("pro song", "real song", "eleven song", "elevenlabs song", "ai song", "song with singing"):
+            self.pro_song("")
             return
         for pre in ("song in my voice ", "make a song in my voice ", "make song in my voice ", "create a song in my voice ",
                     "create song in my voice ", "my voice song "):
