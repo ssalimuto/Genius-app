@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "112.2"
+VERSION = "112.3"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -463,7 +463,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 112.2
+ABOUT_TEXT = """Genius 112.3
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -524,7 +524,13 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 112.2 (2026-10-26)
+CHANGELOG = """Genius 112.3 (2026-10-26)
+- Never-fail answers: if one AI fails, Genius moves to the next one by itself, then to a free backup AI that needs no key.
+- If the signal drops, Genius waits for it, reconnects and answers your question on its own when the internet is back.
+- "explain more" and "explain each part" now explain the last answer.
+- New: aicheck tests every AI connection and shows which ones work.
+
+Genius 112.2 (2026-10-26)
 - Pro songs with a REAL singing voice and band from ElevenLabs Music. Genius writes the words (Luganda, English or both), ElevenLabs sings and plays them.
 - Say: pro song amapiano about my mum. Words light up karaoke style while it plays.
 - About 2 minutes long, uses about 1,800 ElevenLabs credits (needs your key: seteleven).
@@ -3102,7 +3108,7 @@ def ask_bot(name, question):
     bot = bots_load().get(name.lower())
     if not bot:
         return None
-    return ask_gemini(question, 900, system=bot["prompt"]) or "I couldn't reach Gemini. Try again."
+    return ask_gemini(question, 900, system=bot["prompt"]) or "No AI could be reached after trying every way. Check your data or Wi-Fi, then send it again."
 
 
 # ================= BACKUP / RESTORE =================
@@ -4018,7 +4024,7 @@ def fast_answer(question):
             if len(_FAST_CACHE) > 200:
                 _FAST_CACHE.pop(next(iter(_FAST_CACHE)))
             return r.strip() + f"\n[size=11sp][color=9aa0c0]{time.time() - t0:.1f}s[/color][/size]"
-    return NET_AI_MSG
+    return rescue_answer(question, max_tokens=400) or NET_AI_MSG
 
 
 PIC_ASK = re.compile(r"\b(draw|paint|sketch)\b|\b(create|make|generate|give|show|design)\b.{0,40}"
@@ -6587,7 +6593,120 @@ def ask_gemini(prompt, max_tokens=600, json_mode=False, search=False, system=Non
                 t = t.strip().strip("`")
                 t = t[t.find("{"):t.rfind("}") + 1] if "{" in t else t
             return t
-    return r
+    if r and not (search and r.startswith("Search failed")):
+        return r
+    return rescue_answer(prompt, max_tokens=max_tokens, system=system, json_mode=json_mode) or r
+
+
+# ================= 112.3 Never-fail answers: many ways to answer, auto-reconnect =================
+FREE_AI_URL = "https://text.pollinations.ai/openai"      # free backup AI, no key needed
+_FAIL_RE = re.compile(r"^\s*(i couldn.t reach|genius mind couldn.t reach|search failed|something went wrong|"
+                      r"i couldn.t mark|no ai could be reached|sorry, i couldn.t)", re.I)
+AI_HEALTH = {"fails": 0, "last_ok": 0.0, "last_way": ""}
+
+
+def is_fail_reply(r):
+    return (not r) or r in (NET_AI_MSG, NO_AI_MSG) or bool(_FAIL_RE.match(str(r)))
+
+
+def wait_for_net(sec=15):
+    """Wait a little for signal to come back instead of giving up at once."""
+    end = time.time() + sec
+    while time.time() < end:
+        for host in (("1.1.1.1", 443), ("8.8.8.8", 53)):
+            try:
+                socket.create_connection(host, timeout=3).close()
+                NET_STATE.update(checked=time.time(), online=True)
+                return True
+            except Exception:
+                pass
+        time.sleep(1.5)
+    return False
+
+
+def free_ai(prompt, system=None, convo=None, max_tokens=700, _waited=False):
+    """Backup AI that needs no key. Used only when every connected AI failed."""
+    msgs = [{"role": "system", "content": system or (
+        "You are Genius, a helpful AI made by Ssali Muto in Uganda, talking to " + CURRENT["name"] +
+        ", a young person in Uganda. Answer clearly, accurately and simply.")}]
+    for m in (convo or [])[-8:]:
+        t = " ".join(p.get("text", "") for p in m.get("parts", []))
+        if t:
+            msgs.append({"role": "assistant" if m["role"] == "model" else "user", "content": t[:3000]})
+    msgs.append({"role": "user", "content": prompt})
+    for model in ("openai", "openai-fast", "mistral"):
+        try:
+            req = urllib.request.Request(FREE_AI_URL, data=json.dumps(
+                {"model": model, "messages": msgs, "max_tokens": max_tokens + 600}).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=40, context=ssl_context()) as r:
+                d = json.load(r)
+            t = (d["choices"][0]["message"].get("content") or "").strip()
+            if t:
+                LAST_AI["name"] = "genius-backup"
+                return t
+        except urllib.error.HTTPError as e:
+            log(f"free AI {model}: HTTP {e.code}")
+            if e.code in (402, 429):              # free limit: one reply every ~30 s; wait once, then retry
+                if not _waited:
+                    _waited = True
+                    time.sleep(12)
+                    return free_ai(prompt, system, convo, max_tokens, _waited=True)
+                break
+        except Exception as e:
+            log(f"free AI {model}: {type(e).__name__}")
+            if _is_net_error(e):
+                break
+    return None
+
+
+def rescue_answer(prompt, convo=None, max_tokens=700, system=None, json_mode=False):
+    """Last line of defence: every connected AI again, then the free backup AI; waits for signal between rounds."""
+    for rnd in range(3):
+        if rnd and not wait_for_net(12 if rnd == 1 else 20):
+            continue
+        tries = []
+        if os.path.exists(KEY_FILE):
+            tries.append(("gemini", lambda: _ask_gemini_only(prompt, max_tokens, json_mode, False, system)))
+        for prov in ranked_providers():
+            tries.append((prov, lambda prov=prov: other_ai(prov, prompt, system=system, convo=convo,
+                                                          max_tokens=max(max_tokens, 400))))
+        tries.append(("backup", lambda: free_ai(prompt, system=system, convo=convo, max_tokens=max_tokens)))
+        for name, fn in tries:
+            try:
+                r = fn()
+            except Exception as e:
+                log(f"rescue {name}: {type(e).__name__}")
+                r = None
+            if r and not is_fail_reply(r):
+                AI_HEALTH.update(fails=0, last_ok=time.time(), last_way=name)
+                if json_mode and "{" in r:
+                    r = r.strip().strip("`")
+                    r = r[r.find("{"):r.rfind("}") + 1]
+                return r
+        AI_HEALTH["fails"] += 1
+    return None
+
+
+def ai_health_report():
+    """'aicheck': tests every AI connection right now and says which ones work."""
+    lines, ok = [], 0
+    ways = [("Gemini", lambda: _ask_gemini_only("Reply with the word OK.", 20))] if os.path.exists(KEY_FILE) else []
+    ways += [(AI_NAMES.get(p, p), lambda p=p: other_ai(p, "Reply with the word OK.", max_tokens=20))
+             for p in ranked_providers()]
+    ways.append(("Genius backup (no key)", lambda: free_ai("Reply with the word OK.", max_tokens=20)))
+    for name, fn in ways:
+        t0 = time.time()
+        try:
+            r = fn()
+        except Exception:
+            r = None
+        ok += bool(r)
+        lines.append(f"- {name}: " + (f"working ({time.time() - t0:.1f}s)" if r else "not answering"))
+    head = (f"{ok} of {len(ways)} ways to answer are working." if ok else
+            ("No AI answered. Your internet works, so the AI services may be busy: try again in a minute."
+             if wait_for_net(3) else "No AI is answering because your phone has no internet: check data or Wi-Fi."))
+    return head + "\n" + "\n".join(lines) + "\nIf one fails, Genius moves to the next one by itself."
 
 
 def think_together(question):
@@ -9650,6 +9769,9 @@ def v110_handle(screen, line, action, arg, low):
             screen.news_menu()
             return True
         screen.show_news(arg)
+        return True
+    if action in ("aicheck", "ai check", "check ai", "connections", "ai status"):
+        screen._bg(ai_health_report, "Testing every AI connection...", speak=False)
         return True
     if action in ("uneb", "past paper", "paper"):
         def job():
@@ -13677,6 +13799,31 @@ class ChatScreen(BoxLayout):
                 log(f"NEWS open failed: {e}")
                 self.say("I couldn't open that story. Check your internet.")
 
+    def _retry_later(self, text):
+        """No AI reachable even after waiting: keep the question and answer it by itself when signal returns.
+        Runs in the background, so the app never freezes while it waits."""
+        self._pending_q = text
+        if getattr(self, "_pending_on", False):
+            return
+        self._pending_on = True
+
+        def watch():
+            end = time.time() + 600
+            while time.time() < end and getattr(self, "_pending_q", None):
+                if wait_for_net(10):
+                    while getattr(self, "busy", False) and time.time() < end:
+                        time.sleep(1)
+                    q, self._pending_q = self._pending_q, None
+                    if q:
+                        def go(*_):
+                            self.show("AI", "[i]Signal is back. Answering your question now...[/i]")
+                            self.chat(q)
+                        Clock.schedule_once(go, 0)
+                    break
+                time.sleep(5)
+            self._pending_on = False
+        threading.Thread(target=watch, daemon=True).start()
+
     def _v110_after(self, r):
         """Keep good answers for offline use; if no AI was reachable, answer from what's saved."""
         q = getattr(self, "_v110_q", "")
@@ -13837,6 +13984,10 @@ class ChatScreen(BoxLayout):
                         "\n".join(f"{l}. {o}" for l, o in zip("ABCD", q["o"])) +
                         "\nAnswer A, B, C or D.")
             self._bg(job, "Making a question...")
+        elif action == "explain" and (not arg or re.fullmatch(
+                r"(it|that|this|more|again|better|further|each part|every part|the parts|all|deeper|"
+                r"each|each one|step by step|simply|in detail|more please|it more|that more)", arg.strip().lower())):
+            self.chat("Explain your last answer " + (arg or "more") + ", in more detail and simply.")
         elif action == "explain":
             if not arg:
                 self.say("Tell me what to explain, e.g. explain osmosis")
@@ -13846,7 +13997,7 @@ class ChatScreen(BoxLayout):
             self._bg(lambda: ask_gemini(
                 f"Explain '{arg}' for a Ugandan secondary school student in under 120 words: "
                 f"a simple definition, one everyday Ugandan example, and one exam tip.", 500)
-                or "I couldn't reach Gemini. Try again.", "Thinking...")
+                or "No AI could be reached after trying every way. Check your data or Wi-Fi, then send it again.", "Thinking...")
         elif action == "studyplan":
             if self._need_key():
                 return
@@ -13854,7 +14005,7 @@ class ChatScreen(BoxLayout):
             self._bg(lambda: ask_gemini(
                 f"Make today's study plan (max 6 short lines with times, total about 2 hours, "
                 f"with breaks) for this student:\n{info}\nFocus on weak topics first.", 600)
-                or "I couldn't reach Gemini. Try again.", "Planning your day...", speak=False)
+                or "No AI could be reached after trying every way. Check your data or Wi-Fi, then send it again.", "Planning your day...", speak=False)
         # ---- money ----
         elif action in ("spent", "got"):
             amt = parse_amount(arg)
@@ -13960,7 +14111,7 @@ class ChatScreen(BoxLayout):
             res = {}
 
             def job():
-                r = ask_gemini(text, toks or 600, search=search) or "I couldn't reach Gemini. Try again."
+                r = ask_gemini(text, toks or 600, search=search) or "No AI could be reached after trying every way. Check your data or Wi-Fi, then send it again."
                 if action == "cv":
                     open("my_cv.txt", "w").write(r)
                     r += "\n\n(Saved as my_cv.txt)"
@@ -14335,6 +14486,16 @@ class ChatScreen(BoxLayout):
                         log(f"CHAT agent failed: {e}")
                         r, err = None, NET_AI_MSG
                     r = r or err or NET_AI_MSG
+                if is_fail_reply(r):
+                    Clock.schedule_once(lambda *_: self.show("AI", "[i]Reconnecting to another AI...[/i]"), 0)
+                    r2 = rescue_answer(text, convo=history)
+                    if r2:
+                        r = r2
+                        history.append({"role": "user", "parts": [{"text": text}]})
+                        history.append({"role": "model", "parts": [{"text": r}]})
+                        save_memory()
+                    else:
+                        self._retry_later(text)
 
                 def done(*_):
                     self.busy = False
@@ -14343,9 +14504,6 @@ class ChatScreen(BoxLayout):
                 Clock.schedule_once(done, 0)
             ui_hooks = self._ui_hooks()
             threading.Thread(target=turbo, daemon=True).start()
-            return
-        if not connected_ais():
-            self.say(NO_AI_MSG)
             return
         if getattr(self, "busy", False):
             if time.time() - getattr(self, "_busy_since", 0) > 75:
@@ -14373,6 +14531,16 @@ class ChatScreen(BoxLayout):
             except Exception as e:
                 log(f"CHAT failed: {e}")
                 r = NET_AI_MSG
+            if is_fail_reply(r):
+                Clock.schedule_once(lambda *_: self.show("AI", "[i]Reconnecting to another AI...[/i]"), 0)
+                r2 = rescue_answer(text, convo=history)
+                if r2:
+                    r = r2
+                    history.append({"role": "user", "parts": [{"text": text}]})
+                    history.append({"role": "model", "parts": [{"text": r}]})
+                    save_memory()
+                else:
+                    self._retry_later(text)
 
             def done(*_):
                 self.busy = False
