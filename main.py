@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "111.6"
+VERSION = "111.7"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -446,7 +446,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 111.6
+ABOUT_TEXT = """Genius 111.7
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -507,10 +507,14 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 111.6 (2026-10-26)
+CHANGELOG = """Genius 111.7 (2026-10-26)
 - Pictures of people now look like real Ugandans (dark brown skin, African features) unless you ask for someone else, and like real phone photos taken in everyday places, not glossy stock portraits.
 - The free picture maker's logo is cut off the bottom of pictures.
 - These picture rules are now built into Genius's brain, so its thinking and answers follow them too.
+- Asking Genius Mind for a picture now makes the picture instead of saying "Search failed".
+- Genius Mind no longer shows "Search failed" when web search is down; it answers without it.
+- Tapping Good or Bad answer again no longer repeats the same message.
+- A bad picture rating offers "Make a new picture" or "Tell me what to change".
 
 Genius 111.5 (2026-10-26)
 - 3 more free AIs you can connect: Cerebras, Mistral and SambaNova (type key).
@@ -3945,6 +3949,14 @@ def fast_answer(question):
     return NET_AI_MSG
 
 
+PIC_ASK = re.compile(r"\b(draw|paint|sketch)\b|\b(create|make|generate|give|show|design)\b.{0,40}"
+                     r"\b(picture|pictures|photo|photos|image|images|pic|pics|portrait|selfie|drawing)\b", re.I)
+
+
+def _ok(t):
+    return t if t and not t.startswith(("Search failed", "Something went wrong")) else None
+
+
 def genius_mind(question):
     """Genius Mind: plan, ask every AI, cross-check with live web search, critique, then one best answer."""
     if not connected_ais():
@@ -3953,13 +3965,17 @@ def genius_mind(question):
                       + brain_recall(question) + "\n\n" + question,
                       300) or ""
     views = ask_all(question + "\n\nThink step by step. Key points only.")
-    draft = ask_gemini(f"Question: {question}\n\nPlan:\n{plan}\n\nAnswers from several AIs:\n{views}\n\n"
+    draft = _ok(ask_gemini(f"Question: {question}\n\nPlan:\n{plan}\n\nAnswers from several AIs:\n{views}\n\n"
                        "Combine the best reasoning, check facts with web search, fix mistakes, and write the best answer.",
-                       1200, search=True) or views
-    final = ask_gemini(f"Question: {question}\n\nDraft answer:\n{draft}\n\nAct as a strict expert reviewer. Find any "
+                       1200, search=True)) or _ok(ask_gemini(f"Question: {question}\n\nAnswers from several AIs:\n"
+                       f"{views}\n\nCombine the best reasoning and write the best answer.", 1200)) or views
+    final = _ok(ask_gemini(f"Question: {question}\n\nDraft answer:\n{draft}\n\nAct as a strict expert reviewer. Find any "
                        "error, missing step, weak logic or outdated fact, then rewrite the final answer: correct, clear, "
-                       "practical, with a short 'Confidence:' line (high/medium/low) and what to verify.", 1200, search=True)
-    return "\U0001F9E0 Genius Mind\n" + (final or draft)
+                       "practical, with a short 'Confidence:' line (high/medium/low) and what to verify.", 1200, search=True))
+    out = final or draft
+    if not _ok(out):
+        return "Genius Mind couldn't reach the AIs just now. Check your internet and ask again in a minute."
+    return "Genius Mind\n" + out
 
 
 
@@ -9819,7 +9835,9 @@ class ChatScreen(BoxLayout):
     def rate_answer(self, good):
         rt = getattr(self, "_rate", None)
         if not rt or rt.get("done"):
-            self.say("Thanks, I already have your rating for that one.")
+            if rt and not rt.get("told"):       # say it once; extra taps stay quiet
+                rt["told"] = True
+                self.say("Thanks, I already have your rating for that one.")
             return
         rt["done"] = True
         ai_record(rt["ai"], True, liked=bool(good))
@@ -9828,6 +9846,9 @@ class ChatScreen(BoxLayout):
             return
         opts = [("Tell me the right answer", lambda: setattr(self.inp, "text", "better: "), GOLD),
                 ("Ask Genius Mind (every AI checks)", lambda: self.handle("mind " + rt["q"]) if rt.get("q") else None, BLUE)]
+        if PIC_ASK.search(rt.get("q") or ""):    # a bad picture: offer a fresh one, not a written answer
+            opts = [("Make a new picture", lambda: self.handle(rt["q"]), GOLD),
+                    ("Tell me what to change", lambda: setattr(self.inp, "text", "change it to "), BLUE)]
         if reports_opt().get("on"):
             opts.append(("Send this to the developer", lambda: (send_report(
                 "Bad answer", f"AI: {rt['ai']}\nQ: {rt['q'][:600]}\nA: {rt['a'][:1500]}"),
@@ -11693,6 +11714,9 @@ class ChatScreen(BoxLayout):
             return
         if lw.startswith(("mind ", "think ", "genius mind ")):
             q = line.split(" ", 2)[2] if lw.startswith("genius mind ") else line.split(" ", 1)[1]
+            if PIC_ASK.search(q):           # 111.6: Mind can't draw, so a picture ask goes to the picture maker
+                self.handle(q)
+                return
             self._bg(lambda: genius_mind(q))
             return
         if lw in ("home", "home page", "dashboard"):
