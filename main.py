@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "111.2"
+VERSION = "111.4"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -422,6 +422,8 @@ HELP_EXTRA = {
     "collage / slideshow": "Put pictures together, or make a looping video",
     "camera": "Camera menu: selfie, back camera or live zoom",
     "selfie": "Open the front camera for a selfie",
+    "profile picture": "Change your profile picture: selfie, beauty selfie or a gallery photo",
+    "genius eye / glam beauty / portrait blur": "Beauty camera: smooth glowing skin, sharp eyes, better light, offline",
     "new picture / undo picture": "Start a fresh picture, or go back one",
     "quick <question>": "Fastest answer from any connected AI",
     "mind <question>": "Genius Mind: every AI plus web checks for one careful answer",
@@ -444,7 +446,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 111.2
+ABOUT_TEXT = """Genius 111.4
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -505,7 +507,13 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 111.2 (2026-10-26)
+CHANGELOG = """Genius 111.4 (2026-10-26)
+- Change profile picture (Menu > Change profile picture, or say 'profile picture'): take a selfie, a beauty selfie, choose from your gallery, use your last picture, or remove it. Genius centres it on your face. Every account has its own picture.
+
+Genius 111.3 (2026-10-26)
+- Genius Eye beauty camera (say 'genius eye', or Camera > Genius Eye): finds faces, smooths skin while keeping eyes, lips and hair sharp, evens and brightens skin tone, lifts dark shadows, sharpens details. Then try Glam beauty or Portrait blur. Works offline.
+
+Genius 111.2 (2026-10-26)
 - Selfie camera button on the home screen, next to Super zoom camera. You can also add a Genius Selfie button to your phone's home screen (Genius everywhere).
 
 Genius 111.1 (2026-10-26)
@@ -1945,6 +1953,62 @@ def my_photo():
             if os.path.exists(f):
                 return f
     return None
+
+
+def profile_photo():
+    """This person's profile picture (each account has its own). Owner falls back to their face photo."""
+    try:
+        d = private_dir("profile")
+        pics = sorted(n for n in os.listdir(d) if n.startswith("pic_") and n.endswith(".jpg"))
+        if pics:
+            return os.path.join(d, pics[-1])
+    except Exception:
+        pass
+    return my_photo() if CURRENT.get("owner") else None
+
+
+def set_profile_photo(src):
+    """Crop the picture to a neat square around the face, save it as this person's profile picture."""
+    from PIL import Image, ImageOps
+    if not src or not os.path.exists(src):
+        return None
+    im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
+    W, H = im.size
+    side = min(W, H)
+    cx, cy = W / 2.0, H * (0.42 if H > W else 0.5)
+    try:
+        faces = face_boxes(src, 3)
+        if faces:
+            x, y, r = max(faces, key=lambda f: f[2])
+            cx, cy, side = x, y + r * 0.25, min(side, max(r * 3.2, side * 0.45))
+    except Exception:
+        pass
+    left = int(min(max(0, cx - side / 2), W - side))
+    top = int(min(max(0, cy - side / 2), H - side))
+    im = im.crop((left, top, left + int(side), top + int(side))).resize((512, 512), Image.LANCZOS)
+    d = private_dir("profile")
+    for n in os.listdir(d):
+        if n.startswith("pic_"):
+            try:
+                os.remove(os.path.join(d, n))
+            except Exception:
+                pass
+    out = os.path.join(d, f"pic_{int(time.time())}.jpg")        # new name each time so the picture refreshes
+    im.save(out, quality=92)
+    return out
+
+
+def remove_profile_photo():
+    d = private_dir("profile")
+    n_removed = 0
+    for n in os.listdir(d):
+        if n.startswith("pic_"):
+            try:
+                os.remove(os.path.join(d, n))
+                n_removed += 1
+            except Exception:
+                pass
+    return n_removed
 
 
 def gemini_image(prompt):
@@ -5174,6 +5238,146 @@ def beautify(path):
     return out, "Made it brighter, sharper and more colourful."
 
 
+# ---------------- 111.3 Genius Eye: offline smart beauty camera ----------------
+def face_boxes(path, max_faces=5):
+    """Find faces with Android's built-in face finder. Returns [(cx, cy, r)] in the picture's pixels, or []."""
+    try:
+        from jnius import autoclass
+        from PIL import Image
+        im = _open_rgb(path)
+        W, H = im.size
+        sc = min(1.0, 640.0 / max(W, H))
+        w, h = int(W * sc) // 2 * 2, int(H * sc)
+        small = im.resize((w, h))
+        tmp = os.path.join(genius_dl("fun"), "_face.png")
+        small.save(tmp)
+        BF = autoclass("android.graphics.BitmapFactory")
+        Opt = autoclass("android.graphics.BitmapFactory$Options")
+        Cfg = autoclass("android.graphics.Bitmap$Config")
+        o = Opt()
+        o.inPreferredConfig = Cfg.RGB_565
+        bmp = BF.decodeFile(tmp, o)
+        FD = autoclass("android.media.FaceDetector")
+        Face = autoclass("android.media.FaceDetector$Face")
+        det = FD(bmp.getWidth(), bmp.getHeight(), max_faces)
+        faces = [None] * max_faces
+        n = det.findFaces(bmp, faces)          # pyjnius copies the found faces back into the list
+        PointF = autoclass("android.graphics.PointF")
+        out = []
+        for i in range(n):
+            f = faces[i]
+            if f is None or f.confidence() < 0.3:
+                continue
+            p = PointF()
+            f.getMidPoint(p)
+            d = f.eyesDistance()
+            out.append((p.x / sc, p.y / sc, d * 1.6 / sc))
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        return out
+    except Exception as e:
+        log(f"FACES: {type(e).__name__}: {e}")
+        return []
+
+
+def _skin_mask(im):
+    """White where the colour looks like skin (any skin tone), soft edges."""
+    from PIL import Image, ImageFilter
+    y, cb, cr = im.convert("YCbCr").split()
+    cbm = cb.point(lambda v: 255 if 77 <= v <= 130 else 0)
+    crm = cr.point(lambda v: 255 if 133 <= v <= 178 else 0)
+    ym = y.point(lambda v: 255 if v > 35 else 0)
+    from PIL import ImageChops
+    m = ImageChops.multiply(ImageChops.multiply(cbm, crm), ym)
+    m = m.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(5))
+    return m.filter(ImageFilter.GaussianBlur(max(2, im.width // 300)))
+
+
+def genius_eye(path, mode="natural", faces=None):
+    """Smart beauty: smooth skin but keep eyes, hair and edges sharp; even, glowing skin tone; HDR light;
+    vivid but true colours. mode: natural | glam | portrait."""
+    from PIL import Image, ImageOps, ImageEnhance, ImageFilter, ImageChops, ImageDraw
+    im = _open_rgb(path)
+    im.thumbnail((2000, 2000))
+    W, H = im.size
+    if faces is None:
+        faces = face_boxes(path)
+        if faces:
+            sw, sh = _open_rgb(path).size
+            k = W / float(sw)
+            faces = [(x * k, y * k, r * k) for x, y, r in faces]
+    glam = mode == "glam"
+    # 1. light: lift shadows, protect highlights, gentle auto-contrast (HDR feel)
+    im = ImageOps.autocontrast(im, cutoff=0.2, preserve_tone=True) if "preserve_tone" in \
+        ImageOps.autocontrast.__code__.co_varnames else ImageOps.autocontrast(im, cutoff=0.2)
+    lum = im.convert("L")
+    shadows = lum.point(lambda v: int(max(0, 120 - v) * 1.4))
+    lifted = ImageEnhance.Brightness(im).enhance(1.22)
+    im = Image.composite(lifted, im, shadows.filter(ImageFilter.GaussianBlur(W // 60 or 2)))
+    # 2. skin: edge-aware smoothing only on skin, details kept
+    mask = _skin_mask(im)
+    if faces:          # trust the face finder: always include the faces, soften skin elsewhere less
+        fm = Image.new("L", (W, H), 0)
+        d = ImageDraw.Draw(fm)
+        for x, y, r in faces:
+            d.ellipse((x - r, y - r * 1.25, x + r, y + r * 1.35), fill=255)
+        fm = fm.filter(ImageFilter.GaussianBlur(max(4, W // 80)))
+        mask = ImageChops.multiply(mask, ImageChops.add(fm, Image.new("L", (W, H), 90)))
+    # 2a. spot remover: small dark dots on skin (pimples, spots) are filled from the skin around them
+    L = im.convert("L")
+    k = 9 if W > 1400 else 7 if W > 700 else 5
+    around = L.filter(ImageFilter.MedianFilter(k))
+    spots = ImageChops.subtract(around, L).point(lambda v: 255 if v > (7 if glam else 10) else 0) \
+        .filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.GaussianBlur(1))
+    spots = ImageChops.multiply(spots, mask)
+    im = Image.composite(im.filter(ImageFilter.MedianFilter(k)), im, spots)
+    rad = max(2, W // (260 if glam else 340))
+    med = 7 if W > 1400 else 5 if W > 700 else 3
+    smooth = im.filter(ImageFilter.MedianFilter(med)).filter(ImageFilter.MedianFilter(med)) \
+        .filter(ImageFilter.GaussianBlur(rad))                                  # spots and pimples melt away
+    # keep only BIG lines sharp (eyes, brows, lips, nose, hair edge); small spots don't count as edges
+    big = im.convert("L").filter(ImageFilter.GaussianBlur(max(1, W // 450)))
+    edges = big.filter(ImageFilter.FIND_EDGES).point(lambda v: min(255, v * 6)).filter(ImageFilter.MaxFilter(5)) \
+        .point(lambda v: 0 if v > 55 else 255).filter(ImageFilter.GaussianBlur(max(2, W // 400)))
+    strength = 0.85 if glam else 0.70
+    m = ImageChops.multiply(mask, edges).point(lambda v: int(v * strength))
+    im = Image.composite(smooth, im, m)
+    # 3. glowing, even skin tone (a touch brighter and warmer on skin only)
+    glow = ImageEnhance.Brightness(im).enhance(1.10 if glam else 1.06)
+    r, g, b = glow.split()
+    glow = Image.merge("RGB", (r.point(lambda v: min(255, v + 6)), g.point(lambda v: min(255, v + 2)), b))
+    im = Image.composite(glow, im, mask.point(lambda v: int(v * 0.7)))
+    # 4. eyes and details: clarity + sharpen everything that is not smooth skin
+    sharp = im.filter(ImageFilter.UnsharpMask(radius=max(2, W // 600), percent=60, threshold=4))
+    im = Image.composite(im, sharp, mask)                 # sharpen eyes, hair, clothes - never the skin
+    clar = im.filter(ImageFilter.UnsharpMask(radius=max(8, W // 60), percent=20, threshold=0))
+    im = Image.blend(im, clar, 0.3)
+    # 5. colour: vibrant but natural
+    im = ImageEnhance.Color(im).enhance(1.14 if glam else 1.08)
+    if glam:
+        soft = im.filter(ImageFilter.GaussianBlur(max(3, W // 120)))
+        im = ImageChops.screen(im, soft.point(lambda v: int(v * 0.22)))
+    # 6. portrait: blur the background behind the faces (or the centre if no face was found)
+    if mode == "portrait":
+        pm = Image.new("L", (W, H), 0)
+        d = ImageDraw.Draw(pm)
+        spots = faces or [(W / 2, H * 0.42, min(W, H) * 0.22)]
+        for x, y, rr in spots:
+            d.ellipse((x - rr * 1.7, y - rr * 1.9, x + rr * 1.7, y + rr * 5), fill=255)
+        pm = pm.filter(ImageFilter.GaussianBlur(max(10, W // 25)))
+        bg = im.filter(ImageFilter.GaussianBlur(max(6, W // 70)))
+        im = Image.composite(im, bg, pm)
+    out = fun_out("genius_eye_" + mode)
+    im.save(out, quality=95, subsampling=0)
+    who = f"{len(faces)} face{'s' if len(faces) != 1 else ''} found. " if faces else ""
+    msg = {"natural": "Genius Eye: smooth glowing skin, sharp eyes, better light.",
+           "glam": "Genius Eye Glam: extra smooth skin and a soft glow.",
+           "portrait": "Genius Eye Portrait: you sharp, background softly blurred."}.get(mode, "Genius Eye done.")
+    return out, who + msg
+
+
 # ---------------- 111.1 save to gallery / files, share a picture ----------------
 _MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif",
          ".mp4": "video/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".pdf": "application/pdf",
@@ -6849,7 +7053,7 @@ class ProfileChip(Button):
     def redraw(self, *_):
         from kivy.graphics import Ellipse
         self.canvas.before.clear()
-        photo = my_photo()
+        photo = profile_photo()
         name = str(CURRENT.get("name") or "G")
         with self.canvas.before:
             Color(*GOLD)
@@ -9081,17 +9285,12 @@ class ChatScreen(BoxLayout):
             box.add_widget(pl)
 
         def set_photo():
-            src = LAST_IMAGE.get("path")
-            if src and set_my_photo(src):
-                self.profile_chip.redraw()
-                self.say("Your profile picture is updated.")
-            else:
-                self.say("Take a selfie or add a picture first, then tap 'Use last picture as my photo'.")
+            pop.dismiss()
+            self.change_profile_photo()
 
         opts = [("Home", self.app.open_home, GOLD),
                 ("Genius Wealth (trading & money)", self.wealth_menu, GOLD),
-                ("Use last picture as my photo", set_photo, BLUE),
-                ("Take a selfie", self.zoom_camera, BLUE),
+                ("Change profile picture", set_photo, BLUE),
                 ("Set up AI key", self.key_wizard, GOLD),
                 ("My plan (Premium)", self.premium_popup, BLUE),
                 ("My storage", self.storage_box, BLUE),
@@ -9371,8 +9570,73 @@ class ChatScreen(BoxLayout):
             pass
         Clock.schedule_once(lambda *_: self._open_camera(), 0.2)
 
+    # ---------- profile picture ----------
+    def change_profile_photo(self, *_):
+        def cam(eye):
+            self._to_profile = True
+            self.take_photo(front=True, eye=eye)
+
+        def gallery():
+            self._to_profile = True
+            self.pick_gallery()
+
+        def last():
+            self._apply_profile(LAST_IMAGE.get("path"))
+
+        def remove():
+            remove_profile_photo()
+            self._redraw_profile()
+            self.say("Profile picture removed. Your first letter shows instead.")
+        opts = [("Take a selfie", lambda: cam(False), GOLD),
+                ("Beauty selfie (Genius Eye)", lambda: cam(True), GOLD),
+                ("Choose from gallery", gallery, BLUE)]
+        if LAST_IMAGE.get("path") and os.path.exists(LAST_IMAGE["path"]):
+            opts.append(("Use my last picture", last, BLUE))
+        if profile_photo():
+            opts.append(("Remove profile picture", remove, GREY))
+        self._buttons_popup("Profile picture", opts, cols=1, hint="Only you see it on this account")
+
+    def _redraw_profile(self):
+        for w in (getattr(self, "profile_chip", None),):
+            try:
+                w.redraw()
+            except Exception:
+                pass
+        try:
+            hs = getattr(self.app, "home_screen", None)
+            if hs is not None:
+                for c in hs.walk():
+                    if isinstance(c, ProfileChip):
+                        c.redraw()
+        except Exception:
+            pass
+
+    def _apply_profile(self, src, beauty=False):
+        if not src or not os.path.exists(src):
+            self.say("Take a selfie or pick a picture first.")
+            return
+
+        def work(*_):
+            try:
+                use = genius_eye(src, "natural")[0] if beauty else src
+                out = set_profile_photo(use)
+            except Exception as e:
+                log(f"PROFILE pic: {type(e).__name__}: {e}")
+                out = None
+
+            def done(*_):
+                if out:
+                    self._redraw_profile()
+                    self.show_image(out, "This is your new profile picture.")
+                else:
+                    self.say("I couldn't use that picture. Try another one.")
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=work, daemon=True).start()
+
     def camera_menu(self, *_):
         self._buttons_popup("Camera", [
+            ("Genius Eye (beauty selfie)", lambda: self.take_photo(front=True, eye=True), GOLD),
+            ("Genius Eye (back camera)", lambda: self.take_photo(front=False, eye=True), GOLD),
             ("Selfie (front camera)", lambda: self.take_photo(front=True), GOLD),
             ("Back camera", lambda: self.take_photo(front=False), GOLD),
             ("Live zoom camera (1x-100x)", self.zoom_camera, BLUE),
@@ -10105,6 +10369,8 @@ class ChatScreen(BoxLayout):
             try:
                 if style.startswith("LOOK:"):
                     out, msg = pro_look(src, style[5:])
+                elif style.startswith("EYE:"):
+                    out, msg = genius_eye(src, style[4:])
                 else:
                     out, msg = beautify(src) if style == "Beautify" else transform_image(src, style)
             except ImportError:
@@ -10449,9 +10715,11 @@ class ChatScreen(BoxLayout):
 
     CAM_CODE = 7781
 
-    def take_photo(self, *_, front=False):
-        """Open the phone's camera (front for selfies); the photo comes straight back into the chat."""
+    def take_photo(self, *_, front=False, eye=False):
+        """Open the phone's camera (front for selfies); the photo comes straight back into the chat.
+        eye=True: Genius Eye beautifies it automatically."""
         self._cam_front = bool(front)
+        self._cam_eye = bool(eye)
         try:
             from android.permissions import request_permissions, check_permission, Permission
             need = [Permission.CAMERA]
@@ -10519,12 +10787,25 @@ class ChatScreen(BoxLayout):
         except Exception as e:
             log(f"CAM result: {e}")
         if path and os.path.getsize(path) > 0:
+            eye, self._cam_eye = getattr(self, "_cam_eye", False), False
+            if getattr(self, "_to_profile", False):
+                self._to_profile = False
+                Clock.schedule_once(lambda *_: self._apply_profile(path, beauty=eye), 0)
+                return
+
             def show(*_):
                 self.got_attachment(path)
-                self._show_suggestions([("Add effects", "word:effects"), ("Beautify", "word:beautify"),
+                if eye:
+                    remember_image(path, "camera")
+                    self.fun_transform(path, "EYE:natural")
+                    self._show_suggestions([("Glam beauty", "word:glam beauty"), ("Portrait blur", "word:portrait blur"),
+                                            ("Add effects", "word:effects")])
+                    return
+                self._show_suggestions([("Genius Eye beauty", "word:eye beauty"), ("Add effects", "word:effects"),
                                         ("Homework", "word:homework")])
             Clock.schedule_once(show, 0)
         else:
+            self._to_profile = False
             Clock.schedule_once(lambda *_: self.say("Okay, no photo taken."), 0)
 
     def pick_gallery(self, *_):
@@ -10617,6 +10898,10 @@ class ChatScreen(BoxLayout):
             Clock.schedule_once(lambda *_: self.chart_read(path), 0)
             return
         self._chart_mode = False
+        to_prof, self._to_profile = getattr(self, "_to_profile", False), False
+        if path and to_prof:
+            Clock.schedule_once(lambda *_: self._apply_profile(path), 0)
+            return
         to_store = getattr(self, "_to_storage", False)
         self._to_storage = False
         if path and to_store:
@@ -11181,6 +11466,21 @@ class ChatScreen(BoxLayout):
             return
         if lw in ("camera", "open camera", "take photo", "take a photo", "photo"):
             self.camera_menu()
+            return
+        if lw in ("profile picture", "profile photo", "change profile picture", "change profile photo", "change my photo",
+                  "change my picture", "profile pic", "change profile pic", "set profile picture", "my profile picture"):
+            self.change_profile_photo()
+            return
+        if lw in ("eye camera", "genius eye", "iphone camera", "iphone 18 camera", "beauty camera", "beauty selfie"):
+            self.take_photo(front=True, eye=True)
+            return
+        if lw in ("eye beauty", "glam beauty", "portrait blur", "portrait mode", "natural beauty"):
+            src = LAST_IMAGE.get("path")
+            if not src or not os.path.exists(src):
+                self.say("Take a photo first: say genius eye.")
+                return
+            mode = "glam" if "glam" in lw else "portrait" if "portrait" in lw else "natural"
+            self.fun_transform(src, "EYE:" + mode)
             return
         if lw in ("selfie", "front camera", "selfie camera"):
             self.take_photo(front=True)
@@ -12548,6 +12848,7 @@ class HomeScreen(BoxLayout):
                  ("Genius Wealth", "wealth", GOLD), ("Read a trading chart", "chart", GOLD2),
                  ("Make music", "sound", BLUE2), ("Photo studio", "fun", BLUE),
                  ("Super zoom camera", "camera", BLUE2), ("Selfie camera", "selfie", GOLD2),
+                 ("Genius Eye beauty", "genius eye", GOLD),
                  ("Genius Ultra photo", "ultra", BLUE),
                  ("My storage", "storage", GREY), ("Genius everywhere", "everywhere", GREY),
                  ("Share Genius", "share", GREY), ("My plan", "premium", GREY)]
