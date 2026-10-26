@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "110.7"
+VERSION = "110.8"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -443,7 +443,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 110.7
+ABOUT_TEXT = """Genius 110.8
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -504,7 +504,12 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 110.7 (2026-10-26)
+CHANGELOG = """Genius 110.8 (2026-10-26)
+- Share now sends a link that downloads Genius straight onto any Android phone. After it's installed, Genius updates itself to the newest version.
+- Privacy shield: your chats, memory, notes and keys are locked so only Genius can read them. Sharing sends only the link.
+- 'private on' blocks screenshots, screen recorders and on-screen AI from seeing Genius. 'private off' turns it off.
+
+Genius 110.7 (2026-10-26)
 - Typing mode: while you type, the top bar hides and Genius's words get smaller, so there's room to see everything you write. Your words are smaller too, and the box stays right above the keyboard. Everything goes back to normal when the keyboard closes.
 
 Genius 110.6 (2026-10-26)
@@ -6387,7 +6392,40 @@ def pin_shortcut(action, label):
     return True
 
 
-GENIUS_LINK = "https://github.com/ssalimuto/Genius-app/releases/latest"
+GENIUS_APK_FALLBACK = ("https://github.com/ssalimuto/Genius-app/releases/download/v109.1-build59/"
+                       "genius-109.1-arm64-v8a_armeabi-v7a-debug.apk")
+GENIUS_LINK = GENIUS_APK_FALLBACK
+_APK_LINK = {}
+
+
+def newest_apk_link():
+    """Direct download of the newest Genius app (the newest release that has an APK). Opens straight to the
+    download on any Android phone; after install, Genius updates itself to the latest version."""
+    hit = _APK_LINK.get("u")
+    if hit and time.time() - hit[1] < 6 * 3600:
+        return hit[0]
+    try:
+        req = urllib.request.Request("https://api.github.com/repos/ssalimuto/Genius-app/releases?per_page=40",
+                                     headers={"User-Agent": "Genius", "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=12, context=ssl_context()) as r:
+            rels = json.load(r)
+        for rel in rels:
+            if rel.get("draft") or rel.get("prerelease"):
+                continue
+            for a in rel.get("assets", []):
+                if a.get("name", "").endswith(".apk") and a.get("browser_download_url", "").startswith(
+                        "https://github.com/ssalimuto/Genius-app/"):
+                    _APK_LINK["u"] = (a["browser_download_url"], time.time())
+                    return a["browser_download_url"]
+    except Exception as e:
+        log(f"APK link: {type(e).__name__}")
+    return GENIUS_APK_FALLBACK
+
+
+def share_text():
+    return SHARE_TEXT.replace(GENIUS_APK_FALLBACK, (_APK_LINK.get("u") or (GENIUS_APK_FALLBACK,))[0])
+
+
 SHARE_TEXT = ("Meet Genius - a smart AI app made in Uganda. It answers like Google with sources, makes realistic "
               "pictures, edits photos without changing your face, makes songs, helps you type in English and Luganda, "
               "and more. Free 7-day trial. Download for Android: " + GENIUS_LINK)
@@ -6400,7 +6438,7 @@ def share_genius(target=None):
     Intent = autoclass("android.content.Intent")
     i = Intent(Intent.ACTION_SEND)
     i.setType("text/plain")
-    i.putExtra(Intent.EXTRA_TEXT, SHARE_TEXT)
+    i.putExtra(Intent.EXTRA_TEXT, share_text())
     if target:
         i.setPackage(target)
         try:
@@ -8131,9 +8169,75 @@ def v110_prompt_prefix(text):
     return pre
 
 
+# ---------------- 110.8 privacy shield ----------------
+def set_private_screen(on):
+    """Private screen: other apps, screen recorders and on-screen AI readers can't capture Genius."""
+    try:
+        from jnius import autoclass
+        from android.runnable import run_on_ui_thread
+        act = autoclass("org.kivy.android.PythonActivity").mActivity
+        WM = autoclass("android.view.WindowManager$LayoutParams")
+
+        @run_on_ui_thread
+        def apply():
+            if on:
+                act.getWindow().addFlags(WM.FLAG_SECURE)
+            else:
+                act.getWindow().clearFlags(WM.FLAG_SECURE)
+        apply()
+        return True
+    except Exception as e:
+        log(f"PRIVATE screen: {type(e).__name__}")
+        return False
+
+
+def lock_private_files():
+    """Genius's memory, notes, keys and chats are readable by Genius alone (owner-only file rights)."""
+    n = 0
+    for base in (ROOT,):
+        for dp_, dirs, files in os.walk(base):
+            if "/.kivy" in dp_ or "__pycache__" in dp_:
+                continue
+            for f in files:
+                if f.endswith((".json", ".txt", ".dat", ".db")):
+                    try:
+                        os.chmod(os.path.join(dp_, f), 0o600)
+                        n += 1
+                    except Exception:
+                        pass
+    return n
+
+
+PRIVACY_TEXT = ("[b]Genius privacy shield[/b]\n"
+                "- Your chats, memory, notes and keys live inside Genius's own locked space on this phone. "
+                "Other apps can't open them, and Genius never sends them to other devices.\n"
+                "- Sharing Genius sends only the download link, never your chats or what Genius knows about you.\n"
+                "- [b]private on[/b] blocks screenshots, screen recording and on-screen AI from seeing Genius. "
+                "[b]private off[/b] allows them again.\n"
+                "- Genius still learns from the internet and other AIs. It sends them only your question, "
+                "never your saved memory files.")
+
+
 def v110_handle(screen, line, action, arg, low):
     """Genius 110 commands. Returns True when handled."""
     lw = low.strip(" .!?")
+    if action in ("private", "privacy") or lw in ("privacy shield", "private screen"):
+        a = arg.lower().strip()
+        if a in ("on", "yes", "1"):
+            d = life_load(); d["private_screen"] = True; life_save(d)
+            ok = set_private_screen(True)
+            screen.say("Private screen is on. Other apps, screen recorders and AI can't capture Genius now. "
+                       "Screenshots of Genius are blocked too. Say private off to allow them." if ok else
+                       "Private screen works on the phone app only.")
+        elif a in ("off", "no", "0"):
+            d = life_load(); d["private_screen"] = False; life_save(d)
+            set_private_screen(False)
+            screen.say("Private screen is off. You can take screenshots of Genius again.")
+        else:
+            n = lock_private_files()
+            log(f"PRIVACY: locked {n} files")
+            screen.say(PRIVACY_TEXT, plain=False)
+        return True
     if action == "news" or lw in ("world news", "headlines", "amawulire", "show news", "latest news"):
         if arg.lower().startswith(("brief", "summary", "summarise", "summarize")):
             topic = arg.split(None, 1)[1] if len(arg.split()) > 1 else "world"
@@ -8337,6 +8441,10 @@ class ChatScreen(BoxLayout):
         self._kb_ev = None
         Clock.schedule_once(self._grow_input, 0)
         threading.Thread(target=groq_warmup, daemon=True).start()
+        threading.Thread(target=newest_apk_link, daemon=True).start()
+        threading.Thread(target=lock_private_files, daemon=True).start()
+        if life_load().get("private_screen"):
+            set_private_screen(True)
 
         self.say(f"Welcome {CURRENT['name']}. You are in command. Tap Search to find any tool, or + to add a photo, screenshot or file.")
 
@@ -9189,10 +9297,10 @@ class ChatScreen(BoxLayout):
         def copy_link():
             try:
                 from kivy.core.clipboard import Clipboard
-                Clipboard.copy(SHARE_TEXT)
-                self.say("Copied! Paste it in any chat, status or post so friends can download Genius:\n" + GENIUS_LINK)
+                Clipboard.copy(share_text())
+                self.say("Copied! Paste it in any chat, status or post so friends can download Genius:\n" + newest_apk_link())
             except Exception:
-                self.say("Send friends this link to download Genius:\n" + GENIUS_LINK)
+                self.say("Send friends this link to download Genius:\n" + newest_apk_link())
         self._buttons_popup("Share Genius", [(n, lambda p=p: go(p), BLUE) for n, p in apps] +
                             [("Copy link", copy_link, GREY), ("Any other app...", go, GOLD)], cols=2,
                             hint="Tap an app. Friends download Genius from your link")
@@ -9952,7 +10060,9 @@ class ChatScreen(BoxLayout):
 
     def _all_tools(self):
         """Every Genius tool in one list, so the Search button can find them all."""
-        return [("Share Genius", self.share_menu, GOLD), ("Speak (talk to Genius)", self.speak_input, GOLD),
+        return [("Share Genius", self.share_menu, GOLD), ("Privacy shield", lambda: self.handle("privacy"), GOLD),
+                ("Private screen on", lambda: self.handle("private on"), BLUE),
+                ("Private screen off", lambda: self.handle("private off"), GREY), ("Speak (talk to Genius)", self.speak_input, GOLD),
                 ("World news", self.news_menu, GOLD), ("Trending on social media", lambda: self.show_news("social"), GOLD), ("UNEB practice", lambda: self.handle("uneb"), BLUE),
                 ("Homework from a photo", lambda: self.say("Tap Add file, pick your homework photo, then type homework."), BLUE),
                 ("Draw a picture", lambda: self.handle("draw"), BLUE), ("Add file or photo", self.attach_menu, BLUE),
