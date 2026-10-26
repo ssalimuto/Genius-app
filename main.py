@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "109.6"
+VERSION = "109.7"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -386,7 +386,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 109.6
+ABOUT_TEXT = """Genius 109.7
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -447,7 +447,10 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 109.6 (2026-10-26)
+CHANGELOG = """Genius 109.7 (2026-10-26)
+- Answers like Google's AI Mode: a clear first sentence, then tidy bullet points with bold labels and headings, the websites it searched, and tappable "ask next" questions.
+
+Genius 109.6 (2026-10-26)
 - Sharper, more real pictures: Genius now uses Google's newest picture makers (Nano Banana 2.1, Nano Banana 2 and Pro) when your Gemini key has picture access.
 - Free pictures look better: realistic photo models, bigger size (up to 832 x 1216), a better camera description, and gentle phone-camera finishing (sharpness, contrast, colour).
 - Picture shape follows your words: wide scenes come out landscape, logos and avatars square, people tall.
@@ -2063,6 +2066,14 @@ def gemini_reply(text, deep=False):
 
 
 # ---------------- agent: the AI chooses its own tools ----------------
+ANSWER_STYLE = (" For questions about knowledge, people, places, history, science, school work or how something "
+                "works, answer like Google's AI Mode: start with one clear sentence that directly answers, then "
+                "2 to 5 short bullet points that each start with a bold label, like '- **Origin:** ...'. Use exact "
+                "names, dates and numbers. If you searched the web, add a last-but-one line 'Sources: ' with the "
+                "site names. Always finish knowledge answers with one final line exactly like "
+                "'Ask next: <short follow-up question> | <another short follow-up question>'. "
+                "For chat, feelings or simple tasks, just reply naturally without bullets or Ask next.")
+
 AGENT_RULES = ("You are Genius, the private assistant of ssalimuto, a young person in Uganda "
                "(timezone Africa/Kampala). Reply in clear, simple English. "
                "You are their personal AI: a helper for anything in their life, and a warm, "
@@ -2079,7 +2090,7 @@ AGENT_RULES = ("You are Genius, the private assistant of ssalimuto, a young pers
                "and then set a reminder). Use search_web for news, prices, people, facts you are not "
                "sure of, or anything recent. Never invent tool results. After using tools, answer in "
                "1 to 4 short sentences saying what you did. Never claim you did something a tool "
-               "did not confirm.")
+               "did not confirm.") + ANSWER_STYLE
 
 AGENT_TOOLS = [{"functionDeclarations": [
     {"name": "get_time", "description": "Current local date and time.",
@@ -2148,6 +2159,17 @@ def _search_web(key, query):
             parts = d["candidates"][0]["content"]["parts"]
             t = "\n".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
             if t:
+                try:
+                    chunks = d["candidates"][0].get("groundingMetadata", {}).get("groundingChunks", [])
+                    names = []
+                    for c in chunks:
+                        n = (c.get("web") or {}).get("title", "").strip()
+                        if n and n not in names:
+                            names.append(n)
+                    if names:
+                        t += "\nSources: " + ", ".join(names[:4])
+                except Exception:
+                    pass
                 return t
         except Exception as e:
             if _is_net_error(e):
@@ -3128,7 +3150,7 @@ def other_ai(name, text, system=None, convo=None, max_tokens=700):
     msgs = [{"role": "system", "content": system or (
         "You are Genius, the private assistant of " + CURRENT["name"] + ", a young person in Uganda, made by "
         "Ssali Muto. Answer in clear, simple English, briefly and accurately. Say when you are "
-        "unsure. You can't see the time, weather or internet in this mode." + brain_recall(text))}]
+        "unsure. You can't see the time, weather or internet in this mode." + ANSWER_STYLE + brain_recall(text))}]
     for m in (convo or [])[-8:]:
         t = " ".join(p.get("text", "") for p in m.get("parts", []))
         if t:
@@ -5494,6 +5516,42 @@ def _cmd_words():
     if _CMD_WORDS is None:
         _CMD_WORDS = {c.split()[0] for c, _ in _suggest_pool()} | set(LUGANDA_CMDS)
     return _CMD_WORDS
+
+
+def md_to_markup(text, pal=None):
+    """Turn the AI's simple markdown (**bold**, # headings, - bullets) into tidy Kivy markup."""
+    if not text or "[" in text and "[/" in text:
+        return text
+    pal = pal or PAL
+    acc = _hx(pal["accent"])
+    out = []
+    for ln in text.split("\n"):
+        h = re.match(r"^\s{0,3}#{1,4}\s+(.*)$", ln)
+        if h:
+            out.append(f"[b][size=17sp][color={acc}]{h.group(1).strip(' *')}[/color][/size][/b]")
+            continue
+        b = re.match(r"^(\s*)[-*\u2022]\s+(.*)$", ln)
+        if b:
+            ln = ("    " if len(b.group(1)) >= 2 else "") + f"[color={acc}]\u2022[/color] " + b.group(2)
+        ln = re.sub(r"\*\*(.+?)\*\*", r"[b]\1[/b]", ln)
+        ln = re.sub(r"(?<![*\w])\*(?!\s)([^*\n]+?)\*(?![*\w])", r"[i]\1[/i]", ln)
+        if ln.startswith("Sources: "):
+            ln = f"[size=12sp][color={_hx(pal['hint'])}]{ln}[/color][/size]"
+        out.append(ln)
+    return "\n".join(out)
+
+
+def split_follow_ups(text):
+    """('answer without the Ask next line', ['question 1', 'question 2'])."""
+    if not text or "Ask next:" not in text:
+        return text, []
+    lines = text.rstrip().split("\n")
+    for i in range(len(lines) - 1, max(-1, len(lines) - 4), -1):
+        m = re.match(r"^\W*Ask next:\s*(.+)$", lines[i].strip(), re.I)
+        if m:
+            qs = [q.strip(" ?*_.\"'") + "?" for q in m.group(1).split("|") if len(q.strip()) > 3][:3]
+            return "\n".join(lines[:i] + lines[i + 1:]).rstrip(), qs
+    return text, []
 
 
 def colorize(text, pal=None):
@@ -8737,7 +8795,7 @@ class ChatScreen(BoxLayout):
     # output
     def show(self, who, text, plain=False):
         if who == "AI" and isinstance(text, str) and not plain:
-            text = colorize(text)
+            text = colorize(md_to_markup(text))
         if who == "AI" and CURRENT.get("owner") and isinstance(text, str) and _needs_key_text(text):
             text += "\n[ref=keywizard][b][color=ffc84d][u]\u27a4 Tap here to set up a free AI key[/u][/color][/b][/ref]"
             if text.startswith(NO_AI_MSG[:40]):
@@ -8751,7 +8809,12 @@ class ChatScreen(BoxLayout):
         Clock.schedule_once(lambda *_: setattr(self.scroll, "scroll_y", 0), 0.1)
 
     def say(self, text, plain=False):
+        follow = []
+        if isinstance(text, str) and not plain:
+            text, follow = split_follow_ups(text)
         self.show("AI", text, plain=plain)
+        if follow:
+            Clock.schedule_once(lambda *_: self._show_suggestions([(q, "word:" + q) for q in follow]), 0.2)
         self._last_said = text
         q = getattr(self, "_pending_q", "")
         if q and text and len(text) > 30 and not text.startswith(("Still ", "Say it like")):
@@ -8759,7 +8822,7 @@ class ChatScreen(BoxLayout):
             if LAST_QA.get("q") != q or LAST_QA.get("a") != text:
                 LAST_QA.update(q=q, a=text)
                 brain_reflect(q, text)          # every question makes the brain a little smarter
-        tts(text)
+        tts(re.sub(r"(?m)^Sources: .*$", "", re.sub(r"[*#]+", "", text)) if isinstance(text, str) else text)
         if getattr(self, "talking", False):
             self.listen_after_speech()
 
