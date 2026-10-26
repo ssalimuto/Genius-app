@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "110.6"
+VERSION = "110.7"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -443,7 +443,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 110.6
+ABOUT_TEXT = """Genius 110.7
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -504,7 +504,10 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 110.6 (2026-10-26)
+CHANGELOG = """Genius 110.7 (2026-10-26)
+- Typing mode: while you type, the top bar hides and Genius's words get smaller, so there's room to see everything you write. Your words are smaller too, and the box stays right above the keyboard. Everything goes back to normal when the keyboard closes.
+
+Genius 110.6 (2026-10-26)
 - New + button next to the typing box: take a photo with the camera, pick from your gallery, add your newest screenshot, or add a file like a PDF or notes. Then ask about it, solve homework from it, or change it.
 
 Genius 110.5 (2026-10-26)
@@ -8275,6 +8278,7 @@ class ChatScreen(BoxLayout):
         # only two buttons on top: Share and Search. Every tool is found from Search.
         self.speak_btn = find_btn      # shows "Stop" while Genius hears you; tap to stop
         self.add_widget(header)
+        self.header = header
 
         # chat area
         body = Panel(orientation="vertical", padding=[10, 8, 10, 8], spacing=8,
@@ -8290,6 +8294,7 @@ class ChatScreen(BoxLayout):
         body.add_widget(self.scroll)
         outer.add_widget(body)
         self.add_widget(outer)
+        self.chat_outer = outer
 
         # every tool now lives in one place: the Tools button by the typing box
         self.deep_btn = RoundButton(text="Deep", bg=GREY, fg=TEXTCOL)   # not shown; keeps Deep's state
@@ -8305,7 +8310,7 @@ class ChatScreen(BoxLayout):
         # input row: wraps and grows to 4 lines, stays above the keyboard
         self.in_row = row = BoxLayout(size_hint_y=None, height="62dp", spacing=8, padding=[10, 4, 10, 10])
         self.inp = style_input(ChatInput(hint_text="Ask Genius anything...",
-                               multiline=True, do_wrap=True, font_size="18sp", size_hint_y=None,
+                               multiline=True, do_wrap=True, font_size="15sp", size_hint_y=None,
                                write_tab=False, text_validate_unfocus=False))
         self.inp.bind(on_text_validate=self.send, text=self._typing, minimum_height=self._grow_input,
                       width=self._grow_input)
@@ -10491,8 +10496,21 @@ class ChatScreen(BoxLayout):
             self._kb_ev = None
         if focused:
             self._kb_ev = Clock.schedule_interval(self._kb_check, 0.15)
+        self._typing_mode(focused)
         Clock.schedule_once(self._kb_check, 0.05)
         Clock.schedule_once(self._kb_check, 0.4)
+
+    def _typing_mode(self, on):
+        """While typing: hide the top bar and make Genius's words smaller, so there's room to see yours."""
+        hd = getattr(self, "header", None)
+        if hd is not None:
+            hd.height = 0 if on else dp(60)
+            hd.opacity = 0 if on else 1
+            hd.disabled = bool(on)
+        self.out.font_size = "14sp" if on else "18sp"
+        if getattr(self, "chat_outer", None) is not None:
+            self.chat_outer.padding = [6, 4, 6, 2] if on else [10, 10, 10, 8]
+        Clock.schedule_once(lambda *_: setattr(self.scroll, "scroll_y", 0), 0.1)
 
     def _kb_check(self, *_):
         h = keyboard_overlap() if self.inp.focus else 0
