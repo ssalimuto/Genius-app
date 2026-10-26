@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "111.9"
+VERSION = "112.0"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -447,7 +447,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 111.9
+ABOUT_TEXT = """Genius 112.0
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -508,7 +508,13 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 111.9 (2026-10-26)
+CHANGELOG = """Genius 112.0 (2026-10-26)
+- Vocal studio: make a song in YOUR voice. Genius makes the beat and words, then you sing over it with the words lighting up.
+- A live voice bar shows how loud you sing (green good, gold strong, red too loud), with REC time.
+- Record, Stop, Listen, Share and Record again. Your voice is mixed onto the beat with a little room echo and saved with the lyrics.
+- Say: song in my voice amapiano about my mum, or record vocals, or tap Sing it in my voice in Music.
+
+Genius 111.9 (2026-10-26)
 - New news screen, mostly videos: the latest clips from NTV Uganda, NBS, Al Jazeera, BBC, Sky Sports, ESPN FC, CNBC and CNET, each with its picture.
 - Photo stories from Nile Post and BBC with their pictures.
 - Videos and stories now play and open INSIDE Genius. Tap Close or Back to return.
@@ -5433,6 +5439,144 @@ def current_line(lines, pos):
         else:
             break
     return idx
+
+
+# ---------------- 111.9: Vocal studio (sing your song in your own voice) ----------------
+VOCAL_SR = 44100
+VOCAL_LATENCY = 0.12          # seconds the phone's mic runs behind the beat
+
+
+class VocalRecorder:
+    """Records the microphone to a mono 16-bit WAV with Android AudioRecord. .level is 0..1 for the meter."""
+
+    def __init__(self):
+        self.running = False
+        self.level = 0.0
+        self.error = ""
+        self.path = ""
+        self.seconds = 0.0
+        self._th = None
+
+    def start(self, path):
+        self.path, self.running, self.error, self.level, self.seconds = path, True, "", 0.0, 0.0
+        self._th = threading.Thread(target=self._run, daemon=True)
+        self._th.start()
+
+    def stop(self):
+        self.running = False
+        if self._th is not None:
+            self._th.join(4)
+        return self.path if os.path.exists(self.path) and self.seconds > 0.5 else None
+
+    def _run(self):
+        rec = None
+        try:
+            from jnius import autoclass
+            AR = autoclass("android.media.AudioRecord")
+            minb = AR.getMinBufferSize(VOCAL_SR, 16, 2)            # mono, 16-bit
+            if minb <= 0:
+                raise RuntimeError("this phone's microphone can't record at studio quality")
+            rec = AR(1, VOCAL_SR, 16, 2, max(minb * 4, 32768))
+            if rec.getState() != 1:
+                raise RuntimeError("the microphone is busy or not allowed")
+            rec.startRecording()
+            chunk = bytearray(4410)                                 # 50 ms
+            with _wave.open(self.path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(VOCAL_SR)
+                total = 0
+                while self.running:
+                    n = rec.read(chunk, 0, len(chunk))
+                    if n is None or n <= 0:
+                        time.sleep(0.01)
+                        continue
+                    data = bytes(chunk[:n])
+                    w.writeframes(data)
+                    total += n
+                    self.seconds = total / (2.0 * VOCAL_SR)
+                    self.level = min(1.0, _pcm_rms(data) / 9000.0)
+        except Exception as e:
+            self.error = str(e) or type(e).__name__
+            log(f"VOCAL record failed: {self.error}")
+        finally:
+            self.running = False
+            try:
+                if rec is not None:
+                    rec.stop()
+                    rec.release()
+            except Exception:
+                pass
+
+
+def _pcm_rms(data):
+    try:
+        import audioop
+        return audioop.rms(data, 2)
+    except Exception:
+        a = _array.array("h", data[: len(data) // 2 * 2])
+        if not a:
+            return 0
+        step = max(1, len(a) // 400)
+        v = a[::step]
+        return (sum(x * x for x in v) / len(v)) ** 0.5
+
+
+def mix_vocals(beat_wav, vocal_wav, out_wav, vocal_gain=1.0, beat_gain=0.55):
+    """Put the recorded voice on top of the beat with a little room echo. Returns out_wav."""
+    with _wave.open(beat_wav, "rb") as w:
+        bch, bsr = w.getnchannels(), w.getframerate()
+        beat = w.readframes(w.getnframes())
+    with _wave.open(vocal_wav, "rb") as w:
+        voc = w.readframes(w.getnframes())
+    cut = int(VOCAL_LATENCY * VOCAL_SR) * 2
+    voc = voc[cut:] if len(voc) > cut else voc
+    try:
+        import audioop
+        voc = audioop.bias(voc, 2, -int(audioop.avg(voc, 2)))          # remove mic hum offset
+        peak = max(1, audioop.max(voc, 2))
+        voc = audioop.mul(voc, 2, min(8.0, 0.72 * 32767 / peak) * vocal_gain)
+        d = int(0.085 * VOCAL_SR) * 2                                    # small room echo
+        echo = b"\x00" * d + audioop.mul(voc, 2, 0.22)[:max(0, len(voc) - d)]
+        voc = audioop.add(voc, echo[:len(voc)], 2)
+        if bsr != VOCAL_SR:
+            voc, _ = audioop.ratecv(voc, 2, 1, VOCAL_SR, bsr, None)
+        vs = audioop.tostereo(voc, 2, 1, 1) if bch == 2 else voc
+        beat = audioop.mul(beat, 2, beat_gain)
+        n = max(len(beat), len(vs))
+        beat += b"\x00" * (n - len(beat))
+        vs += b"\x00" * (n - len(vs))
+        mixed = audioop.add(beat, vs, 2)
+    except ImportError:
+        b = _array.array("h", beat)
+        v = _array.array("h", voc)
+        peak = max(1, max(v, default=1), -min(v, default=-1))
+        g = min(8.0, 0.72 * 32767 / peak) * vocal_gain
+        d = int(0.085 * VOCAL_SR)
+        n = max(len(b), len(v) * bch)
+        b.extend([0] * (n - len(b)))
+        out = _array.array("h", bytes(2 * n))
+        for i in range(n):
+            j = i // bch
+            x = v[j] if j < len(v) else 0
+            e = v[j - d] if d <= j < len(v) + d else 0
+            y = b[i] * beat_gain + (x + 0.22 * e) * g
+            out[i] = 32767 if y > 32767 else -32768 if y < -32768 else int(y)
+        mixed = out.tobytes()
+    with _wave.open(out_wav, "wb") as w:
+        w.setnchannels(bch)
+        w.setsampwidth(2)
+        w.setframerate(bsr)
+        w.writeframes(mixed)
+    try:                                                     # keep the lyrics so karaoke still works
+        meta, lines = load_song_timeline(beat_wav)
+        meta = dict(meta, title=meta.get("title", "My song") + " (my voice)", lines=lines,
+                    duration=round(len(mixed) / (2.0 * bch * bsr), 2), sung_by="you")
+        with open(song_meta_path(out_wav), "w") as fh:
+            json.dump(meta, fh, ensure_ascii=False, indent=1)
+    except Exception as e:
+        log(f"VOCAL meta: {e}")
+    return out_wav
 
 
 def newest_song():
@@ -10669,6 +10813,7 @@ class ChatScreen(BoxLayout):
                             [("Describe my own...", lambda: self.say("Say 'make song' then the style and what it's about, "
                                                                      "like: make song amapiano about my mum. Add 'in Luganda' "
                                                                      "or 'English and Luganda' if you like."), GREY),
+                             ("Sing it in my voice (record)", self.vocal_studio, RED),
                              ("Play my last song + lyrics", self.open_player, GREY)],
                             cols=2, hint="Pick a style. Genius writes the words and plays them with lyrics on screen")
 
@@ -10697,6 +10842,7 @@ class ChatScreen(BoxLayout):
             def done(*_):
                 self.busy = False
                 if not out:
+                    self._sing_after = False
                     self.say(f"Sorry, the song didn't work. {err}")
                     return
                 self._last_song = out
@@ -10711,7 +10857,11 @@ class ChatScreen(BoxLayout):
                                 f"Saved in {nice_where(out)} as {os.path.basename(out)}.\n"
                                 f"Say 'play song' or 'lyrics' to see the words again, 'pause music' or 'stop music'."
                                 + (f"\n\n[i]Chorus:[/i]\n{_esc(chorus)}" if chorus else ""))
-                self.open_player(out, plan)
+                if getattr(self, "_sing_after", False):
+                    self._sing_after = False
+                    self.vocal_studio(out)
+                else:
+                    self.open_player(out, plan)
             Clock.schedule_once(done, 0)
         threading.Thread(target=d, daemon=True).start()
 
@@ -10819,6 +10969,194 @@ class ChatScreen(BoxLayout):
         b_close.bind(on_press=pop.dismiss)      # closing keeps the music playing; 'stop music' stops it
         ev = Clock.schedule_interval(tick, 0.15)
         pop.bind(on_dismiss=lambda *_: ev.cancel())
+        pop.open()
+        tick()
+
+    def vocal_studio(self, wav=None, *_):
+        """Record your own voice singing over a Genius beat, with the words on screen and a live voice meter."""
+        wav = wav if isinstance(wav, str) else None
+        wav = wav or getattr(self, "_last_song", None) or newest_song()
+        if not wav or not os.path.exists(wav):
+            self.say("First make a beat for your song. Say 'song in my voice' then the style and topic, like: "
+                     "song in my voice amapiano about my mum.")
+            return
+        try:
+            if not mic_permission_ok():
+                self.say("Allow the microphone for Genius, then open the vocal studio again.")
+                return
+        except Exception:
+            pass
+        sound_stop()
+        meta, lines = load_song_timeline(wav)
+        dur = meta.get("duration") or wav_seconds(wav) or 1.0
+        rec = VocalRecorder()
+        st = dict(mode="ready", t0=0.0, take=None, mixed=None, idx=-2)
+        acc, hint = _hx(PAL["accent"]), _hx(PAL["hint"])
+        box = BoxLayout(orientation="vertical", spacing=8, padding=12)
+        head = Label(text=f"[b][color={acc}]{_esc(meta.get('title', 'Your song'))}[/color][/b]\n"
+                          f"[size=13sp][color={hint}]Sing it in your own voice. Use earphones so the beat stays clean.[/color][/size]",
+                     markup=True, font_size="20sp", size_hint_y=None, height="62dp", halign="center", valign="middle")
+        head.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        box.add_widget(head)
+        sv = ScrollView(bar_width="3dp")
+        lyr = Label(text=karaoke_markup(lines, -1), markup=True, size_hint_y=None, halign="center", valign="top",
+                    line_height=1.3, padding=(6, 40))
+        lyr.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)),
+                 texture_size=lambda w, *_: setattr(w, "height", w.texture_size[1]))
+        sv.add_widget(lyr)
+        box.add_widget(sv)
+        status = Label(text="Ready. Tap Record, then sing when the words light up.", color=HINT, font_size="15sp",
+                       size_hint_y=None, height="24dp")
+        box.add_widget(status)
+        meter = Widget(size_hint_y=None, height="26dp")           # the voice bar: shows how loud you sing
+        with meter.canvas:
+            Color(1, 1, 1, 0.10)
+            m_track = RoundedRectangle(radius=[13])
+            m_col = Color(0.3, 0.9, 0.45, 1)
+            m_fill = RoundedRectangle(radius=[13])
+        box.add_widget(meter)
+        prog = Widget(size_hint_y=None, height="6dp")
+        with prog.canvas:
+            Color(1, 1, 1, 0.12)
+            p_track = RoundedRectangle(radius=[3])
+            Color(*PAL["accent"], 1)
+            p_fill = RoundedRectangle(radius=[3])
+        box.add_widget(prog)
+        row1 = BoxLayout(size_hint_y=None, height="56dp", spacing=8)
+        b_rec = RoundButton(text="\u25cf  Record", bg=RED, fg=TEXTCOL, bold=True, font_size="18sp")
+        b_stop = RoundButton(text="\u25a0  Stop", bg=BLUE, fg=TEXTCOL, bold=True, font_size="18sp")
+        row1.add_widget(b_rec)
+        row1.add_widget(b_stop)
+        row2 = BoxLayout(size_hint_y=None, height="50dp", spacing=8)
+        b_play = RoundButton(text="Listen", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), bold=True, font_size="16sp")
+        b_share = RoundButton(text="Share", bg=GREY, fg=TEXTCOL, bold=True, font_size="16sp")
+        b_close = RoundButton(text="Close", bg=GREY, fg=TEXTCOL, bold=True, font_size="16sp")
+        for b in (b_play, b_share, b_close):
+            row2.add_widget(b)
+        box.add_widget(row1)
+        box.add_widget(row2)
+        pop = Popup(title="Genius vocal studio", content=box, size_hint=(0.97, 0.94), separator_color=GOLD,
+                    title_color=GOLD)
+
+        def tick(*_):
+            m_track.pos, m_track.size = meter.pos, meter.size
+            lv = rec.level if st["mode"] == "rec" else max(0.0, rec.level * 0.8)
+            rec.level = lv if st["mode"] != "rec" else rec.level
+            m_fill.pos, m_fill.size = meter.pos, (max(meter.height, meter.width * lv) if lv > 0.01 else 0, meter.height)
+            m_col.rgba = (0.95, 0.3, 0.35, 1) if lv > 0.92 else (1, 0.78, 0.3, 1) if lv > 0.7 else (0.3, 0.9, 0.45, 1)
+            p_track.pos, p_track.size = prog.pos, prog.size
+            pos = time.time() - st["t0"] if st["mode"] in ("rec", "play") else 0.0
+            p_fill.pos, p_fill.size = prog.pos, (prog.width * min(1.0, pos / max(0.1, dur)), prog.height)
+            if st["mode"] == "rec":
+                status.text = f"[color=ff4d5e]\u25cf REC[/color]  {_fmt_time(pos)} / {_fmt_time(dur)}" + \
+                              ("   [color=ff4d5e]too loud, move back a little[/color]" if lv > 0.92 else "")
+                status.markup = True
+                if rec.error:
+                    stop()
+                    status.text = f"The microphone stopped: {rec.error}"
+                    return
+                if pos >= dur + 0.5:
+                    stop()
+                    return
+            if st["mode"] in ("rec", "play"):
+                idx = current_line(lines, pos)
+                if idx != st["idx"]:
+                    st["idx"] = idx
+                    lyr.text = karaoke_markup(lines, idx)
+                    if len(lines) > 1 and idx >= 0:
+                        Animation.cancel_all(sv, "scroll_y")
+                        Animation(scroll_y=max(0.0, min(1.0, 1 - idx / float(len(lines) - 1))), d=0.35).start(sv)
+                if st["mode"] == "play" and not sound_playing() and pos > 1.5:
+                    st["mode"] = "ready"
+                    status.text = "Done. Listen again, Share it, or Record a new take."
+
+        def record(*_):
+            if st["mode"] in ("rec", "mix"):
+                return
+            sound_stop()
+            take = os.path.join(genius_dl("music"), "vocals_" + time.strftime("%H%M%S") + ".wav")
+            rec.start(take)
+            if not _play_file(wav):
+                rec.stop()
+                status.text = "I couldn't play the beat. Try again."
+                return
+            st.update(mode="rec", t0=time.time(), take=take, idx=-2)
+            b_rec.text = "\u25cf  Recording..."
+
+        def stop(*_):
+            if st["mode"] == "play":
+                sound_stop()
+                st["mode"] = "ready"
+                status.text = "Stopped."
+                return
+            if st["mode"] != "rec":
+                return
+            sound_stop()
+            st["mode"] = "mix"
+            b_rec.text = "\u25cf  Record again"
+            got = rec.stop()
+            if not got:
+                st["mode"] = "ready"
+                status.text = "I didn't catch your voice. " + (rec.error or "Sing a bit longer and try again.")
+                return
+            status.markup = False
+            status.text = "Mixing your voice with the beat..."
+            out = os.path.splitext(wav)[0][:60] + "_my_voice_" + time.strftime("%H%M%S") + ".wav"
+
+            def work():
+                try:
+                    res, err = mix_vocals(wav, got, out), None
+                except MemoryError:
+                    res, err = None, "The phone ran low on memory. Close other apps and try again."
+                except Exception as e:
+                    log(f"VOCAL mix failed: {e}")
+                    res, err = None, "The mix didn't work. Record again."
+
+                def done(*_):
+                    st["mode"] = "ready"
+                    if not res:
+                        status.text = err
+                        return
+                    st["mixed"] = res
+                    self._last_song = res
+                    status.text = "Your song is ready. Tap Listen."
+                    self.show("AI", f"[b]{_esc(meta.get('title', 'Your song'))} (my voice)[/b]\n"
+                                    f"Your voice is now on the song. Saved in {nice_where(res)} as "
+                                    f"{os.path.basename(res)}. Say 'play song' to hear it with the words.")
+                Clock.schedule_once(done, 0)
+            threading.Thread(target=work, daemon=True).start()
+
+        def listen(*_):
+            if st["mode"] in ("rec", "mix"):
+                return
+            target = st["mixed"]
+            if not target:
+                status.text = "Record your voice first, then tap Listen."
+                return
+            if _play_file(target):
+                st.update(mode="play", t0=time.time(), idx=-2)
+                status.markup = False
+                status.text = "Playing your song..."
+
+        def share(*_):
+            if st["mixed"]:
+                share_media(st["mixed"])
+            else:
+                status.text = "Record your voice first, then Share."
+
+        def close(*_):
+            if st["mode"] == "rec":
+                rec.stop()
+            sound_stop()
+            pop.dismiss()
+
+        b_rec.bind(on_press=record)
+        b_stop.bind(on_press=stop)
+        b_play.bind(on_press=listen)
+        b_share.bind(on_press=share)
+        b_close.bind(on_press=close)
+        ev = Clock.schedule_interval(tick, 0.08)
+        pop.bind(on_dismiss=lambda *_: (ev.cancel(), rec.running and rec.stop()))
         pop.open()
         tick()
 
@@ -12210,6 +12548,22 @@ class ChatScreen(BoxLayout):
             return
         if lw in ("zoom camera", "super zoom", "zoom"):
             self.zoom_camera()
+            return
+        if lw in ("record vocals", "record my voice", "vocal studio", "vocals", "sing my song", "sing it",
+                  "song in my voice", "my voice song", "record song", "sing in my voice", "add my voice"):
+            self.vocal_studio()
+            return
+        for pre in ("song in my voice ", "make a song in my voice ", "make song in my voice ", "create a song in my voice ",
+                    "create song in my voice ", "my voice song "):
+            if lw.startswith(pre) and len(lw) > len(pre) + 2:
+                self._sing_after = True
+                self.make_music(line.strip()[len(pre):])
+                return
+        if ("in my voice" in lw or "with my voice" in lw) and any(w in lw for w in ("song", "sing", "music")):
+            self._sing_after = True
+            desc = re.sub(r"\b(in|with) my (own )?voice\b", "", line.strip(), flags=re.I)
+            desc = re.sub(r"^\s*(please\s+)?(make|create|compose)\s+(me\s+)?(a\s+)?(song|music)\s*", "", desc, flags=re.I)
+            self.make_music(desc.strip() or "afrobeat song")
             return
         if lw in ("sound", "music", "music maker", "make music", "make a song", "song", "make song", "beat", "make a beat"):
             self.music_menu()
