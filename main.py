@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "109.5"
+VERSION = "109.6"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -325,6 +325,7 @@ ALLOWED = MappingProxyType({
     "version": "Genius version and what's new",
     "setgroq": "setgroq YOURKEY - free, very fast AI from console.groq.com",
     "setrouter": "setrouter YOURKEY - many AIs from openrouter.ai",
+    "setpolli": "setpolli YOURKEY - sharper free pictures (key from enter.pollinations.ai)",
     "turbo": "Turbo on/off: simple questions go to the fastest AI",
     "askall": "Ask every connected AI at once, e.g. askall what is gravity",
     "ais": "Which AIs are connected",
@@ -385,7 +386,7 @@ NEEDS_APPROVAL = ("vibrate", "notify", "remind", "runapp", "restore")
 OWNER_ONLY = ("update", "upgrade", "rollback", "security", "intruders", "tripwire", "restore")
 NEW_ACTIONS = ("solve", "problems", "step", "know", "knowledge", "upgrade", "rollback",
                "security", "intruders", "tripwire")
-ABOUT_TEXT = """Genius 109.5
+ABOUT_TEXT = """Genius 109.6
 Made by Ssali Muto, Uganda.
 
 What I am
@@ -446,7 +447,15 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 109.5 (2026-10-26)
+CHANGELOG = """Genius 109.6 (2026-10-26)
+- Sharper, more real pictures: Genius now uses Google's newest picture makers (Nano Banana 2.1, Nano Banana 2 and Pro) when your Gemini key has picture access.
+- Free pictures look better: realistic photo models, bigger size (up to 832 x 1216), a better camera description, and gentle phone-camera finishing (sharpness, contrast, colour).
+- Picture shape follows your words: wide scenes come out landscape, logos and avatars square, people tall.
+- New: setpolli YOURKEY. A free key from enter.pollinations.ai unlocks the sharper Z-Image and Flux makers with no logo.
+- Typing like a phone keyboard: chips above the box now finish the word you're typing, guess your next word, and fix common typos (teh to the, wether to weather). English and Luganda.
+- Genius learns the words you use, only on your phone, so predictions get more personal over time.
+
+Genius 109.5 (2026-10-26)
 - See your words as you type: the box wraps and grows up to 4 lines, stays above the keyboard, and is easy to read on every theme.
 - Suggestions while you type: matching commands (English and Luganda) appear above the box. Tap one to fill it in.
 - Karaoke: when Genius plays a song it made, the words show on screen and the line being played lights up. Pause, Play again and Stop buttons. Say 'lyrics' or 'play song' anytime.
@@ -1415,15 +1424,17 @@ DEEP_RULES = (LUGANDA + "You are the private AI of your owner ssalimuto, a young
               "points or steps. Say honestly when you are not sure. Never claim to control devices.")
 
 
-IMAGE_MODELS = ("gemini-2.5-flash-image", "gemini-3-pro-image-preview", "gemini-2.5-flash-image-preview",
-                "gemini-2.0-flash-preview-image-generation")
+IMAGE_MODELS = ("gemini-nano-banana-2.1", "gemini-3.1-flash-image", "gemini-2.5-flash-image",
+                "gemini-3-pro-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image-preview",
+                "gemini-2.5-flash-image-preview")
+PRO_IMAGE_MODELS = ("gemini-3-pro-image", "gemini-3-pro-image-preview")
 # Nano Banana = gemini-2.5-flash-image, Nano Banana Pro = gemini-3-pro-image-preview (sharper, more realistic)
 BANANA = {"pro": False, "aspect": ""}
 
 
 def image_models():
     if BANANA["pro"]:
-        return ("gemini-3-pro-image-preview",) + tuple(m for m in IMAGE_MODELS if m != "gemini-3-pro-image-preview")
+        return PRO_IMAGE_MODELS + tuple(m for m in IMAGE_MODELS if m not in PRO_IMAGE_MODELS)
     return IMAGE_MODELS
 
 
@@ -1437,7 +1448,9 @@ def _short_prompt(prompt, limit=380):
     """Free makers want a short prompt: keep the description, drop the long camera wording."""
     p = (prompt or "").replace(PHOTO_STYLE, "").strip(" .,")
     p = re.sub(r"\s+", " ", p)[:limit].strip(" .,") or "a beautiful real photograph"
-    return p + ", real photograph, photorealistic, natural light, sharp focus"
+    return p + (", award-winning real photograph, photorealistic, shot on a full-frame camera, 50mm lens, "
+                "natural soft light, true-to-life skin texture, detailed eyes, sharp focus, "
+                "shallow depth of field, rich natural colours")
 
 
 def _retry_after(body, default=0):
@@ -1489,15 +1502,72 @@ def _fetch(url, timeout=45, data=None, headers=None, method=None):
         return r.status, r.headers.get("Content-Type", ""), r.read()
 
 
+POLLI_KEY_FILE = os.path.join(ROOT, "pollinations_key.txt")
+POLLI_GEN = "https://gen.pollinations.ai/image/"
+NEG_PROMPT = ("cartoon, anime, drawing, painting, illustration, 3d render, cgi, plastic skin, waxy skin, "
+              "airbrushed, oversaturated, deformed hands, extra fingers, missing fingers, bad anatomy, "
+              "distorted face, asymmetrical eyes, blurry, low quality, jpeg artifacts, text, watermark, logo")
+
+
+def polli_key():
+    try:
+        return clean_key(open(POLLI_KEY_FILE).read()) or None if os.path.exists(POLLI_KEY_FILE) else None
+    except Exception:
+        return None
+
+
+def picture_size(prompt, big=False):
+    """Pick the shape from the words: wide scenes landscape, people portrait, else portrait phone shape."""
+    low = (prompt or "").lower()
+    if BANANA.get("aspect") in ("16:9", "3:2", "4:3") or re.search(
+            r"\b(landscape|wide|panorama|scenery|city ?scape|skyline|sunset over|banner|wallpaper for (pc|laptop))\b", low):
+        w, h = (1216, 832) if big else (896, 640)
+    elif BANANA.get("aspect") == "1:1" or re.search(r"\b(square|logo|icon|profile pic|avatar)\b", low):
+        w, h = (1024, 1024) if big else (768, 768)
+    else:
+        w, h = (832, 1216) if big else (640, 896)
+    return w, h
+
+
+def _polli_keyed(prompt, key):
+    """Pollinations with the user's own free key: sharper Z-Image / Flux models at full size."""
+    w, h = picture_size(prompt, big=True)
+    q = urllib.parse.quote(prompt)
+    for model in ("zimage", "flux"):
+        url = (f"{POLLI_GEN}{q}?model={model}&width={w}&height={h}&seed={random.randint(1, 999999)}"
+               f"&enhance=false&nologo=true&private=true&negative_prompt={urllib.parse.quote(NEG_PROMPT)}")
+        try:
+            code, ctype, data = _fetch(url, timeout=90, headers={"Authorization": "Bearer " + key})
+            if ctype.startswith("image") and len(data) > 2000:
+                return save_picture(polish_picture(data)), None
+        except urllib.error.HTTPError as e:
+            log(f"POLLI {model} {e.code}")
+            if e.code == 400 and "safe" in e.read().decode("utf8", "ignore").lower():
+                return None, "refused"
+            if e.code in (401, 403):
+                return None, "badkey"
+        except Exception as e:
+            log(f"POLLI {model} failed: {e}")
+            return None, "net"
+    return None, "busy"
+
+
 def _pollinations(prompt):
-    """Pollinations (no key). Free use is limited to about 1 picture per 45 s per phone, so wait once if asked."""
+    """Pollinations: the user's own free key first (best quality), else the no-key classic maker
+    (limited to about 1 picture per 45 s per phone, so wait once if asked)."""
+    key = polli_key()
+    if key:
+        path, why = _polli_keyed(prompt, key)
+        if path or why == "refused":
+            return path, why
+    w, h = picture_size(prompt)
     q = urllib.parse.quote(prompt)
     for attempt in range(2):
-        url = f"{POLLI_URL}{q}?width=640&height=896&nologo=true&enhance=false&seed={random.randint(1, 99999)}"
+        url = f"{POLLI_URL}{q}?width={w}&height={h}&nologo=true&enhance=false&seed={random.randint(1, 99999)}"
         try:
             code, ctype, data = _fetch(url, timeout=60)
             if ctype.startswith("image") and len(data) > 2000:
-                return save_picture(data), None
+                return save_picture(polish_picture(data)), None
             return None, "busy"
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf8", "ignore")
@@ -1515,19 +1585,55 @@ def _pollinations(prompt):
     return None, "busy"
 
 
+def polish_picture(data):
+    """Gentle photo finishing for the free makers: a touch of sharpening, contrast and warmth,
+    like a phone camera does. Never changes the content; returns the original bytes if PIL is missing."""
+    try:
+        import io
+        from PIL import Image, ImageEnhance, ImageFilter
+        im = Image.open(io.BytesIO(data)).convert("RGB")
+        if max(im.size) < 900:
+            scale = 1216.0 / max(im.size)
+            im = im.resize((int(im.size[0] * scale), int(im.size[1] * scale)), Image.LANCZOS)
+        im = im.filter(ImageFilter.UnsharpMask(radius=1.4, percent=70, threshold=3))
+        im = ImageEnhance.Contrast(im).enhance(1.05)
+        im = ImageEnhance.Color(im).enhance(1.04)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=92)
+        return buf.getvalue()
+    except Exception as e:
+        log(f"PICTURE polish skipped: {e}")
+        return data
+
+
 def _horde_image(prompt, budget=150):
     """AI Horde (free, anonymous key): send the job, wait for a volunteer computer, download the picture."""
     hdr = {"apikey": "0000000000", "Client-Agent": "Genius:" + VERSION + ":ssalimuto",
            "Content-Type": "application/json"}
-    body = json.dumps({"prompt": prompt + " ### cartoon, drawing, anime, painting, text, watermark, blurry, deformed",
-                       "params": {"width": 512, "height": 704, "steps": 22, "n": 1},
-                       "nsfw": False, "censor_nsfw": True, "r2": True}).encode()
-    try:
-        _, _, raw = _fetch(HORDE_URL + "/generate/async", timeout=30, data=body, headers=hdr)
-        jid = json.loads(raw)["id"]
-    except Exception as e:
-        log(f"HORDE submit failed: {e}")
-        return None, "net"
+    w, h = picture_size(prompt, big=True)
+    jobs = [  # realistic photo models first (sharper skin, faces, light); the small default if refused
+        {"prompt": prompt + " ### " + NEG_PROMPT,
+         "params": {"width": w, "height": h, "steps": 28, "cfg_scale": 5.5, "sampler_name": "k_dpmpp_2m",
+                    "karras": True, "n": 1},
+         "models": ["Juggernaut XL", "AlbedoBase XL (SDXL)", "RealVisXL", "ZavyChromaXL"]},
+        {"prompt": prompt + " ### cartoon, drawing, anime, painting, text, watermark, blurry, deformed",
+         "params": {"width": 512, "height": 704, "steps": 22, "n": 1}},
+    ]
+    jid = None
+    for job in jobs:
+        job.update({"nsfw": False, "censor_nsfw": True, "r2": True})
+        try:
+            _, _, raw = _fetch(HORDE_URL + "/generate/async", timeout=30, data=json.dumps(job).encode(), headers=hdr)
+            jid = json.loads(raw)["id"]
+            break
+        except urllib.error.HTTPError as e:
+            log(f"HORDE submit {e.code}: trying the smaller job")
+            continue
+        except Exception as e:
+            log(f"HORDE submit failed: {e}")
+            return None, "net"
+    if not jid:
+        return None, "busy"
     t_end = time.time() + budget
     done = False
     while time.time() < t_end:
@@ -1556,7 +1662,7 @@ def _horde_image(prompt, budget=150):
         else:
             data = base64.b64decode(img)
         if len(data) > 2000:
-            return save_picture(data), None
+            return save_picture(polish_picture(data)), None
     except Exception as e:
         log(f"HORDE result failed: {e}")
     return None, "busy"
@@ -5422,7 +5528,7 @@ _SUGGEST_EXTRA = (
     "make song luganda praise about ", "make song pop about ", "draw ", "edit ", "studio", "camera", "home",
     "premium", "everywhere", "share", "quick ", "mind ", "better: ", "teach skill ", "wealth", "market ",
 )
-_NO_SUGGEST = ("save ", "setkey", "setgroq", "setrouter", "setvoice", "setsunbird", "open ", "tereka ", "ggulawo ")
+_NO_SUGGEST = ("save ", "setkey", "setgroq", "setrouter", "setpolli", "setvoice", "setsunbird", "open ", "tereka ", "ggulawo ")
 _POOL = []
 
 
@@ -5471,6 +5577,130 @@ def suggest_commands(text, limit=6):
         if len(out) >= limit:
             break
     return out
+
+
+# ---- word prediction (like a phone keyboard): completes words, guesses the next word, fixes typos ----
+WORDS_FILE = os.path.join(ROOT, "typing_words.json")
+_SEED_EN = ("the to and you i a is it what how in of for my can me do are this that have with please "
+            "help tell about make write explain what's time today tomorrow weather song picture photo "
+            "money school study exam question answer story english luganda uganda kampala thank thanks "
+            "hello good morning evening night love friend family mother father brother sister work "
+            "phone app business learn read find show give send call need want know think like where when "
+            "why who which because will would should could more best new news price buy sell farm maize "
+            "beans coffee matooke rain biology chemistry physics mathematics history geography computer")
+_SEED_LG = ("oli otya gyendi bulungi webale nnyo ssebo nnyabo kale nedda yee nkwagala mukwano ggwe nze "
+            "ffe mmwe bo ani ki wa ddi lwaki meka olunaku leero jjo enkya ekiro emmere amazzi ssente "
+            "omulimu essomero omusomesa omuyizi maama taata muganda mwannyinaze ennyimba yimba "
+            "nnyamba ndaga mpandiikira tereka ggulawo wulira genius")
+_SEED_NEXT = {"how": "are to do", "what": "is are time", "thank": "you", "good": "morning evening night",
+              "i": "am want need love", "can": "you i", "tell": "me", "write": "a me", "make": "a me",
+              "oli": "otya", "webale": "nnyo", "nkwagala": "nnyo", "where": "is are", "please": "help tell"}
+_AUTOCORRECT = {"teh": "the", "adn": "and", "waht": "what", "wat": "what", "hw": "how", "becuase": "because",
+                "becouse": "because", "recieve": "receive", "beleive": "believe", "wierd": "weird",
+                "untill": "until", "tommorow": "tomorrow", "tomorow": "tomorrow", "wether": "weather",
+                "freind": "friend", "thier": "their", "definately": "definitely", "seperate": "separate",
+                "goverment": "government", "acheive": "achieve", "occured": "occurred", "plz": "please",
+                "pls": "please", "u": "you", "ur": "your", "thx": "thanks", "im": "I'm", "dont": "don't",
+                "cant": "can't", "wont": "won't", "didnt": "didn't", "isnt": "isn't", "doesnt": "doesn't",
+                "whats": "what's", "lets": "let's", "ugnda": "uganda", "kampla": "kampala", "biolgy": "biology",
+                "chemestry": "chemistry", "mathematic": "mathematics", "maths": "maths", "i": "I"}
+_EMOJI = {"love": "❤️", "happy": "😊", "sad": "😢", "laugh": "😂", "lol": "😂", "fire": "🔥", "thanks": "🙏",
+          "thank": "🙏", "ok": "👍", "good": "👍", "music": "🎵", "song": "🎶", "money": "💰", "school": "📚",
+          "food": "🍲", "rain": "🌧️", "sun": "☀️", "party": "🎉", "birthday": "🎂", "phone": "📱", "cool": "😎",
+          "wow": "😮", "sleep": "😴", "angry": "😠", "football": "⚽", "pray": "🙏", "congratulations": "🎉"}
+_WORDS = {"uni": None, "bi": None, "dirty": 0}
+
+
+def _words_load():
+    if _WORDS["uni"] is None:
+        uni, bi = {}, {}
+        for i, w in enumerate((_SEED_EN + " " + _SEED_LG).split()):
+            uni[w] = max(uni.get(w, 0), 3 if i < 40 else 2)
+        for a, nxt in _SEED_NEXT.items():
+            bi[a] = {b: 2 for b in nxt.split()}
+        try:
+            d = json.load(open(WORDS_FILE))
+            for w, n in d.get("uni", {}).items():
+                uni[w] = uni.get(w, 0) + int(n)
+            for a, m in d.get("bi", {}).items():
+                bi.setdefault(a, {}).update({b: bi.get(a, {}).get(b, 0) + int(n) for b, n in m.items()})
+        except Exception:
+            pass
+        _WORDS["uni"], _WORDS["bi"] = uni, bi
+    return _WORDS["uni"], _WORDS["bi"]
+
+
+_WORD_RE = re.compile(r"[A-Za-z\u00C0-\u024F']+")
+
+
+def learn_words(text):
+    """Remember the words this person really uses (only on this phone), so predictions get personal."""
+    if not text or text.lower().startswith(_NO_SUGGEST) or len(text) > 600:
+        return
+    uni, bi = _words_load()
+    ws = [w.lower() for w in _WORD_RE.findall(text) if 0 < len(w) < 24]
+    for i, w in enumerate(ws):
+        uni[w] = uni.get(w, 0) + 1
+        if i:
+            m = bi.setdefault(ws[i - 1], {})
+            m[w] = m.get(w, 0) + 1
+    if len(uni) > 6000:                      # keep the file small on low-memory phones
+        for w, _ in sorted(uni.items(), key=lambda x: x[1])[:1000]:
+            uni.pop(w, None)
+            bi.pop(w, None)
+    try:
+        tmp = WORDS_FILE + ".tmp"
+        json.dump({"uni": uni, "bi": {a: dict(sorted(m.items(), key=lambda x: -x[1])[:12]) for a, m in bi.items()}},
+                  open(tmp, "w"))
+        os.replace(tmp, WORDS_FILE)
+    except Exception as e:
+        log(f"WORDS save failed: {e}")
+
+
+def _keep_case(src, word):
+    if src[:1].isupper():
+        return word[:1].upper() + word[1:]
+    return word
+
+
+def suggest_words(text, limit=3):
+    """[(new full text, 'word:<label>')] for the chip row: finish the word being typed, fix a typo,
+    or guess the next word after a space. Plus an emoji when one fits."""
+    if not text or text.lower().lstrip().startswith(_NO_SUGGEST) or len(text) > 400:
+        return []
+    uni, bi = _words_load()
+    out, seen = [], set()
+
+    def add(new_text, label):
+        if label.lower() not in seen and len(out) < limit + 1:
+            seen.add(label.lower())
+            out.append((new_text, "word:" + label))
+    m = re.search(r"([A-Za-z\u00C0-\u024F']+)$", text)
+    if m and not text.endswith(" "):
+        part, head = m.group(1), text[:m.start(1)]
+        low = part.lower()
+        prev = _WORD_RE.findall(head)
+        prev = prev[-1].lower() if prev else ""
+        if low in _AUTOCORRECT and _AUTOCORRECT[low] != part:
+            add(head + _keep_case(part, _AUTOCORRECT[low]) + " ", _keep_case(part, _AUTOCORRECT[low]))
+        cands = [w for w in uni if w.startswith(low) and w != low]
+        nb = bi.get(prev, {})
+        cands.sort(key=lambda w: (-(nb.get(w, 0) * 5 + uni[w]), len(w)))
+        for w in cands[:limit]:
+            add(head + _keep_case(part, w) + " ", _keep_case(part, w))
+        if len(out) < 2 and len(low) >= 3 and low not in uni:
+            import difflib
+            for w in difflib.get_close_matches(low, list(uni), n=2, cutoff=0.78):
+                add(head + _keep_case(part, w) + " ", _keep_case(part, w))
+    else:
+        prev = _WORD_RE.findall(text)
+        if not prev:
+            return []
+        nb = bi.get(prev[-1].lower(), {})
+        base = text if text.endswith(" ") else text + " "
+        for w, _ in sorted(nb.items(), key=lambda x: -x[1])[:limit]:
+            add(base + w + " ", w)
+    return out[:limit + 1]
 
 
 # ---- karaoke ----
@@ -8538,6 +8768,10 @@ class ChatScreen(BoxLayout):
         self.inp.text = ""
         self._show_suggestions([])
         if text:
+            try:
+                learn_words(text)
+            except Exception as e:
+                log(f"WORDS learn failed: {e}")
             self.handle(text)
 
     # ---------- typing: growing box + command suggestions ----------
@@ -8554,7 +8788,8 @@ class ChatScreen(BoxLayout):
     def _typing(self, _ti, text):
         if self._sugg_ev is not None:
             self._sugg_ev.cancel()
-        self._sugg_ev = Clock.schedule_once(lambda *_: self._show_suggestions(suggest_commands(self.inp.text)), 0.15)
+        self._sugg_ev = Clock.schedule_once(lambda *_: self._show_suggestions(
+            suggest_commands(self.inp.text) or suggest_words(self.inp.text)), 0.15)
 
     def _show_suggestions(self, items):
         row = self.sugg_row
@@ -8568,7 +8803,9 @@ class ChatScreen(BoxLayout):
             dark = col[3] == 1 and _lum(col) > 0.45
             fg = (0.08, 0.07, 0.05, 1) if dark else TEXTCOL
             label = fill.strip()
-            if hint.startswith("Luganda for "):
+            if hint.startswith("word:"):
+                label = _esc(hint[5:])
+            elif hint.startswith("Luganda for "):
                 label += f"  [size=11sp]{_esc(hint[12:])}[/size]"
             b = RoundButton(text=label, bg=col, fg=fg, markup=True, size_hint_x=None, font_size="14sp", bold=True,
                             width=dp(22) + dp(8.2) * len(re.sub(r"\[[^\]]*\]", "", label)))
@@ -8577,7 +8814,8 @@ class ChatScreen(BoxLayout):
                 self.inp.text = fill
                 self.inp.cursor = (len(fill), 0)
                 self.inp.focus = True
-                self._show_suggestions([])
+                if not fill.endswith(" "):
+                    self._show_suggestions([])
             b.bind(on_press=pick)
             row.add_widget(b)
         self.sugg_sv.height, self.sugg_sv.opacity = dp(40), 1
@@ -8585,14 +8823,14 @@ class ChatScreen(BoxLayout):
     # brain
     def handle(self, line):
         low = line.lower()
-        if not low.startswith(("setkey", "save ", "setvoice", "setgroq", "setrouter", "setsunbird", "better:",
+        if not low.startswith(("setkey", "save ", "setvoice", "setgroq", "setrouter", "setpolli", "setsunbird", "better:",
                                "correct:", "actually:", "wrong:", "teach")):
             self._pending_q = line
         if low.strip(" .!?") in ("mic test", "test mic", "test microphone", "microphone test"):
             self.mic_test()
             return
         if low.startswith("setkey") or low.startswith("save ") or low.startswith("setvoice") \
-                or low.startswith("setgroq") or low.startswith("setrouter"):
+                or low.startswith("setgroq") or low.startswith("setrouter") or low.startswith("setpolli"):
             head = line.split()[0]
             self.show("You", f"{head} ********")
         else:
@@ -8704,7 +8942,7 @@ class ChatScreen(BoxLayout):
             self.say("Saved your face. Now say 'make me ...' and every picture keeps it." if f
                      else "I couldn't find a photo. Take a clear selfie first, then say setme.")
             return
-        if not CURRENT["owner"] and (action in OWNER_ONLY or low.startswith(("setkey", "setgroq", "setrouter", "setvoice", "setsunbird"))):
+        if not CURRENT["owner"] and (action in OWNER_ONLY or low.startswith(("setkey", "setgroq", "setrouter", "setpolli", "setvoice", "setsunbird"))):
             self.say("Only the owner of this phone can do that.")
             return
         if action in KEY_WIZARD_WORDS and (not arg or arg.lower() in KEY_WIZARD_INFO
@@ -9005,6 +9243,15 @@ class ChatScreen(BoxLayout):
                 self.say("Voice token saved. I'll use the Sunbird voice.")
             else:
                 self.say("Type setvoice, a space, then your Sunbird AI token.")
+            return
+        if action == "setpolli":
+            if not arg:
+                self.say("For sharper, more real pictures for free: open enter.pollinations.ai, sign in, "
+                         "create a key, then type setpolli, a space, and the key.")
+                return
+            k = clean_key(arg)
+            open(POLLI_KEY_FILE, "w").write(k)
+            self.say(f"Picture key saved, ending in {k[-4:]}. Your pictures now use the sharper Z-Image and Flux makers.")
             return
         if action in ("setgroq", "setrouter"):
             prov = "groq" if action == "setgroq" else "openrouter"
