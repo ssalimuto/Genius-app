@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "112.7"
+VERSION = "112.8"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -345,6 +345,7 @@ ALLOWED = MappingProxyType({
     "key": "Set up a free AI key step by step (also: setup, getkey, apikey, ekisumuluzo)",
     "setkey": "setkey YOURKEY - lets me answer anything",
     "help": "List commands",
+    "rock test": "Rock Test: find a rock's density with a kitchen scale to tell gold from fool's gold, tin, coltan and fakes",
     "minerals": "Mineral Scan: radar and graph of real mineral sites around you by GPS (minerals, minerals Mityana, minerals report, minerals steps)",
     "metal": "Metal Finder: finds iron, steel and magnets with the phone sensor (metal guide, metal spots). coil uses a coil detector for all metals",
     "change code": "Create or change your hidden secret code for login",
@@ -526,7 +527,12 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-27"
-CHANGELOG = """Genius 112.7 (2026-10-27)
+CHANGELOG = """Genius 112.8 (2026-10-27)
+- New: Rock Test. Say rock test (or tap it in Tools). Weigh a rock dry, then hanging in a cup of water on a kitchen scale, and Genius works out its density, shows it on a graph, and lists what it could be: quartz, mica, pyrite (fool's gold), tin, tungsten, coltan, silver, gold and more.
+- Catches common fakes: brass bars, pyrite and mica flakes. Warns that tungsten-filled bars read like gold, so get a lab assay.
+- New "wiii" find sound: plays when a Rock Test matches a valuable mineral and when Mineral Scan sweeps over a recorded gold or rare-metal site. Say wiii to hear it.
+
+Genius 112.7 (2026-10-27)
 - New: Mineral Scan. Say minerals (or tap Minerals near me). Genius finds you by GPS and shows a radar of real mineral sites around you: Government mineral records and mapped mines and quarries, at their true distance and direction.
 - A graph counts what's around you (gold, tin, lithium, stone, clay), with a list like "34 km NW, Kisita: Gold".
 - Range 10 to 300 km, Rescan, and Steps for testing, licensing and selling. minerals report <town> gives the text version.
@@ -3344,6 +3350,13 @@ class _MsRadar(Widget):
             self.full = True
         for i, p in enumerate(self.pts):
             if p["km"] <= self.rng and (self.full or p["brg"] <= self.sweep):
+                if i not in self.seen and not self.full and getattr(self, "sound", True) and \
+                        p["kind"] in ("Gold", "Lithium, beryl, rare metals") and time.time() - getattr(self, "_wt", 0) > 1.3:
+                    self._wt = time.time()
+                    try:
+                        rt_wiii()
+                    except Exception:
+                        pass
                 self.seen.add(i)
         self.draw()
 
@@ -3623,6 +3636,12 @@ def mineral_scan(screen, place=None):
     row.add_widget(b_rng)
     row.add_widget(btn("Rescan", BLUE, lambda: (radar.reset_scan(), gps.start() if not gps.on else None)))
     row.add_widget(btn("Steps", BLUE, show_steps))
+
+    def toggle_snd():
+        radar.sound = not getattr(radar, "sound", True)
+        b_snd.text = "Sound" if radar.sound else "Muted"
+    b_snd = btn("Sound", BLUE, toggle_snd)
+    row.add_widget(b_snd)
     row.add_widget(btn("Close", GREY, close))
     root.add_widget(row)
 
@@ -3642,6 +3661,260 @@ def mineral_scan(screen, place=None):
         Clock.schedule_once(gps_timeout, 25)
     log("MSCAN: opened")
 # =================== end Mineral Scan ===================
+
+
+# ===================== 112.8 Rock Test (density) + "wiii" sound =====================
+# Real identification help: specific gravity (density) from two kitchen-scale readings.
+RT_FILE = "rock_tests.json"
+RT_WIII = "wiii.wav"
+# name, low SG, high SG, valuable?, note
+RT_MINERALS = [
+    ("Quartz", 2.60, 2.70, False, "common white or clear rock, not valuable on its own"),
+    ("Feldspar", 2.55, 2.76, False, "pink or white, common in granite"),
+    ("Mica", 2.75, 3.10, False, "shiny flakes, often mistaken for gold, light and soft"),
+    ("Beryl", 2.63, 2.92, True, "beryllium ore, gem forms (aquamarine, emerald)"),
+    ("Spodumene (lithium)", 3.10, 3.20, True, "lithium ore"),
+    ("Tourmaline", 3.00, 3.25, False, "black or coloured crystals"),
+    ("Garnet", 3.50, 4.30, False, "red crystals"),
+    ("Chalcopyrite (copper ore)", 4.10, 4.30, True, "brassy yellow, copper ore, often called fool's gold"),
+    ("Pyrite (fool's gold)", 4.95, 5.10, False, "brassy cubes, the most common fake gold"),
+    ("Magnetite (iron ore)", 5.10, 5.20, False, "black, a magnet sticks strongly"),
+    ("Hematite (iron ore)", 5.00, 5.30, False, "red-brown streak"),
+    ("Columbite-tantalite (coltan)", 5.20, 8.00, True, "black, heavy, valuable"),
+    ("Cassiterite (tin ore)", 6.80, 7.10, True, "brown-black, very heavy for its size"),
+    ("Wolframite (tungsten ore)", 7.10, 7.50, True, "dark, very heavy"),
+    ("Galena (lead ore)", 7.40, 7.60, True, "silver-grey cubes, may carry silver"),
+    ("Brass (fake gold)", 8.40, 8.73, False, "yellow metal used to fake gold bars"),
+    ("Copper", 8.90, 8.96, True, "native copper"),
+    ("Silver", 10.10, 10.50, True, "native silver"),
+    ("Lead", 11.30, 11.35, False, "soft grey metal"),
+    ("Gold (natural)", 15.00, 19.32, True, "natural gold is 15 to 19.3 because it carries some silver"),
+    ("Platinum", 14.00, 21.45, True, "very rare"),
+]
+RT_HOW = """[b]How to test a rock with a kitchen scale[/b]
+1. Clean and dry the sample. Bigger is more accurate (try 20 g or more).
+2. [b]A: weigh it dry[/b] in grams.
+3. Put a cup of water on the scale and press Tare (zero).
+4. Hang the rock on a thread so it is fully under water but touches nothing. [b]B: read the scale.[/b]
+5. Type A and B. Genius works out the density (A divided by B).
+
+Tips: a scale that shows 0.1 g is much better than 1 g. Test twice.
+[b]Warning:[/b] fake gold bars are filled with tungsten, which has nearly the same density as gold. Density narrows it down; only a lab assay (DGSM Entebbe) proves it."""
+
+
+def rt_wiii_path():
+    """Make the rising 'wiiii' sound once (pure tone sweep)."""
+    if os.path.exists(RT_WIII):
+        return RT_WIII
+    import wave, struct, math
+    rate, secs = 22050, 1.1
+    n = int(rate * secs)
+    ph, frames = 0.0, bytearray()
+    for i in range(n):
+        t = i / n
+        f = 500 + 1900 * (t ** 1.4) + 60 * math.sin(2 * math.pi * 7 * t * secs)   # rising "wiii" with wobble
+        ph += 2 * math.pi * f / rate
+        env = min(1.0, i / 800) * min(1.0, (n - i) / 2500)
+        frames += struct.pack("<h", int(14000 * env * (math.sin(ph) + 0.25 * math.sin(2 * ph))))
+    w = wave.open(RT_WIII, "wb")
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(rate)
+    w.writeframes(bytes(frames))
+    w.close()
+    return RT_WIII
+
+
+_rt_snd = {"s": None}
+
+
+def rt_wiii():
+    try:
+        from kivy.core.audio import SoundLoader
+        if _rt_snd["s"] is None:
+            _rt_snd["s"] = SoundLoader.load(rt_wiii_path())
+        s = _rt_snd["s"]
+        if s:
+            s.stop()
+            s.play()
+            return True
+    except Exception as e:
+        log(f"ROCK: wiii failed {e}")
+    return False
+
+
+def rt_compute(a, b, res=0.1, magnet=None):
+    """a = dry grams, b = displaced water grams. Returns dict with SG, range and matches."""
+    import math
+    if a <= 0 or b <= 0:
+        raise ValueError("Both readings must be above 0.")
+    if b >= a:
+        raise ValueError("B must be smaller than A. Check the rock hangs freely in the water.")
+    sg = a / b
+    err = sg * math.sqrt((res / a) ** 2 + (res / b) ** 2) + 0.03 * sg
+    lo, hi = sg - err, sg + err
+    m = [x for x in RT_MINERALS if x[1] <= hi and x[2] >= lo]
+    if magnet is True:
+        m = [x for x in m if "Magnetite" in x[0] or "Hematite" in x[0]] or m
+    elif magnet is False:
+        m = [x for x in m if "Magnetite" not in x[0]]
+    if not m:
+        m = sorted(RT_MINERALS, key=lambda x: min(abs(x[1] - sg), abs(x[2] - sg)))[:2]
+    return {"sg": sg, "lo": lo, "hi": hi, "matches": m, "valuable": all(x[3] for x in m) or any(x[0].startswith(("Gold", "Platinum", "Silver")) for x in m),
+            "gold": any(x[0].startswith(("Gold", "Platinum")) for x in m)}
+
+
+def rt_text(r):
+    lines = [f"[b]Density {r['sg']:.2f}[/b]  (likely between {r['lo']:.2f} and {r['hi']:.2f})", "", "Matches:"]
+    for name, lo, hi, val, note in r["matches"]:
+        lines.append(f"- [b]{name}[/b] ({lo:g}-{hi:g}): {note}" + ("  [color=ffcc33]valuable[/color]" if val else ""))
+    if r["gold"]:
+        lines.append("\n[color=ffcc33][b]Gold-range density![/b][/color] Real gold is soft, never rusts, and a magnet "
+                     "won't stick. Tungsten-filled fakes read the same, so take it to the DGSM lab in Entebbe for an "
+                     "assay before buying, selling or paying anyone.")
+    elif r["sg"] < 3.3:
+        lines.append("\nThis is a light, common rock. Shiny yellow flakes in it are usually mica or pyrite, not gold.")
+    return "\n".join(lines)
+
+
+class _RtScale(Widget):
+    """Density bar from 1 to 21 with the sample marked and mineral bands below."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.r = None
+        self.lbls = [Label(text=t, font_size="10sp", color=HINT) for t in ("1", "5", "10", "15", "20")]
+        for l in self.lbls:
+            self.add_widget(l)
+        self.bind(pos=lambda *_: self.draw(), size=lambda *_: self.draw())
+
+    def x_of(self, v):
+        return self.x + dp(8) + (self.width - dp(16)) * (min(21.5, max(1.0, v)) - 1) / 20.5
+
+    def draw(self):
+        self.canvas.clear()
+        y0 = self.y + dp(30)
+        with self.canvas:
+            Color(1, 1, 1, 0.08)
+            RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(10)])
+            for name, lo, hi, val, _n in RT_MINERALS:
+                Color(1.0, 0.8, 0.2, 0.55) if val else Color(1, 1, 1, 0.22)
+                RoundedRectangle(pos=(self.x_of(lo), y0), size=(max(dp(3), self.x_of(hi) - self.x_of(lo)), dp(14)),
+                                 radius=[dp(3)])
+            if self.r:
+                Color(0.30, 0.95, 0.55, 0.35)
+                RoundedRectangle(pos=(self.x_of(self.r["lo"]), y0 - dp(6)),
+                                 size=(max(dp(4), self.x_of(self.r["hi"]) - self.x_of(self.r["lo"])), dp(26)),
+                                 radius=[dp(4)])
+                Color(0.30, 0.95, 0.55, 1)
+                x = self.x_of(self.r["sg"])
+                Line(points=[x, y0 - dp(10), x, y0 + dp(30)], width=dp(2))
+        for l, v in zip(self.lbls, (1, 5, 10, 15, 20)):
+            l.size = (dp(24), dp(14))
+            l.center = (self.x_of(v), self.y + dp(12))
+
+
+def rock_test(screen):
+    root = BoxLayout(orientation="vertical", spacing=dp(6), padding=[dp(10), dp(6)])
+    pop = Popup(title="Rock Test (density)", content=root, size_hint=(1, 1), separator_color=GOLD,
+                title_color=GOLD, title_size="20sp")
+    st = {"magnet": None, "res": 0.1}
+
+    def field(hint):
+        t = TextInput(hint_text=hint, multiline=False, input_filter="float", font_size="18sp",
+                      size_hint_y=None, height=dp(48))
+        root.add_widget(t)
+        return t
+
+    root.add_widget(Label(text="A = dry weight.  B = reading with the rock hanging in a tared cup of water.",
+                          color=HINT, font_size="13sp", size_hint_y=None, height=dp(36),
+                          text_size=(Window.width - dp(30), None), halign="center"))
+    ta = field("A: dry weight (grams)")
+    tb = field("B: under-water reading (grams)")
+
+    def btn(text, col, fn, **kw):
+        b = RoundButton(text=text, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
+                        font_size="14sp", bold=True, **kw)
+        b.bind(on_press=lambda *_: fn())
+        return b
+
+    opt = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+
+    def cycle_mag():
+        st["magnet"] = {None: True, True: False, False: None}[st["magnet"]]
+        b_mag.text = {None: "Magnet: not tried", True: "Magnet: sticks", False: "Magnet: no"}[st["magnet"]]
+
+    def cycle_res():
+        st["res"] = {0.1: 1.0, 1.0: 0.01, 0.01: 0.1}[st["res"]]
+        b_res.text = f"Scale: {st['res']:g} g"
+    b_mag = btn("Magnet: not tried", BLUE, cycle_mag)
+    b_res = btn("Scale: 0.1 g", BLUE, cycle_res)
+    opt.add_widget(b_mag)
+    opt.add_widget(b_res)
+    root.add_widget(opt)
+    scale = _RtScale(size_hint_y=None, height=dp(80))
+    root.add_widget(scale)
+    sv = ScrollView()
+    out = Label(text=RT_HOW, markup=True, color=TEXTCOL, font_size="14sp", size_hint_y=None, halign="left",
+                valign="top")
+    out.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(6), None)),
+             texture_size=lambda w, t: setattr(w, "height", t[1] + dp(8)))
+    sv.add_widget(out)
+    root.add_widget(sv)
+
+    def test():
+        try:
+            r = rt_compute(float(ta.text or 0), float(tb.text or 0), st["res"], st["magnet"])
+        except ValueError as e:
+            out.text = f"[color=ff6680]{e}[/color]\n\n" + RT_HOW
+            return
+        scale.r = r
+        scale.draw()
+        out.text = rt_text(r)
+        if r["valuable"]:
+            rt_wiii()
+            try:
+                vibrate()
+            except Exception:
+                pass
+        try:
+            h = json.load(open(RT_FILE)) if os.path.exists(RT_FILE) else []
+            h.append({"t": time.strftime("%Y-%m-%d %H:%M"), "a": ta.text, "b": tb.text, "sg": round(r["sg"], 2),
+                      "match": [x[0] for x in r["matches"]]})
+            json.dump(h[-100:], open(RT_FILE, "w"))
+        except Exception:
+            pass
+
+    def history():
+        try:
+            h = json.load(open(RT_FILE))
+        except Exception:
+            h = []
+        out.text = "[b]My rock tests[/b]\n" + ("\n".join(
+            f"{x['t']}: density {x['sg']} - {', '.join(x['match'][:3])}" for x in reversed(h[-20:])) or "None yet.")
+
+    row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(6))
+    row.add_widget(btn("Test", GOLD, test))
+    row.add_widget(btn("My tests", BLUE, history))
+    row.add_widget(btn("How", BLUE, lambda: setattr(out, "text", RT_HOW)))
+    row.add_widget(btn("Close", GREY, pop.dismiss))
+    root.add_widget(row)
+    pop.open()
+
+
+def rock_handle(screen, line, action, arg, low):
+    lw = low.strip(" .!?")
+    if lw in ("rock test", "test rock", "rock", "density", "density test", "test my rock", "gold test",
+              "test gold", "is it gold", "rock check") or action in ("rocktest",):
+        rock_test(screen)
+        return True
+    if lw in ("wiii", "wiiii", "test sound", "mineral sound"):
+        rt_wiii()
+        screen.show("AI", "That's the Genius find sound. It plays when a Rock Test matches a valuable mineral, "
+                          "and when Mineral Scan sweeps over a recorded gold or rare-metal site.")
+        return True
+    return False
+# =================== end Rock Test ===================
 
 
 if __name__ == "__main__":
@@ -10305,6 +10578,11 @@ def v110_handle(screen, line, action, arg, low):
     """Genius 110 commands. Returns True when handled."""
     lw = low.strip(" .!?")
     try:
+        if rock_handle(screen, line, action, arg, low):
+            return True
+    except Exception as e:
+        log(f"ROCK: command failed {type(e).__name__}: {e}")
+    try:
         if minerals_handle(screen, line, action, arg, low):
             return True
     except Exception as e:
@@ -11075,6 +11353,7 @@ class ChatScreen(BoxLayout):
         lst = BoxLayout(orientation="vertical", spacing=8, size_hint_y=None)
         lst.bind(minimum_height=lst.setter("height"))
         more = [("Minerals near me", lambda: self.handle("minerals"), GOLD),
+                ("Rock Test (is it gold?)", lambda: self.handle("rock test"), GOLD),
                 ("Metal Finder", lambda: self.handle("metal"), GOLD),
                 ("Profile", self.profile_drawer, BLUE),
                 ("Set up AI key", self.key_wizard, GOLD),
