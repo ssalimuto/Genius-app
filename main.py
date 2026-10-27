@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "112.4"
+VERSION = "112.5"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -525,7 +525,11 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-27"
-CHANGELOG = """Genius 112.4 (2026-10-27)
+CHANGELOG = """Genius 112.5 (2026-10-27)
+- Metal Finder: the graph now keeps moving after the first 10 seconds.
+- Phones that don't send magnetic readings are told plainly, with the coil option.
+
+Genius 112.4 (2026-10-27)
 - New: Metal Finder. Say metal or tap Metal Finder in Tools.
 - Uses the phone's magnetic sensor to find iron, steel and magnets near the top of the phone, with a live gauge, beeps that speed up, a graph, a Peak reading and "stronger / weaker" hints.
 - Zero, three sensitivity levels, sound on or off, and Save spot to keep your finds.
@@ -15263,7 +15267,8 @@ def metal_finder(screen, coil=False):
         if src.vec is None:
             if src.count == 0 and time.time() - st.setdefault("t0", time.time()) > 4:
                 title.text = "No readings"
-                expl.text = "The magnetic sensor isn't sending numbers. Close and open the Metal Finder again."
+                expl.text = ("No numbers from a magnetic sensor. This phone most likely doesn't have one "
+                             "(many budget phones don't). Use Coil detector instead.")
             return
         d = brain.feed(src.vec, src.bias if src.kind == "raw" else None)
         if brain.calibrating:
@@ -15303,7 +15308,8 @@ def metal_finder(screen, coil=False):
                 pass
         st["lvl"] = lvl
         st["rate"] = [0, 0.55, 0.28, 0.13, 0.07][lvl]
-        if len(brain.hist) % 3 == 0:
+        st["n"] = st.get("n", 0) + 1
+        if st["n"] % 3 == 0:                 # 112.5: keep the graph moving after it fills up
             graph.draw(brain.hist, brain.thr())
 
     def beep_loop(dt):
