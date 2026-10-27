@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "113.1"
+VERSION = "114.0"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -527,7 +527,15 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-27"
-CHANGELOG = """Genius 113.1 (2026-10-27)
+CHANGELOG = """Genius 114.0 (2026-10-27)
+- New Genius AI, a smarter personal assistant like the AI on new iPhones. Say genius ai.
+- Knows the world: fact questions get fresh Wikipedia facts, with the source named.
+- Learns: say learn about <topic>. Genius studies it, keeps the key facts and uses them, even offline. See them with what i learned.
+- Knows you: questions like "when is my exam?" search your own notes, reminders and plans privately on the phone.
+- Writing Tools: proofread, rewrite, friendly, professional, shorter, summary, key points, table, reply.
+- Notify Me: watch <website> tells you when the page changes.
+
+Genius 113.1 (2026-10-27)
 - Faster, steadier answers: if the main AI is slow for a few seconds or fails, a backup AI starts at once and the first good answer wins. No more "couldn't reach Gemini" or "free limit" replies in chat.
 - A broken AI key no longer blocks answers: a backup AI answers and Genius tells you to type key to fix it.
 - The app frees itself sooner if a question gets stuck on a bad network.
@@ -6684,7 +6692,7 @@ def race_answer(primary, prompt, convo=None, hedge_after=6.0, deadline=35.0):
         if not backup_on and (way is not None or time.time() - start >= hedge_after):
             backup_on = True
             waiting += 1
-            threading.Thread(target=run, args=(lambda: free_ai(prompt, convo=convo), "backup"),
+            threading.Thread(target=run, args=(lambda: ga_free(prompt, convo=convo), "backup"),
                              daemon=True).start()
     return None, None, note["t"]
 AI_HEALTH = {"fails": 0, "last_ok": 0.0, "last_way": ""}
@@ -9816,6 +9824,11 @@ def v110_handle(screen, line, action, arg, low):
     """Genius 110 commands. Returns True when handled."""
     lw = low.strip(" .!?")
     try:
+        if ga_handle(screen, line, action, arg, low):
+            return True
+    except Exception as e:
+        log(f"GENIUS AI: command failed {type(e).__name__}: {e}")
+    try:
         if rock_handle(screen, line, action, arg, low):
             return True
     except Exception as e:
@@ -10590,7 +10603,9 @@ class ChatScreen(BoxLayout):
         sv = ScrollView()
         lst = BoxLayout(orientation="vertical", spacing=8, size_hint_y=None)
         lst.bind(minimum_height=lst.setter("height"))
-        more = [("Minerals near me", lambda: self.handle("minerals"), GOLD),
+        more = [("Genius AI (like iPhone AI)", lambda: self.handle("genius ai"), GOLD),
+                ("Writing Tools", lambda: self.handle("writing tools"), BLUE),
+                ("Minerals near me", lambda: self.handle("minerals"), GOLD),
                 ("Rock Test (is it gold?)", lambda: self.handle("rock test"), GOLD),
                 ("Metal Finder", lambda: self.handle("metal"), GOLD),
                 ("Pinpointer (coil detector)", lambda: self.handle("pinpointer"), GOLD),
@@ -16498,6 +16513,462 @@ def rock_handle(screen, line, action, arg, low):
         return True
     return False
 # =================== end Rock Test ===================
+
+
+# ===================== 114.0 Genius AI: smarter, more personal assistant (Siri AI style) =====================
+GA_WATCH_FILE = "genius_watch.json"
+GA_UA = {"User-Agent": "GeniusApp/114 (Android; Uganda student app)"}
+_GA_FACT_Q = re.compile(r"^\s*(who|what|when|where|which|how (many|much|old|big|far|tall|long)|tell me about|explain|"
+                        r"define|latest|current|is |are |was |were |did |does )", re.I)
+_GA_PERSONAL = re.compile(r"\b(my|mine|i told you|did i|have i|when is my|what did i|remind me what)\b", re.I)
+_GA_STOP = set("the a an is are was were to of in on for and or what how why who when which do does did i you me my it "
+               "this that with be can please tell about explain give genius have has had".split())
+
+
+def _ga_get(url, timeout=6):
+    req = urllib.request.Request(url, headers=GA_UA)
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as r:
+        return r.read().decode("utf8", "ignore")
+
+
+def ga_wiki(topic, full=False, timeout=5):
+    """Find the best Wikipedia page for a topic. Returns (title, text, url) or (None, None, None)."""
+    q = urllib.parse.quote(topic.strip()[:120])
+    try:
+        d = json.loads(_ga_get("https://en.wikipedia.org/w/api.php?action=query&list=search&format=json"
+                               f"&srlimit=1&srsearch={q}", timeout))
+        hits = d.get("query", {}).get("search") or []
+        if not hits:
+            return None, None, None
+        title = hits[0]["title"]
+        t = urllib.parse.quote(title.replace(" ", "_"))
+        if full:
+            d = json.loads(_ga_get("https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1"
+                                   f"&format=json&redirects=1&titles={t}", timeout + 4))
+            pages = d.get("query", {}).get("pages", {})
+            text = next(iter(pages.values()), {}).get("extract", "")
+        else:
+            text = json.loads(_ga_get(f"https://en.wikipedia.org/api/rest_v1/page/summary/{t}", timeout)).get("extract", "")
+        return title, (text or "").strip(), "https://en.wikipedia.org/wiki/" + t
+    except Exception as e:
+        log(f"GA wiki: {type(e).__name__}")
+        return None, None, None
+
+
+def ga_known(q, limit=6):
+    """Facts Genius has learned (knowledge.json) that match the question."""
+    words = set(w for w in re.findall(r"[a-z0-9']+", q.lower()) if w not in _GA_STOP and len(w) > 2)
+    out = []
+    for topic, items in know_load().items():
+        tw = set(re.findall(r"[a-z0-9']+", topic))
+        for it in items:
+            iw = set(re.findall(r"[a-z0-9']+", str(it).lower()))
+            s = len(words & (iw | tw))
+            if s:
+                out.append((s, f"{topic}: {it}"))
+    out.sort(key=lambda x: -x[0])
+    return [x[1][:400] for x in out[:limit]]
+
+
+def ga_personal(q, limit=14):
+    """Search the owner's own saved things on this phone: notes, about-me, reminders, plans, learned facts."""
+    words = set(w for w in re.findall(r"[a-z0-9']+", q.lower()) if w not in _GA_STOP and len(w) > 2)
+    lines = []
+
+    def add(src, txt):
+        for ln in str(txt).splitlines():
+            ln = ln.strip()
+            if ln:
+                lines.append((src, ln[:300]))
+    for src, f in (("note", NOTES_FILE), ("about you", ABOUT_FILE)):
+        try:
+            add(src, open(f, encoding="utf8", errors="ignore").read()[-20000:])
+        except Exception:
+            pass
+    for src, f in (("reminder", REMINDERS_FILE), ("plan", LIFE_FILE)):
+        try:
+            add(src, json.dumps(json.load(open(f)), ensure_ascii=False)[:8000].replace("},", "},\n"))
+        except Exception:
+            pass
+    for t, items in know_load().items():
+        for it in items:
+            lines.append(("fact", f"{t}: {it}"[:300]))
+    scored = []
+    for src, ln in lines:
+        lw = set(re.findall(r"[a-z0-9']+", ln.lower()))
+        s = len(words & lw)
+        if s:
+            scored.append((s, f"({src}) {ln}"))
+    scored.sort(key=lambda x: -x[0])
+    return [x[1] for x in scored[:limit]]
+
+
+def ga_context(q, web=True):
+    """Fresh knowledge + personal context to give any AI, so answers are accurate and about the owner's life."""
+    q = (q or "").strip()
+    parts = []
+    if _GA_PERSONAL.search(q):
+        p = ga_personal(q)
+        if p:
+            parts.append("The owner's own saved info on this phone (use it if relevant, keep it private):\n" + "\n".join(p))
+    k = ga_known(q)
+    if k:
+        parts.append("Facts Genius learned before:\n" + "\n".join(k))
+    if web and _GA_FACT_Q.match(q) and len(q) < 200 and not _GA_PERSONAL.search(q) and net_online():
+        title, text, url = ga_wiki(q, timeout=4)
+        if text:
+            parts.append(f"Wikipedia '{title}' ({url}):\n{text[:1500]}")
+    return "\n\n".join(parts)
+
+
+def ga_free(prompt, convo=None):
+    """The free backup AI, given fresh facts and personal context first."""
+    try:
+        ctx = ga_context(prompt)
+    except Exception:
+        ctx = ""
+    sysmsg = ("You are Genius, a helpful AI made by Ssali Muto in Uganda, talking to " + str(CURRENT.get("name") or "the owner") +
+              ", a young person in Uganda. Answer clearly, accurately and simply. If facts are given below, trust them "
+              "over your memory and mention the source name. Never invent facts; say when you are not sure.")
+    if ctx:
+        sysmsg += "\n\n" + ctx
+    return free_ai(prompt, system=sysmsg, convo=convo)
+
+
+def ga_ask(prompt, system=None, max_tokens=700):
+    """Ask any working AI quickly (main chain, raced with the free backup)."""
+    r, _, _ = race_answer(lambda: ask_gemini(prompt, max_tokens=max_tokens, system=system), prompt,
+                          hedge_after=5, deadline=40)
+    if not r:
+        r = free_ai(prompt, system=system, max_tokens=max_tokens)
+    return r
+
+
+# ---------- Learn about anything: Genius studies a topic and keeps it ----------
+def ga_learn(topic):
+    if not net_online():
+        return "I need internet to learn something new. I'll still remember what I learned before."
+    title, text, url = ga_wiki(topic, full=True, timeout=7)
+    if not text:
+        return f"I couldn't find a good source about '{topic}'. Try other words, like the full name."
+    src = text[:9000]
+    box = {}
+    th = threading.Thread(target=lambda: box.update(f=ga_ask("From this text, write the 8 most important facts about " + title + " as short lines starting "
+                   "with '- '. Use exact names, dates and numbers. Simple English. Only facts from the text.\n\n" + src,
+                   max_tokens=600)), daemon=True)
+    th.start()
+    th.join(25)                     # never make the user wait long: fall back to the source's own sentences
+    facts = box.get("f") or ""
+    lines = [ln.strip("-• ").strip() for ln in facts.splitlines() if ln.strip().startswith(("-", "•"))]
+    if not lines:
+        lines = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text[:1600]) if len(s.strip()) > 30][:8]
+    k = know_load()
+    key = title.lower()
+    old = k.get(key, [])
+    k[key] = (old + [ln for ln in lines if ln not in old])[-40:]
+    json.dump(k, open(KNOW_FILE, "w"), indent=1)
+    try:
+        summary = " ".join(re.split(r"(?<=[.!?])\s+", text)[:4])
+        offline_cache_add(f"what is {title}", summary)
+        offline_cache_add(f"who is {title}", summary)
+        offline_cache_add(f"tell me about {title}", "\n".join("- " + x for x in lines))
+    except Exception:
+        pass
+    return (f"[b]I learned about {title}[/b]\n" + "\n".join("- " + x for x in lines) +
+            f"\n\n[size=12sp]Source: Wikipedia ({url}). Saved: I'll use this in answers, even offline. "
+            "Say [b]what I learned[/b] to see everything I know.[/size]")
+
+
+def ga_learned():
+    k = know_load()
+    if not k:
+        return "I haven't learned any topics yet. Say [b]learn about[/b] and a topic, e.g. learn about Kabaka Mutebi."
+    return "[b]What I've learned[/b]\n" + "\n".join(f"- {t} ({len(v)} facts)" for t, v in list(k.items())[-40:]) + \
+           "\n\nAsk me about any of them. Say [b]forget topic <name>[/b] to remove one."
+
+
+# ---------- Writing Tools ----------
+GA_WRITE = {
+    "proofread": "Proofread this. Fix spelling, grammar and punctuation, keep the meaning and voice. Give only the corrected text, then one line 'Changes:' listing the main fixes.",
+    "rewrite": "Rewrite this to be clearer and better, same meaning and length. Give only the new text.",
+    "friendly": "Rewrite this in a warm, friendly tone. Give only the new text.",
+    "professional": "Rewrite this in a polite, professional tone suitable for school, work or an application. Give only the new text.",
+    "concise": "Rewrite this much shorter, keeping every important point. Give only the new text.",
+    "summary": "Summarize this in 3 to 5 simple sentences.",
+    "key points": "List the key points of this as short '- ' lines.",
+    "table": "Turn the information in this into a simple table with clear columns (use | separators).",
+    "reply": "Write a good, polite reply to this message. Give only the reply.",
+}
+_GA_WRITE_CMDS = {"proofread": "proofread", "rewrite": "rewrite", "make friendly": "friendly",
+                  "make professional": "professional", "make formal": "professional", "make shorter": "concise",
+                  "make concise": "concise", "summarize": "summary", "summarise": "summary",
+                  "key points": "key points", "make table": "table", "reply to": "reply"}
+
+
+def ga_write(mode, text):
+    text = (text or "").strip()
+    if len(text) < 3:
+        return "Paste the text after the command, e.g. proofread i has finish my homework"
+    return ga_ask(GA_WRITE[mode] + "\n\nText:\n" + text[:6000],
+                  system="You are a careful writing assistant. Output only what is asked, no preamble.",
+                  max_tokens=900) or NET_AI_MSG
+
+
+def ga_writing_tools(screen, preset=""):
+    from kivy.core.clipboard import Clipboard
+    root = BoxLayout(orientation="vertical", spacing=dp(6), padding=[dp(10), dp(6)])
+    pop = Popup(title="Writing Tools", content=root, size_hint=(1, 1), separator_color=GOLD,
+                title_color=GOLD, title_size="20sp")
+    ti = TextInput(text=preset, hint_text="Type or paste your text here...", font_size="16sp", size_hint_y=0.32)
+    root.add_widget(ti)
+    grid = GridLayout(cols=3, spacing=dp(5), size_hint_y=None, height=dp(150))
+    sv = ScrollView(size_hint_y=0.45)
+    out = Label(text="[color=9aa0c0]Pick a tool. The result shows here.[/color]", markup=True, color=TEXTCOL,
+                font_size="15sp", size_hint_y=None, halign="left", valign="top")
+    out.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(6), None)),
+             texture_size=lambda w, t: setattr(w, "height", t[1] + dp(8)))
+    sv.add_widget(out)
+    st = {"res": "", "busy": False}
+
+    def run(mode):
+        if st["busy"]:
+            return
+        st["busy"] = True
+        out.text = "[i]Working...[/i]"
+
+        def job():
+            r = ga_write(mode, ti.text)
+
+            def done(*_):
+                st["busy"] = False
+                st["res"] = r
+                out.text = r.replace("[", "&bl;").replace("]", "&br;")
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=job, daemon=True).start()
+
+    for label, mode in (("Proofread", "proofread"), ("Rewrite", "rewrite"), ("Friendly", "friendly"),
+                        ("Professional", "professional"), ("Shorter", "concise"), ("Summary", "summary"),
+                        ("Key points", "key points"), ("Table", "table"), ("Write reply", "reply")):
+        b = RoundButton(text=label, bg=GOLD if mode in ("proofread", "rewrite") else BLUE,
+                        fg=(0.1, 0.1, 0.1, 1) if mode in ("proofread", "rewrite") else TEXTCOL,
+                        font_size="14sp", bold=True)
+        b.bind(on_press=lambda _b, m=mode: run(m))
+        grid.add_widget(b)
+    root.add_widget(grid)
+    root.add_widget(sv)
+    row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+    for label, col, fn in (("Copy", GOLD, lambda: (Clipboard.copy(st["res"]), setattr(pop, "title", "Copied"))),
+                           ("Use result", BLUE, lambda: setattr(ti, "text", st["res"] or ti.text)),
+                           ("Paste", BLUE, lambda: setattr(ti, "text", Clipboard.paste() or ti.text)),
+                           ("Close", GREY, pop.dismiss)):
+        b = RoundButton(text=label, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
+                        font_size="14sp", bold=True)
+        b.bind(on_press=lambda _b, f=fn: f())
+        row.add_widget(b)
+    root.add_widget(row)
+    pop.open()
+
+
+# ---------- Notify Me: watch a web page and tell you when it changes ----------
+def _ga_page_text(url):
+    html = _ga_get(url, timeout=15)
+    html = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", html)
+    txt = re.sub(r"<[^>]+>", " ", html)
+    txt = re.sub(r"&nbsp;|&amp;", " ", txt)
+    return re.sub(r"\s+", " ", txt).strip()
+
+
+def ga_watch_load():
+    return _v110_load(GA_WATCH_FILE, [])
+
+
+def ga_watch_add(url):
+    url = url.strip()
+    if not url.startswith("http"):
+        url = "https://" + url
+    txt = _ga_page_text(url)
+    import hashlib
+    w = [x for x in ga_watch_load() if x["url"] != url]
+    w.append({"url": url, "hash": hashlib.md5(txt.encode()).hexdigest(), "text": txt[:4000],
+              "added": time.strftime("%Y-%m-%d %H:%M"), "checked": time.time()})
+    _v110_save(GA_WATCH_FILE, w[-10:])
+    return url
+
+
+def ga_watch_check(screen=None):
+    import hashlib
+    w = ga_watch_load()
+    changed = []
+    for x in w:
+        try:
+            txt = _ga_page_text(x["url"])
+        except Exception:
+            continue
+        h = hashlib.md5(txt.encode()).hexdigest()
+        x["checked"] = time.time()
+        if h != x["hash"]:
+            old = set(re.split(r"(?<=[.!?])\s+", x.get("text", "")))
+            new = [s for s in re.split(r"(?<=[.!?])\s+", txt[:4000]) if s not in old and len(s) > 20][:3]
+            x.update(hash=h, text=txt[:4000])
+            changed.append((x["url"], new))
+    _v110_save(GA_WATCH_FILE, w)
+    for url, new in changed:
+        msg = "New: " + " ".join(new)[:200] if new else "The page changed."
+        try:
+            notify("Genius: a page you watch changed", url + "\n" + msg)
+        except Exception:
+            pass
+        if screen is not None:
+            Clock.schedule_once(lambda *_, u=url, m=msg: screen.show("AI", f"[b]Page changed[/b]: {u}\n{m}"), 0)
+    return changed
+
+
+def ga_watch_loop(screen):
+    if getattr(screen, "_ga_watch_on", False):
+        return
+    screen._ga_watch_on = True
+
+    def loop():
+        while True:
+            time.sleep(60)
+            try:
+                w = ga_watch_load()
+                if w and min(x.get("checked", 0) for x in w) < time.time() - 1800 and net_online():
+                    ga_watch_check(screen)
+            except Exception as e:
+                log(f"GA watch: {type(e).__name__}")
+    threading.Thread(target=loop, daemon=True).start()
+
+
+# ---------- Genius AI home panel ----------
+GA_ABOUT = ("[b]Genius AI[/b]: your personal assistant, made smarter in the same way as the AI on new iPhones:\n"
+            "- [b]Knows the world[/b]: fact questions get fresh Wikipedia facts, and the source is named.\n"
+            "- [b]Learns[/b]: say [b]learn about Lake Victoria[/b]. Genius studies it, keeps the key facts and uses them, even offline.\n"
+            "- [b]Knows you[/b]: ask [b]when is my exam?[/b] or [b]what did I note about fees?[/b]. Genius searches your own notes, "
+            "reminders and plans on this phone, privately.\n"
+            "- [b]Writing Tools[/b]: proofread, rewrite, friendly, professional, summary, key points, table, reply.\n"
+            "- [b]Notify Me[/b]: say [b]watch uneb.ac.ug[/b] and Genius tells you when the page changes (checks every 30 min while Genius is open).\n"
+            "- [b]Visual[/b]: take or pick a photo and ask 'what is this?'.\n"
+            "- [b]Never stuck[/b]: if one AI is slow, a backup answers.\n\n"
+            "[size=12sp]Android doesn't let apps read other apps' screens or messages the way Apple's own Siri can, so Genius "
+            "works with what you give it or save in Genius.[/size]")
+
+
+def ga_panel(screen):
+    root = BoxLayout(orientation="vertical", spacing=dp(6), padding=[dp(10), dp(6)])
+    pop = Popup(title="Genius AI", content=root, size_hint=(1, 1), separator_color=GOLD,
+                title_color=GOLD, title_size="22sp")
+    sv = ScrollView(size_hint_y=0.55)
+    lb = Label(text=GA_ABOUT, markup=True, color=TEXTCOL, font_size="15sp", size_hint_y=None,
+               halign="left", valign="top")
+    lb.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(6), None)),
+            texture_size=lambda w, t: setattr(w, "height", t[1] + dp(8)))
+    sv.add_widget(lb)
+    root.add_widget(sv)
+    ti = TextInput(hint_text="Topic to learn, or a page to watch...", multiline=False, font_size="16sp",
+                   size_hint_y=None, height=dp(48))
+    root.add_widget(ti)
+    grid = GridLayout(cols=2, spacing=dp(6), size_hint_y=None, height=dp(160))
+
+    def act(cmd, need=False):
+        if need and not ti.text.strip():
+            ti.hint_text = "Type something first"
+            return
+        pop.dismiss()
+        screen.handle((cmd + " " + ti.text.strip()).strip() if need else cmd)
+    for label, col, fn in (("Learn this", GOLD, lambda: act("learn about", True)),
+                           ("Watch this page", GOLD, lambda: act("watch", True)),
+                           ("Writing Tools", BLUE, lambda: (pop.dismiss(), ga_writing_tools(screen))),
+                           ("What I learned", BLUE, lambda: act("what i learned")),
+                           ("Pages I watch", BLUE, lambda: act("watching")),
+                           ("Close", GREY, pop.dismiss)):
+        b = RoundButton(text=label, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
+                        font_size="15sp", bold=True)
+        b.bind(on_press=lambda _b, f=fn: f())
+        grid.add_widget(b)
+    root.add_widget(grid)
+    pop.open()
+
+
+def ga_handle(screen, line, action, arg, low):
+    lw = low.strip(" .!?")
+    try:
+        ga_watch_loop(screen)
+    except Exception:
+        pass
+    if lw in ("genius ai", "siri", "siri ai", "apple ai", "iphone ai", "ai like iphone", "genius intelligence"):
+        ga_panel(screen)
+        return True
+    m = re.match(r"^(learn about|research|study about|find out about|learn everything about)\s+(.+)$", lw)
+    if m:
+        topic = line.strip()[len(m.group(1)):].strip(" .!?")
+        screen._bg(lambda: ga_learn(topic), f"Studying {topic} from trusted sources...", speak=False)
+        return True
+    if lw in ("what i learned", "what you learned", "what have you learned", "learned", "my knowledge"):
+        screen.show("AI", ga_learned())
+        return True
+    if lw.startswith("forget topic "):
+        t = lw[13:].strip()
+        k = know_load()
+        if t in k:
+            k.pop(t)
+            json.dump(k, open(KNOW_FILE, "w"), indent=1)
+            screen.show("AI", f"Forgot {t}.")
+        else:
+            screen.show("AI", f"I don't have a topic called {t}. Say what i learned to see them.")
+        return True
+    if lw in ("writing tools", "write tools", "writing", "proofread", "rewrite"):
+        ga_writing_tools(screen)
+        return True
+    for cmd, mode in _GA_WRITE_CMDS.items():
+        if lw.startswith(cmd + " ") or lw.startswith(cmd + ": "):
+            txt = line.strip()[len(cmd):].lstrip(": ").strip()
+            if len(txt) < 3:
+                return False
+            screen._bg(lambda t=txt, mo=mode: ga_write(mo, t), "Writing...", speak=False)
+            return True
+    m = re.match(r"^(watch|notify me( when| about)?|watch page|watch site|track page)\s+(\S+\.\S+)$", lw)
+    if m:
+        url = line.strip().split()[-1]
+        def job():
+            try:
+                u = ga_watch_add(url)
+            except Exception as e:
+                return f"I couldn't open {url}. Check the address. ({type(e).__name__})"
+            return (f"Watching {u}. I'll check it every 30 minutes while Genius is open and tell you when it changes. "
+                    "Say [b]watching[/b] to see your pages or [b]stop watching[/b] to clear them.")
+        screen._bg(job, "Opening the page...", speak=False)
+        return True
+    if lw in ("watching", "pages i watch", "watch list", "notify me list"):
+        w = ga_watch_load()
+        screen.show("AI", ("[b]Pages I watch[/b]\n" + "\n".join(f"- {x['url']} (since {x['added']})" for x in w))
+                    if w else "No pages yet. Say watch and a web address, e.g. watch uneb.ac.ug")
+        return True
+    if lw in ("stop watching", "clear watch", "unwatch all"):
+        _v110_save(GA_WATCH_FILE, [])
+        screen.show("AI", "Stopped watching all pages.")
+        return True
+    if lw in ("check pages", "check watch"):
+        screen._bg(lambda: ("Changed: " + ", ".join(u for u, _ in ga_watch_check(screen))) or "No changes.",
+                   "Checking your pages...", speak=False)
+        return True
+    return False
+
+
+_ga_prev_prefix = v110_prompt_prefix
+
+
+def v110_prompt_prefix(text):
+    """114.0: also give the AI fresh facts and the owner's own saved info."""
+    pre = _ga_prev_prefix(text)
+    try:
+        ctx = ga_context(text, web=False)      # local only: never slow the screen down
+        if ctx:
+            pre += "[Context for this answer. Use it if relevant; name sources; keep personal info private.]\n" + ctx + "\n[End context]\n"
+    except Exception as e:
+        log(f"GA context: {type(e).__name__}")
+    return pre
+# =================== end Genius AI ===================
 
 
 if __name__ == "__main__":
