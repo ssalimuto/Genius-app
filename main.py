@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "112.3"
+VERSION = "112.4"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -345,6 +345,7 @@ ALLOWED = MappingProxyType({
     "key": "Set up a free AI key step by step (also: setup, getkey, apikey, ekisumuluzo)",
     "setkey": "setkey YOURKEY - lets me answer anything",
     "help": "List commands",
+    "metal": "Metal Finder: finds iron, steel and magnets with the phone sensor (metal guide, metal spots). coil uses a coil detector for all metals",
     "change code": "Create or change your hidden secret code for login",
     "fun": "Fun studio: collage, transform (effects), slideshow (video), fun videos",
     "storage": "Open My storage (200 MB for pictures, files, notes). Also: save this, save note ...",
@@ -523,8 +524,16 @@ What this means
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
-VERSION_DATE = "2026-10-26"
-CHANGELOG = """Genius 112.3 (2026-10-26)
+VERSION_DATE = "2026-10-27"
+CHANGELOG = """Genius 112.4 (2026-10-27)
+- New: Metal Finder. Say metal or tap Metal Finder in Tools.
+- Uses the phone's magnetic sensor to find iron, steel and magnets near the top of the phone, with a live gauge, beeps that speed up, a graph, a Peak reading and "stronger / weaker" hints.
+- Zero, three sensitivity levels, sound on or off, and Save spot to keep your finds.
+- Honest by design: shows real readings and says what the phone can't see (gold, copper, aluminium).
+- Coil detector mode: join an ESP32 coil kit's Wi-Fi (Genius-Detector) to find all metals, deeper.
+- Phones without a magnetic sensor are told clearly, with the coil option.
+
+Genius 112.3 (2026-10-26)
 - Never-fail answers: if one AI fails, Genius moves to the next one by itself, then to a free backup AI that needs no key.
 - If the signal drops, Genius waits for it, reconnects and answers your question on its own when the internet is back.
 - "explain more" and "explain each part" now explain the last answer.
@@ -9730,6 +9739,11 @@ SAVE_PHRASES = ("save it", "save picture", "save photo", "save to gallery", "sav
 def v110_handle(screen, line, action, arg, low):
     """Genius 110 commands. Returns True when handled."""
     lw = low.strip(" .!?")
+    try:
+        if metal_handle(screen, line, action, arg, low):
+            return True
+    except Exception as e:
+        log(f"METAL: command failed {type(e).__name__}: {e}")
     if lw in ("save", "save it", "save picture", "save photo", "save to gallery", "download", "download it",
               "download picture", "save to files", "save to file", "download to files", "share picture", "share photo"):
         src = LAST_IMAGE.get("path")
@@ -10490,7 +10504,8 @@ class ChatScreen(BoxLayout):
         sv = ScrollView()
         lst = BoxLayout(orientation="vertical", spacing=8, size_hint_y=None)
         lst.bind(minimum_height=lst.setter("height"))
-        more = [("Profile", self.profile_drawer, BLUE),
+        more = [("Metal Finder", lambda: self.handle("metal"), GOLD),
+                ("Profile", self.profile_drawer, BLUE),
                 ("Set up AI key", self.key_wizard, GOLD),
                 ("Fun studio (collage, effects, video)", self.fun_studio, GOLD),
                 ("My creations (pictures)", self.creations, BLUE),
@@ -14732,6 +14747,607 @@ class DecoyScreen(BoxLayout):
                                "I didn't get that. Type help."])
         delay = random.uniform(4, 9)                      # tarpit: waste their time
         Clock.schedule_once(lambda *_: self.show(r), delay)
+
+
+# ===================== 112.4 Metal Finder =====================
+# Uses the phone's own magnetic sensor (magnetometer). It notices iron and steel close to the phone
+# and magnets. A coil detector (ESP32) can be joined over Wi-Fi to find all metals, deeper.
+import math as _md_math
+
+MD_FINDS = "metal_finds.json"
+MD_COIL_URL = "http://192.168.4.1/data"
+MD_GREEN = (0.30, 0.90, 0.55, 1)
+MD_ORANGE = (1.0, 0.62, 0.20, 1)
+
+MD_GUIDE = """[b]Metal Finder: what it can really do[/b]
+
+[b]Phone sensor[/b] (built into many phones, not all)
+- Finds [b]iron and steel[/b]: nails, screws, bolts, iron pipes, tins, tools, steel rods, and magnets.
+- Range is short: a nail at about 2 to 5 cm, a hammer or bolt at about 5 to 10 cm, a big steel thing (gate, car) further.
+- It can NOT see gold, silver, copper, aluminium or brass. They are not magnetic.
+- The sensor sits near the TOP of most phones. Sweep with the top edge, low and slow.
+
+[b]Coil detector[/b] (Genius + an ESP32 coil kit)
+- A real detector coil sees ALL metals, gold and coins too.
+- A 20 cm coil finds a coin at about 15 to 25 cm and bigger metal deeper.
+- Genius shows its signal on this same screen. Join the Wi-Fi called Genius-Detector, then tap Coil detector.
+
+[b]How to sweep well[/b]
+1. Stand away from metal and tap Zero.
+2. Hold the phone flat, top edge forward, 1 to 2 cm above the ground or wall.
+3. Move slowly, about a hand's width per second, in straight lines.
+4. When it beeps faster, go back and forth to find where the Peak is highest. That's the spot.
+
+[b]Things that fool every detector[/b]
+- Steel rods inside concrete walls and floors, iron roofing, water pipes and power cables.
+- Your own phone case magnet, watch, rings, keys, belt buckle and shoe nails.
+- Speakers and fridges (strong magnets).
+Zero again whenever you move to a new place.
+
+[b]Honesty promise[/b]
+Genius never says "treasure" or "gold" from the phone sensor. It shows a real reading in uT (microtesla) and tells you how strong it is.
+
+[b]The law in Uganda[/b]
+Minerals like gold belong to the Government, and mining them needs a licence. Ask before digging on land that is not yours. Very old objects you find are history: report them to the Uganda Museum."""
+
+
+class MetalBrain:
+    """Turns raw sensor numbers into a steady, honest signal (no Kivy, so it can be tested)."""
+    CAL_SAMPLES = 36
+
+    def __init__(self, coil=False):
+        self.coil = coil
+        self.sens = 1.0          # 1.6 low, 1.0 normal, 0.6 high
+        self.reset()
+
+    def reset(self):
+        self.cal = []
+        self.base = None
+        self.noise = 0.0
+        self.ema = None
+        self.peak = 0.0
+        self.hist = []
+        self.frozen_bias = None
+
+    @property
+    def calibrating(self):
+        return self.base is None
+
+    def thr(self):
+        floor = 2.0 if self.coil else 1.5
+        return max(3.0 * self.noise, floor) * self.sens
+
+    def feed(self, vec, bias=None):
+        """vec: (x, y, z) in uT (coil: (value, 0, 0)). Returns the change from normal in uT (0 while zeroing)."""
+        if vec is None:
+            return 0.0
+        if bias is not None and not self.coil:
+            if self.frozen_bias is None:
+                self.frozen_bias = tuple(bias)
+            vec = tuple(v - b for v, b in zip(vec, self.frozen_bias))
+        m = abs(vec[0]) if self.coil else _md_math.sqrt(vec[0] ** 2 + vec[1] ** 2 + vec[2] ** 2)
+        self.ema = m if self.ema is None else 0.35 * m + 0.65 * self.ema
+        if self.base is None:
+            self.cal.append(m)
+            if len(self.cal) >= self.CAL_SAMPLES:
+                c = self.cal[6:]                     # skip the first wobble
+                mean = sum(c) / len(c)
+                self.base = mean
+                self.noise = _md_math.sqrt(sum((x - mean) ** 2 for x in c) / len(c))
+                self.ema = mean
+            return 0.0
+        d = abs(self.ema - self.base)
+        if d < self.thr():                           # slow drift correction while nothing is found
+            self.base += 0.003 * (self.ema - self.base)
+        self.peak = max(self.peak, d)
+        self.hist.append(d)
+        if len(self.hist) > 160:
+            self.hist.pop(0)
+        return d
+
+    def pct(self, d):
+        t = self.thr()
+        if d < t:
+            return 0.0
+        top = 400.0 if self.coil else 150.0
+        return min(100.0, 100.0 * _md_math.log10(1 + (d - t) / 2.0) / _md_math.log10(1 + top / 2.0))
+
+    def level(self, d):
+        """(0..4, short title, explanation)"""
+        t = self.thr()
+        if d < t:
+            return 0, "Nothing found", "No metal near the sensor. Keep sweeping slowly."
+        if self.coil:
+            p = self.pct(d)
+            if p < 25:
+                return 1, "Faint metal", "Small or deep metal. Go back and forth to find the strongest spot."
+            if p < 55:
+                return 2, "Metal", "Metal below the coil. Sweep a cross to pin it down."
+            if p < 85:
+                return 3, "Strong metal", "Big or shallow metal right under the coil."
+            return 4, "Very strong", "Large metal very close to the coil."
+        if d < 10:
+            return 1, "Faint", "A small iron or steel piece close by, or a bigger one a little further."
+        if d < 40:
+            return 2, "Iron or steel close", "Something magnetic within a few cm. Move back and forth to find the Peak."
+        if d < 200:
+            return 3, "Strong iron or steel", "A big iron or steel object, or one very close to the top of the phone."
+        return 4, "Magnet or large steel", "A magnet (speaker, phone case, fridge) or a large steel object right here."
+
+    def trend(self):
+        h = self.hist
+        if len(h) < 12:
+            return 0
+        now = sum(h[-4:]) / 4
+        before = sum(h[-12:-8]) / 4
+        if now > before * 1.25 + 0.6:
+            return 1
+        if now < before * 0.8 - 0.6:
+            return -1
+        return 0
+
+
+class _MagSource:
+    """Live readings from the phone's magnetic sensor (or a coil detector over Wi-Fi)."""
+
+    def __init__(self):
+        self.ok = False
+        self.kind = ""
+        self.info = ""
+        self.vec = None
+        self.bias = None
+        self.grav = None
+        self.accuracy = 3
+        self.count = 0
+        self._sm = None
+        self._lis = None
+        self._plyer = None
+        self._coil_on = False
+        self.coil_err = ""
+
+    def start_phone(self):
+        try:
+            from jnius import autoclass, cast, PythonJavaClass, java_method
+        except Exception:
+            return self._start_plyer()
+        src = self
+
+        class _MdListener(PythonJavaClass):
+            __javainterfaces__ = ["android/hardware/SensorEventListener"]
+            __javacontext__ = "app"
+
+            @java_method("(Landroid/hardware/SensorEvent;)V")
+            def onSensorChanged(self, ev):
+                try:
+                    t = ev.sensor.getType()
+                    v = ev.values
+                    if t == 1:
+                        src.grav = (v[0], v[1], v[2])
+                    else:
+                        src.vec = (v[0], v[1], v[2])
+                        src.count += 1
+                        if t == 14 and len(v) >= 6:
+                            src.bias = (v[3], v[4], v[5])
+                except Exception:
+                    pass
+
+            @java_method("(Landroid/hardware/Sensor;I)V")
+            def onAccuracyChanged(self, sensor, acc):
+                src.accuracy = acc
+
+        try:
+            PA = autoclass("org.kivy.android.PythonActivity")
+            Ctx = autoclass("android.content.Context")
+            sm = cast("android.hardware.SensorManager", PA.mActivity.getSystemService(Ctx.SENSOR_SERVICE))
+            s = sm.getDefaultSensor(14)                  # raw sensor: Android can't "auto-correct" a find away
+            kind = "raw"
+            if s is None:
+                s = sm.getDefaultSensor(2)
+                kind = "calibrated"
+            self._sm = sm
+            self._lis = _MdListener()
+            acc = sm.getDefaultSensor(1)
+            if acc is not None:
+                sm.registerListener(self._lis, acc, 2)
+            if s is None:
+                self.ok = False
+                return False
+            sm.registerListener(self._lis, s, 1)
+            self.ok, self.kind = True, kind
+            try:
+                self.info = f"{s.getName()} ({s.getVendor()}), up to {s.getMaximumRange():.0f} uT"
+            except Exception:
+                self.info = "Phone magnetic sensor"
+            log(f"METAL: sensor {kind} {self.info}")
+            return True
+        except Exception as e:
+            log(f"METAL: sensor start failed: {type(e).__name__}: {e}")
+            return self._start_plyer()
+
+    def _start_plyer(self):
+        try:
+            from plyer import compass
+            compass.enable()
+            self._plyer = compass
+            self.ok, self.kind, self.info = True, "plyer", "Phone magnetic sensor"
+            return True
+        except Exception:
+            self.ok = False
+            return False
+
+    def poll(self):
+        if self._plyer is not None:
+            try:
+                f = self._plyer.field
+                if f and f[0] is not None:
+                    self.vec = (f[0], f[1], f[2])
+                    self.count += 1
+            except Exception:
+                pass
+
+    def start_coil(self, url=MD_COIL_URL):
+        self._coil_on = True
+        self.kind, self.info, self.ok = "coil", "Coil detector on Wi-Fi Genius-Detector", True
+
+        def run():
+            fails = 0
+            while self._coil_on:
+                try:
+                    with urllib.request.urlopen(url, timeout=1.5) as r:
+                        d = json.loads(r.read().decode("utf-8", "ignore"))
+                    self.vec = (float(d.get("v", 0)), 0.0, 0.0)
+                    self.count += 1
+                    self.coil_err = ""
+                    fails = 0
+                    time.sleep(0.06)
+                except Exception as e:
+                    fails += 1
+                    self.coil_err = ("Can't reach the coil detector. Join the Wi-Fi Genius-Detector, "
+                                     "and turn mobile data off if it still can't connect.")
+                    time.sleep(0.5 if fails < 10 else 1.5)
+        threading.Thread(target=run, daemon=True).start()
+
+    def stop(self):
+        self._coil_on = False
+        try:
+            if self._sm is not None and self._lis is not None:
+                self._sm.unregisterListener(self._lis)
+        except Exception:
+            pass
+        try:
+            if self._plyer is not None:
+                self._plyer.disable()
+        except Exception:
+            pass
+        self._sm = self._lis = self._plyer = None
+
+
+class _MdBeeper:
+    def __init__(self):
+        self.tg = None
+        try:
+            from jnius import autoclass
+            TG = autoclass("android.media.ToneGenerator")
+            self.tg = TG(3, 85)                      # music stream, 85% volume
+            self.tone = TG.TONE_PROP_BEEP
+        except Exception:
+            self.tg = None
+
+    def beep(self, ms=45):
+        try:
+            if self.tg is not None:
+                self.tg.startTone(self.tone, ms)
+        except Exception:
+            pass
+
+    def release(self):
+        try:
+            if self.tg is not None:
+                self.tg.release()
+        except Exception:
+            pass
+        self.tg = None
+
+
+def md_finds_load():
+    try:
+        return json.load(open(MD_FINDS))
+    except Exception:
+        return []
+
+
+def md_finds_save(lst):
+    try:
+        json.dump(lst[-200:], open(MD_FINDS, "w"))
+    except Exception as e:
+        log(f"METAL: save failed {e}")
+
+
+class _MdGauge(Widget):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.pct, self.col = 0.0, MD_GREEN
+        self.big = Label(text="--", font_size="44sp", bold=True, color=TEXTCOL, markup=True)
+        self.small = Label(text="uT", font_size="15sp", color=HINT)
+        self.add_widget(self.big)
+        self.add_widget(self.small)
+        self.bind(pos=self.draw, size=self.draw)
+
+    def set(self, pct, col, big, small):
+        self.pct, self.col = pct, col
+        self.big.text, self.small.text = big, small
+        self.draw()
+
+    def draw(self, *_):
+        cx, cy = self.center_x, self.center_y
+        r = min(self.width, self.height) / 2 - dp(14)
+        self.canvas.before.clear()
+        with self.canvas.before:
+            Color(1, 1, 1, 0.10)
+            Line(circle=(cx, cy, r, -135, 135), width=dp(9), cap="round")
+            if self.pct > 0.5:
+                Color(*self.col)
+                Line(circle=(cx, cy, r, -135, -135 + 270 * self.pct / 100.0), width=dp(9), cap="round")
+                Color(self.col[0], self.col[1], self.col[2], 0.18)
+                Line(circle=(cx, cy, r + dp(10), -135, -135 + 270 * self.pct / 100.0), width=dp(4), cap="round")
+        self.big.size = (self.width, dp(60))
+        self.big.center = (cx, cy + dp(8))
+        self.small.size = (self.width, dp(24))
+        self.small.center = (cx, cy - dp(30))
+
+
+class _MdGraph(Widget):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.bind(pos=lambda *_: self.draw([], 1), size=lambda *_: self.draw([], 1))
+
+    def draw(self, hist, thr):
+        self.canvas.clear()
+        with self.canvas:
+            Color(1, 1, 1, 0.06)
+            RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(12)])
+            if not hist:
+                return
+            top = max(max(hist), thr * 4, 5.0)
+            ty = self.y + dp(6) + (self.height - dp(12)) * min(1.0, thr / top)
+            Color(1, 1, 1, 0.25)
+            Line(points=[self.x + dp(6), ty, self.right - dp(6), ty], width=1, dash_length=6, dash_offset=4)
+            pts = []
+            n = len(hist)
+            for i, v in enumerate(hist):
+                pts += [self.x + dp(6) + (self.width - dp(12)) * i / max(1, 159),
+                        self.y + dp(6) + (self.height - dp(12)) * min(1.0, v / top)]
+            Color(*GOLD)
+            if len(pts) >= 4:
+                Line(points=pts, width=dp(1.6))
+
+
+def _md_close_all(st):
+    st["open"] = False
+    for ev in (st.get("tick"), st.get("beep_ev")):
+        try:
+            ev.cancel()
+        except Exception:
+            pass
+    try:
+        st["src"].stop()
+    except Exception:
+        pass
+    try:
+        st["beeper"].release()
+    except Exception:
+        pass
+
+
+def metal_finder(screen, coil=False):
+    """Full-screen Metal Finder."""
+    src = _MagSource()
+    started = src.start_coil() or True if coil else src.start_phone()
+    root = BoxLayout(orientation="vertical", spacing=dp(6), padding=[dp(8), dp(6)])
+    pop = Popup(title="Metal Finder" + (" - coil" if coil else ""), content=root, size_hint=(1, 1),
+                separator_color=GOLD, title_color=GOLD, title_size="20sp")
+    st = {"open": True, "src": src}
+
+    def btn(text, col, fn, **kw):
+        b = RoundButton(text=text, bg=col, fg=(0.1, 0.1, 0.1, 1) if col in (GOLD, MD_GREEN) else TEXTCOL,
+                        font_size="15sp", bold=True, **kw)
+        b.bind(on_press=lambda *_: fn())
+        return b
+
+    def reopen(c):
+        pop.dismiss()
+        Clock.schedule_once(lambda *_: metal_finder(screen, coil=c), 0.2)
+
+    if not started:
+        msg = Label(text="[b]This phone has no magnetic sensor.[/b]\n\nMany budget phones are made without one "
+                         "(it's the part a compass app uses), so Genius can't sense metal with this phone alone.\n\n"
+                         "You can still find metal with a [b]coil detector[/b]: a small ESP32 kit with a coil that "
+                         "sends its signal to Genius over Wi-Fi. A coil finds ALL metals, gold and coins too, "
+                         "and much deeper than any phone.",
+                    markup=True, color=TEXTCOL, font_size="16sp", halign="center", valign="middle")
+        msg.bind(size=lambda w, s: setattr(w, "text_size", (s[0] - dp(10), None)))
+        root.add_widget(msg)
+        row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+        row.add_widget(btn("Coil detector", GOLD, lambda: reopen(True)))
+        row.add_widget(btn("Guide", BLUE, lambda: screen.show("AI", MD_GUIDE)))
+        root.add_widget(row)
+        root.add_widget(btn("Close", GREY, pop.dismiss, size_hint_y=None, height=dp(50)))
+        pop.bind(on_dismiss=lambda *_: _md_close_all(st))
+        pop.open()
+        log("METAL: no magnetometer on this phone")
+        return
+
+    brain = MetalBrain(coil=coil)
+    beeper = _MdBeeper()
+    st.update(brain=brain, beeper=beeper, sound=True, lvl=0, rate=0.0, grav0=None)
+
+    status = Label(text=src.info, color=HINT, font_size="13sp", size_hint_y=None, height=dp(22))
+    root.add_widget(status)
+    gauge = _MdGauge(size_hint_y=None, height=dp(230))
+    root.add_widget(gauge)
+    title = Label(text="Zeroing...", markup=True, color=GOLD, font_size="22sp", bold=True,
+                  size_hint_y=None, height=dp(34))
+    root.add_widget(title)
+    expl = Label(text="Hold still, away from metal.", color=TEXTCOL, font_size="15sp",
+                 halign="center", valign="middle", size_hint_y=None, height=dp(46))
+    expl.bind(size=lambda w, s: setattr(w, "text_size", (s[0] - dp(10), None)))
+    root.add_widget(expl)
+    trend = Label(text="", markup=True, color=HINT, font_size="15sp", size_hint_y=None, height=dp(26))
+    root.add_widget(trend)
+    graph = _MdGraph(size_hint_y=None, height=dp(96))
+    root.add_widget(graph)
+
+    sens_names = {1.6: "Low", 1.0: "Normal", 0.6: "High"}
+
+    def do_zero():
+        brain.reset()
+        st["grav0"] = src.grav
+        beeper.beep(30)
+
+    def toggle_sound():
+        st["sound"] = not st["sound"]
+        b_sound.text = "Sound: " + ("on" if st["sound"] else "off")
+
+    def cycle_sens():
+        order = [1.0, 0.6, 1.6]
+        brain.sens = order[(order.index(brain.sens) + 1) % 3]
+        b_sens.text = "Sensitivity: " + sens_names[brain.sens]
+
+    def save_spot():
+        if brain.calibrating or not brain.hist:
+            screen.say("Let it finish zeroing, then find a spot first.")
+            return
+        d = brain.hist[-1]
+        lvl = brain.level(d)
+        lst = md_finds_load()
+        lst.append({"t": time.strftime("%Y-%m-%d %H:%M"), "uT": round(d, 1), "peak": round(brain.peak, 1),
+                    "what": lvl[1], "coil": coil})
+        md_finds_save(lst)
+        beeper.beep(120)
+        title.text = "Spot saved"
+
+    def show_finds():
+        lst = md_finds_load()
+        if not lst:
+            screen.show("AI", "No saved spots yet. When the finder beeps, tap Save spot.")
+            return
+        lines = [f"{i + 1}. {f['t']}  {f['what']}  ({f['uT']} uT, peak {f['peak']}){'  coil' if f.get('coil') else ''}"
+                 for i, f in enumerate(lst[-30:])]
+        screen.show("AI", "[b]My metal spots[/b]\n" + "\n".join(lines) + "\n\nSay 'metal clear' to delete them.")
+
+    row1 = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+    row1.add_widget(btn("Zero", GOLD, do_zero))
+    b_sound = btn("Sound: on", BLUE, toggle_sound)
+    row1.add_widget(b_sound)
+    b_sens = btn("Sensitivity: Normal", BLUE, cycle_sens)
+    row1.add_widget(b_sens)
+    root.add_widget(row1)
+    row2 = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+    row2.add_widget(btn("Save spot", MD_GREEN, save_spot))
+    row2.add_widget(btn("My spots", GREY, show_finds))
+    row2.add_widget(btn("Guide", GREY, lambda: screen.show("AI", MD_GUIDE)))
+    root.add_widget(row2)
+    row3 = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+    row3.add_widget(btn("Phone sensor" if coil else "Coil detector", GREY, lambda: reopen(not coil)))
+    row3.add_widget(btn("Close", RED, pop.dismiss))
+    root.add_widget(row3)
+
+    def tick(dt):
+        if not st["open"]:
+            return False
+        src.poll()
+        if coil and src.coil_err and src.count == 0:
+            title.text = "Waiting for the coil"
+            expl.text = src.coil_err
+            return
+        if src.vec is None:
+            if src.count == 0 and time.time() - st.setdefault("t0", time.time()) > 4:
+                title.text = "No readings"
+                expl.text = "The magnetic sensor isn't sending numbers. Close and open the Metal Finder again."
+            return
+        d = brain.feed(src.vec, src.bias if src.kind == "raw" else None)
+        if brain.calibrating:
+            gauge.set(0, MD_GREEN, "--", "zeroing")
+            title.text = "Zeroing..."
+            expl.text = "Hold still, away from metal."
+            if st["grav0"] is None:
+                st["grav0"] = src.grav
+            return
+        p = brain.pct(d)
+        lvl, head, words = brain.level(d)
+        col = [MD_GREEN, MD_GREEN, GOLD, MD_ORANGE, RED][lvl]
+        gauge.set(p, col, f"{d:.1f}" if d < 100 else f"{d:.0f}",
+                  ("signal" if coil else "uT change") + f"  |  {p:.0f}%")
+        title.text = head
+        title.color = col if lvl else HINT
+        expl.text = words
+        tr = brain.trend()
+        arrow = "[color=7CFFA0]Stronger: keep going this way[/color]" if tr > 0 else \
+            ("[color=FF9F5A]Weaker: go back[/color]" if tr < 0 and lvl else "")
+        pk = f"Peak {brain.peak:.1f}" + ("" if coil else " uT")
+        trend.text = (arrow + "   " if arrow else "") + pk
+        if src.kind == "calibrated" and src.accuracy == 0:
+            status.text = "Sensor needs calibrating: wave the phone in a figure 8, then tap Zero"
+        elif not coil and st["grav0"] and src.grav:
+            a, b = st["grav0"], src.grav
+            na = _md_math.sqrt(sum(x * x for x in a)) or 1
+            nb = _md_math.sqrt(sum(x * x for x in b)) or 1
+            cos = max(-1.0, min(1.0, sum(x * y for x, y in zip(a, b)) / (na * nb)))
+            status.text = ("Phone turned a lot: tap Zero again for a true reading"
+                           if _md_math.degrees(_md_math.acos(cos)) > 35 else src.info)
+        if lvl >= 3 and st["lvl"] < 3:
+            try:
+                from plyer import vibrator
+                vibrator.vibrate(0.12)
+            except Exception:
+                pass
+        st["lvl"] = lvl
+        st["rate"] = [0, 0.55, 0.28, 0.13, 0.07][lvl]
+        if len(brain.hist) % 3 == 0:
+            graph.draw(brain.hist, brain.thr())
+
+    def beep_loop(dt):
+        if not st["open"]:
+            return False
+        r = st["rate"]
+        now = time.time()
+        if st["sound"] and r and now - st.get("last_beep", 0) >= r:
+            st["last_beep"] = now
+            beeper.beep(35 if r > 0.1 else 25)
+
+    st["tick"] = Clock.schedule_interval(tick, 1 / 15.0)
+    st["beep_ev"] = Clock.schedule_interval(beep_loop, 0.03)
+    pop.bind(on_dismiss=lambda *_: _md_close_all(st))
+    pop.open()
+
+
+def metal_handle(screen, line, action, arg, low):
+    lw = low.strip(" .!?")
+    words = ("metal detector", "metal finder", "detect metal", "find metal", "treasure", "find gold",
+             "detect gold", "gold detector", "coil detector", "tressure")
+    if action in ("metal", "detector", "metaldetector", "treasure", "tressure", "finder", "coil") or \
+            any(w in lw for w in words) and len(lw.split()) <= 6:
+        a = arg.lower().strip()
+        if a in ("guide", "help", "how", "info") or lw in ("metal guide",):
+            screen.show("AI", MD_GUIDE)
+            return True
+        if a in ("spots", "finds", "list"):
+            lst = md_finds_load()
+            screen.show("AI", "[b]My metal spots[/b]\n" + ("\n".join(
+                f"{i + 1}. {f['t']}  {f['what']}  ({f['uT']} uT)" for i, f in enumerate(lst[-30:])) or "None yet."))
+            return True
+        if a in ("clear", "delete", "reset"):
+            md_finds_save([])
+            screen.say("Deleted your saved metal spots.")
+            return True
+        use_coil = action == "coil" or "coil" in lw
+        if ("gold" in lw or "treasure" in lw or "tressure" in lw) and not use_coil:
+            screen.show("AI", "Opening the Metal Finder. Honest note: the phone sensor finds iron, steel and "
+                              "magnets close by. For gold and coins you need the coil detector (see Guide).")
+        Clock.schedule_once(lambda *_: metal_finder(screen, coil=use_coil), 0.1)
+        return True
+    return False
+# =================== end Metal Finder ===================
 
 
 class GeniusApp(App):
