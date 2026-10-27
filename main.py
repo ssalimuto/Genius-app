@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "112.8"
+VERSION = "112.9"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -527,7 +527,11 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-27"
-CHANGELOG = """Genius 112.8 (2026-10-27)
+CHANGELOG = """Genius 112.9 (2026-10-27)
+- Rock Test now names the rock in plain words: "It's likely: Fool's gold (pyrite)" or "It's likely: Tin ore", says how sure it is, and whether it's worth money.
+- New Colour button (gold, silver, white, black, red, green, pink) makes the answer surer, along with the Magnet button.
+
+Genius 112.8 (2026-10-27)
 - New: Rock Test. Say rock test (or tap it in Tools). Weigh a rock dry, then hanging in a cup of water on a kitchen scale, and Genius works out its density, shows it on a graph, and lists what it could be: quartz, mica, pyrite (fool's gold), tin, tungsten, coltan, silver, gold and more.
 - Catches common fakes: brass bars, pyrite and mica flakes. Warns that tungsten-filled bars read like gold, so get a lab assay.
 - New "wiii" find sound: plays when a Rock Test matches a valuable mineral and when Mineral Scan sweeps over a recorded gold or rare-metal site. Say wiii to hear it.
@@ -3691,6 +3695,10 @@ RT_MINERALS = [
     ("Gold (natural)", 15.00, 19.32, True, "natural gold is 15 to 19.3 because it carries some silver"),
     ("Platinum", 14.00, 21.45, True, "very rare"),
 ]
+
+RT_COLOUR = {'Quartz': 'white', 'Feldspar': 'white pink', 'Mica': 'gold silver black', 'Beryl': 'green white', 'Spodumene (lithium)': 'white green pink', 'Tourmaline': 'black green pink', 'Garnet': 'red', 'Chalcopyrite (copper ore)': 'gold', "Pyrite (fool's gold)": 'gold', 'Magnetite (iron ore)': 'black', 'Hematite (iron ore)': 'red black silver', 'Columbite-tantalite (coltan)': 'black', 'Cassiterite (tin ore)': 'black red', 'Wolframite (tungsten ore)': 'black', 'Galena (lead ore)': 'silver', 'Brass (fake gold)': 'gold', 'Copper': 'red', 'Silver': 'silver', 'Lead': 'silver', 'Gold (natural)': 'gold', 'Platinum': 'silver'}
+RT_SIMPLE = {'Quartz': 'Quartz, a common rock', 'Feldspar': 'Feldspar, a common rock', 'Mica': 'Mica, shiny flakes (not gold)', 'Beryl': 'Beryl, a gem mineral', 'Spodumene (lithium)': 'Lithium ore', 'Tourmaline': 'Tourmaline crystal', 'Garnet': 'Garnet crystal', 'Chalcopyrite (copper ore)': 'Copper ore', "Pyrite (fool's gold)": "Fool's gold (pyrite)", 'Magnetite (iron ore)': 'Iron ore', 'Hematite (iron ore)': 'Iron ore', 'Columbite-tantalite (coltan)': 'Coltan', 'Cassiterite (tin ore)': 'Tin ore', 'Wolframite (tungsten ore)': 'Tungsten ore', 'Galena (lead ore)': 'Lead ore', 'Brass (fake gold)': 'Brass, fake gold', 'Copper': 'Copper metal', 'Silver': 'Silver', 'Lead': 'Lead metal', 'Gold (natural)': 'GOLD', 'Platinum': 'Platinum'}
+RT_COMMON = {'Quartz': 10, 'Feldspar': 9, 'Mica': 7, "Pyrite (fool's gold)": 7, 'Hematite (iron ore)': 6, 'Magnetite (iron ore)': 5, 'Garnet': 5, 'Tourmaline': 5, 'Brass (fake gold)': 5, 'Lead': 3}
 RT_HOW = """[b]How to test a rock with a kitchen scale[/b]
 1. Clean and dry the sample. Bigger is more accurate (try 20 g or more).
 2. [b]A: weigh it dry[/b] in grams.
@@ -3743,7 +3751,7 @@ def rt_wiii():
     return False
 
 
-def rt_compute(a, b, res=0.1, magnet=None):
+def rt_compute(a, b, res=0.1, magnet=None, colour=None):
     """a = dry grams, b = displaced water grams. Returns dict with SG, range and matches."""
     import math
     if a <= 0 or b <= 0:
@@ -3755,17 +3763,42 @@ def rt_compute(a, b, res=0.1, magnet=None):
     lo, hi = sg - err, sg + err
     m = [x for x in RT_MINERALS if x[1] <= hi and x[2] >= lo]
     if magnet is True:
-        m = [x for x in m if "Magnetite" in x[0] or "Hematite" in x[0]] or m
+        m = [x for x in m if "Magnetite" in x[0]] or [x for x in m if "Hematite" in x[0]] or m
     elif magnet is False:
         m = [x for x in m if "Magnetite" not in x[0]]
+    if colour:
+        m = [x for x in m if colour in RT_COLOUR.get(x[0], "")] or m
     if not m:
         m = sorted(RT_MINERALS, key=lambda x: min(abs(x[1] - sg), abs(x[2] - sg)))[:2]
-    return {"sg": sg, "lo": lo, "hi": hi, "matches": m, "valuable": all(x[3] for x in m) or any(x[0].startswith(("Gold", "Platinum", "Silver")) for x in m),
+
+    def score(x):
+        mid = (x[1] + x[2]) / 2
+        inside = 0 if x[1] <= sg <= x[2] else 1
+        return (inside, abs(sg - mid) / max(0.2, (x[2] - x[1])) - RT_COMMON.get(x[0], 0) * 0.08)
+    m = sorted(m, key=score)
+    best = m[0]
+    sure = "very likely" if len(m) == 1 else ("likely" if score(m[0])[0] == 0 and (len(m) < 3 or colour) else "maybe")
+    if best[0].startswith(("Gold", "Platinum")):
+        sure = "possibly"          # tungsten-filled fakes have the same density
+    return {"best": best, "sure": sure, "colour": colour, "sg": sg, "lo": lo, "hi": hi, "matches": m, "valuable": all(x[3] for x in m) or any(x[0].startswith(("Gold", "Platinum", "Silver")) for x in m),
             "gold": any(x[0].startswith(("Gold", "Platinum")) for x in m)}
 
 
 def rt_text(r):
-    lines = [f"[b]Density {r['sg']:.2f}[/b]  (likely between {r['lo']:.2f} and {r['hi']:.2f})", "", "Matches:"]
+    b = r["best"]
+    nm = RT_SIMPLE.get(b[0], b[0])
+    col = "ffcc33" if b[3] else "e8e8e8"
+    lines = [f"[size=24sp][b][color={col}]" + {"very likely": "It's very likely", "likely": "It's likely",
+                                                       "maybe": "It might be", "possibly": "It's possibly"}[r["sure"]] +
+             f": {nm}[/color][/b][/size]",
+             f"{b[4][0].upper() + b[4][1:]}.",
+             "[color=ffcc33]Worth money if there is a lot of it. Get it tested.[/color]" if b[3]
+             else "[color=9ea3c7]Not worth selling on its own.[/color]",
+             "", f"Density {r['sg']:.2f} (between {r['lo']:.2f} and {r['hi']:.2f})"]
+    if r["sure"] != "very likely":
+        lines.append("Tip: set the Colour and Magnet buttons to make the answer surer.")
+    lines += ["", "Other possibilities:" if len(r["matches"]) > 1 else ""]
+    r = dict(r, matches=r["matches"][1:])
     for name, lo, hi, val, note in r["matches"]:
         lines.append(f"- [b]{name}[/b] ({lo:g}-{hi:g}): {note}" + ("  [color=ffcc33]valuable[/color]" if val else ""))
     if r["gold"]:
@@ -3847,8 +3880,15 @@ def rock_test(screen):
     def cycle_res():
         st["res"] = {0.1: 1.0, 1.0: 0.01, 0.01: 0.1}[st["res"]]
         b_res.text = f"Scale: {st['res']:g} g"
+    rt_cols = [None, "gold", "silver", "white", "black", "red", "green", "pink"]
+
+    def cycle_col():
+        st["colour"] = rt_cols[(rt_cols.index(st.get("colour")) + 1) % len(rt_cols)]
+        b_col.text = "Colour: " + (st["colour"] or "any")
+    b_col = btn("Colour: any", BLUE, cycle_col)
     b_mag = btn("Magnet: not tried", BLUE, cycle_mag)
     b_res = btn("Scale: 0.1 g", BLUE, cycle_res)
+    opt.add_widget(b_col)
     opt.add_widget(b_mag)
     opt.add_widget(b_res)
     root.add_widget(opt)
@@ -3864,7 +3904,7 @@ def rock_test(screen):
 
     def test():
         try:
-            r = rt_compute(float(ta.text or 0), float(tb.text or 0), st["res"], st["magnet"])
+            r = rt_compute(float(ta.text or 0), float(tb.text or 0), st["res"], st["magnet"], st.get("colour"))
         except ValueError as e:
             out.text = f"[color=ff6680]{e}[/color]\n\n" + RT_HOW
             return
@@ -3880,7 +3920,7 @@ def rock_test(screen):
         try:
             h = json.load(open(RT_FILE)) if os.path.exists(RT_FILE) else []
             h.append({"t": time.strftime("%Y-%m-%d %H:%M"), "a": ta.text, "b": tb.text, "sg": round(r["sg"], 2),
-                      "match": [x[0] for x in r["matches"]]})
+                      "match": [RT_SIMPLE.get(x[0], x[0]) for x in r["matches"]]})
             json.dump(h[-100:], open(RT_FILE, "w"))
         except Exception:
             pass
