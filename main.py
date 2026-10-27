@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "113.0"
+VERSION = "113.1"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -527,7 +527,12 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-27"
-CHANGELOG = """Genius 113.0 (2026-10-27)
+CHANGELOG = """Genius 113.1 (2026-10-27)
+- Faster, steadier answers: if the main AI is slow for a few seconds or fails, a backup AI starts at once and the first good answer wins. No more "couldn't reach Gemini" or "free limit" replies in chat.
+- A broken AI key no longer blocks answers: a backup AI answers and Genius tells you to type key to fix it.
+- The app frees itself sooner if a question gets stuck on a bad network.
+
+Genius 113.0 (2026-10-27)
 - New: Pinpointer. Say pinpointer (or tap it in Tools) to use the pen-size coil detector you build with an ESP32-C3. Big coil detectors work the same way.
 - Better sound: the beep rises in pitch as metal gets closer, and the "wiii" plays at a very strong signal.
 - Target hint from the coil: "Fast target" (small gold, foil, thin metal) or "Slow target" (iron, big coin, silver). It's a hint, not proof.
@@ -6641,7 +6646,47 @@ def ask_gemini(prompt, max_tokens=600, json_mode=False, search=False, system=Non
 # ================= 112.3 Never-fail answers: many ways to answer, auto-reconnect =================
 FREE_AI_URL = "https://text.pollinations.ai/openai"      # free backup AI, no key needed
 _FAIL_RE = re.compile(r"^\s*(i couldn.t reach|genius mind couldn.t reach|search failed|something went wrong|"
-                      r"i couldn.t mark|no ai could be reached|sorry, i couldn.t)", re.I)
+                      r"i couldn.t mark|no ai could be reached|sorry, i couldn.t|free limit|google is busy|"
+                      r"google rejected the key|your internet is slow|network is slow|.{0,30}is busy right now|"
+                      r"i need an ai key|still working on the last|thinking\.\.\.$)", re.I)
+_KEY_RE = re.compile(r"^\s*(google rejected the key|i need an ai key)", re.I)
+
+
+def race_answer(primary, prompt, convo=None, hedge_after=6.0, deadline=35.0):
+    """113.1: never keep the user waiting. Start the normal answer; if it is slow (or fails),
+    start the free backup AI beside it and take whichever good answer arrives first.
+    Returns (reply, way, note): way is 'main' or 'backup'; note explains a broken key."""
+    import queue
+    q = queue.Queue()
+    note = {"t": ""}
+
+    def run(fn, way):
+        try:
+            r = fn()
+        except Exception as e:
+            log(f"RACE {way}: {type(e).__name__}: {e}")
+            r = None
+        q.put((r, way))
+    threading.Thread(target=run, args=(primary, "main"), daemon=True).start()
+    start, backup_on, waiting = time.time(), False, 1
+    while waiting and time.time() - start < deadline:
+        left = (hedge_after if not backup_on else deadline) - (time.time() - start)
+        try:
+            r, way = q.get(timeout=max(0.2, left))
+        except Exception:
+            r, way = None, None
+        if way is not None:
+            waiting -= 1
+            if r and not is_fail_reply(r):
+                return r, way, note["t"]
+            if r and _KEY_RE.match(str(r)):
+                note["t"] = "Your AI key has a problem, so a backup AI answered. Type key to fix it."
+        if not backup_on and (way is not None or time.time() - start >= hedge_after):
+            backup_on = True
+            waiting += 1
+            threading.Thread(target=run, args=(lambda: free_ai(prompt, convo=convo), "backup"),
+                             daemon=True).start()
+    return None, None, note["t"]
 AI_HEALTH = {"fails": 0, "last_ok": 0.0, "last_way": ""}
 
 
@@ -6702,8 +6747,8 @@ def free_ai(prompt, system=None, convo=None, max_tokens=700, _waited=False):
 
 def rescue_answer(prompt, convo=None, max_tokens=700, system=None, json_mode=False):
     """Last line of defence: every connected AI again, then the free backup AI; waits for signal between rounds."""
-    for rnd in range(3):
-        if rnd and not wait_for_net(12 if rnd == 1 else 20):
+    for rnd in range(2):
+        if rnd and not wait_for_net(10):
             continue
         tries = []
         if os.path.exists(KEY_FILE):
@@ -14532,19 +14577,29 @@ class ChatScreen(BoxLayout):
 
             def turbo():
                 r = groq_stream(text, convo=history, on_text=self._stream_feed) or other_ai("groq", text, convo=history)
+                if r and is_fail_reply(r):
+                    r = None
                 if r:
                     history.append({"role": "user", "parts": [{"text": text}]})
                     history.append({"role": "model", "parts": [{"text": r}]})
                     save_memory()
                     _answer_cache[ck] = r
                 else:
-                    try:
-                        r, err = agent_reply(text, ui_hooks, self.deep) if os.path.exists(KEY_FILE) \
-                            else (None, NET_AI_MSG)
-                    except Exception as e:
-                        log(f"CHAT agent failed: {e}")
-                        r, err = None, NET_AI_MSG
-                    r = r or err or NET_AI_MSG
+                    def main_try():
+                        if not os.path.exists(KEY_FILE):
+                            return None
+                        rr, ee = agent_reply(text, ui_hooks, self.deep)
+                        return rr or ee
+                    hb = len(history)
+                    r, way, note = race_answer(main_try, text, convo=list(history), hedge_after=4.0)
+                    if r and way == "backup":
+                        del history[hb:]
+                        history.append({"role": "user", "parts": [{"text": text}]})
+                        history.append({"role": "model", "parts": [{"text": r}]})
+                        save_memory()
+                    if r and note:
+                        r = r + "\n\n[i]" + note + "[/i]"
+                    r = r or NET_AI_MSG
                 if is_fail_reply(r):
                     Clock.schedule_once(lambda *_: self.show("AI", "[i]Reconnecting to another AI...[/i]"), 0)
                     r2 = rescue_answer(text, convo=history)
@@ -14565,7 +14620,7 @@ class ChatScreen(BoxLayout):
             threading.Thread(target=turbo, daemon=True).start()
             return
         if getattr(self, "busy", False):
-            if time.time() - getattr(self, "_busy_since", 0) > 75:
+            if time.time() - getattr(self, "_busy_since", 0) > 45:
                 self.busy = False          # the last one got lost on a bad network: don't stay stuck
             else:
                 self._queued = text
@@ -14585,10 +14640,16 @@ class ChatScreen(BoxLayout):
         }
 
         def work():
-            try:
-                r = answer()
-            except Exception as e:
-                log(f"CHAT failed: {e}")
+            hist_before = len(history)
+            r, way, note = race_answer(answer, text, convo=list(history))
+            if r and way == "backup":
+                del history[hist_before:]           # the slow main answer may land later: keep history tidy
+                history.append({"role": "user", "parts": [{"text": text}]})
+                history.append({"role": "model", "parts": [{"text": r}]})
+                save_memory()
+            if r and note:
+                r = r + "\n\n[i]" + note + "[/i]"
+            if not r:
                 r = NET_AI_MSG
             if is_fail_reply(r):
                 Clock.schedule_once(lambda *_: self.show("AI", "[i]Reconnecting to another AI...[/i]"), 0)
