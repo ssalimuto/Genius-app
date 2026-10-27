@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "112.6"
+VERSION = "112.7"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -345,7 +345,7 @@ ALLOWED = MappingProxyType({
     "key": "Set up a free AI key step by step (also: setup, getkey, apikey, ekisumuluzo)",
     "setkey": "setkey YOURKEY - lets me answer anything",
     "help": "List commands",
-    "minerals": "Minerals near me: Government mineral records, mines and quarries near your town (minerals Mityana, minerals steps)",
+    "minerals": "Mineral Scan: radar and graph of real mineral sites around you by GPS (minerals, minerals Mityana, minerals report, minerals steps)",
     "metal": "Metal Finder: finds iron, steel and magnets with the phone sensor (metal guide, metal spots). coil uses a coil detector for all metals",
     "change code": "Create or change your hidden secret code for login",
     "fun": "Fun studio: collage, transform (effects), slideshow (video), fun videos",
@@ -526,7 +526,13 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-27"
-CHANGELOG = """Genius 112.6 (2026-10-27)
+CHANGELOG = """Genius 112.7 (2026-10-27)
+- New: Mineral Scan. Say minerals (or tap Minerals near me). Genius finds you by GPS and shows a radar of real mineral sites around you: Government mineral records and mapped mines and quarries, at their true distance and direction.
+- A graph counts what's around you (gold, tin, lithium, stone, clay), with a list like "34 km NW, Kisita: Gold".
+- Range 10 to 300 km, Rescan, and Steps for testing, licensing and selling. minerals report <town> gives the text version.
+- No fake readings: dots are records, never guesses about what's under your feet.
+
+Genius 112.6 (2026-10-27)
 - New: Minerals near me. Say minerals and your town (e.g. minerals Mityana), or tap it in Tools.
 - Shows Uganda Government records of mineral areas nearest you (gold, tin, lithium, kaolin and more) with distances, plus mines and quarries mapped within 30 km.
 - Honest steps to turn a find into money: lab test at DGSM Entebbe, check licences, get a licence, sell to licensed dealers. Plus scam warnings.
@@ -3190,7 +3196,7 @@ out center tags 60;"""
                 what = t.get("resource") or t.get("product") or t.get("mineral") or \
                     ("quarry" if t.get("landuse") == "quarry" else "mine")
                 out.append({"name": t.get("name") or "", "what": what.replace(";", ", "),
-                            "km": _min_km(lat, lon, la, lo)})
+                            "km": _min_km(lat, lon, la, lo), "brg": ms_bearing(lat, lon, la, lo)})
             out.sort(key=lambda x: x["km"])
             return out
         except Exception as e:
@@ -3235,7 +3241,7 @@ def minerals_report(place):
 
 def minerals_handle(screen, line, action, arg, low):
     lw = low.strip(" .!?")
-    trig = ("minerals near me", "mineral map", "minerals around me", "find minerals", "minerals here",
+    trig = ("scan minerals", "mineral scan", "minerals scan", "minerals near me", "mineral map", "minerals around me", "find minerals", "minerals here",
             "minerals in my area", "mineral near me")
     if action in ("minerals", "mineral", "ebyobugagga") or any(t in lw for t in trig) and len(lw.split()) <= 8:
         a = arg.strip()
@@ -3247,20 +3253,395 @@ def minerals_handle(screen, line, action, arg, low):
         if a.lower() in ("steps", "how", "sell", "licence", "license", "test", "scam", "help"):
             screen.show("AI", MIN_STEPS)
             return True
+        report = False
+        if a.lower().startswith(("report", "list", "text")):
+            report = True
+            a = a.split(" ", 1)[1].strip() if " " in a else ""
         d = life_load()
         if a:
             d["my_place"] = a
             life_save(d)
+        if not report:
+            mineral_scan(screen, a or None)
+            return True
         place = a or d.get("my_place")
         if not place:
-            screen.say("Which village or town are you near? Type it like: minerals Mityana. "
-                       "Genius saves it for next time.")
+            screen.say("Which village or town are you near? Type it like: minerals report Mityana.")
             return True
         screen._bg(lambda: minerals_report(place), f"Checking Government mineral records and maps around {place}...",
                    speak=False)
         return True
     return False
 # =================== end Minerals near me ===================
+
+
+# ===================== 112.7 Mineral Scan (radar + graph) =====================
+# Shows REAL records around the person: Uganda Government (DGSM) mineral areas and
+# mines/quarries mapped on OpenStreetMap, placed by true distance and direction from the phone's GPS.
+MS_COLORS = [
+    (("Gold",), (1.00, 0.80, 0.20, 1), "Gold"),
+    (("Lithium", "Beryl", "tantalite", "Rare earth", "niobium"), (0.75, 0.45, 1.00, 1), "Lithium, beryl, rare metals"),
+    (("Tin", "Tungsten", "Copper", "Iron", "Silver", "lead", "zinc", "cobalt", "nickel"), (0.55, 0.80, 1.00, 1),
+     "Tin, tungsten, copper, iron"),
+    (("Granite", "Marble", "quarry", "stone"), (0.90, 0.55, 0.30, 1), "Stone and quarries"),
+    ((), (0.92, 0.92, 0.85, 1), "Clay, sand, salt, other"),
+]
+
+
+def ms_kind(minerals):
+    m = minerals.lower()
+    for keys, col, name in MS_COLORS:
+        if any(k.lower() in m for k in keys):
+            return col, name
+    return MS_COLORS[-1][1], MS_COLORS[-1][2]
+
+
+def ms_bearing(lat1, lon1, lat2, lon2):
+    import math
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lon2 - lon1)
+    x = math.sin(dl) * math.cos(p2)
+    y = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return (math.degrees(math.atan2(x, y)) + 360) % 360
+
+
+def ms_dir(b):
+    return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][int((b + 22.5) // 45) % 8]
+
+
+def ms_points(lat, lon, osm=None):
+    pts = []
+    for p, dist, mins, note, la, lo, ap in MIN_SITES:
+        col, kind = ms_kind(mins)
+        pts.append({"name": p, "where": dist, "what": mins, "note": note, "km": _min_km(lat, lon, la, lo),
+                    "brg": ms_bearing(lat, lon, la, lo), "col": col, "kind": kind, "src": "Gov record",
+                    "approx": bool(ap)})
+    for o in osm or []:
+        col, kind = ms_kind(o["what"] if o["what"] not in ("mine",) else "mine")
+        pts.append({"name": o["name"] or o["what"].title(), "where": "", "what": o["what"], "note": "",
+                    "km": o["km"], "brg": o.get("brg", 0), "col": col, "kind": kind, "src": "Mapped site",
+                    "approx": False})
+    pts.sort(key=lambda x: x["km"])
+    return pts
+
+
+class _MsRadar(Widget):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.pts, self.rng, self.sweep, self.seen, self.full = [], 50.0, 0.0, set(), False
+        self.lbls = [Label(text="", font_size="11sp", color=HINT) for _ in range(5)]
+        for l in self.lbls:
+            self.add_widget(l)
+        self.bind(pos=lambda *_: self.draw(), size=lambda *_: self.draw())
+
+    def reset_scan(self):
+        self.seen, self.full, self.sweep = set(), False, 0.0
+
+    def step(self, dt):
+        old = self.sweep
+        self.sweep = (self.sweep + 120 * dt) % 360
+        if self.sweep < old:
+            self.full = True
+        for i, p in enumerate(self.pts):
+            if p["km"] <= self.rng and (self.full or p["brg"] <= self.sweep):
+                self.seen.add(i)
+        self.draw()
+
+    def draw(self):
+        import math
+        cx, cy = self.center_x, self.center_y
+        r = min(self.width, self.height) / 2 - dp(16)
+        self.canvas.clear()
+        with self.canvas:
+            Color(0.05, 0.12, 0.08, 1)
+            Line(circle=(cx, cy, r), width=dp(1.5))
+            Color(0.20, 0.90, 0.50, 0.08)
+            from kivy.graphics import Ellipse
+            Ellipse(pos=(cx - r, cy - r), size=(2 * r, 2 * r))
+            Color(0.30, 0.95, 0.55, 0.30)
+            for k in (1, 2, 3, 4):
+                Line(circle=(cx, cy, r * k / 4), width=1)
+            Line(points=[cx - r, cy, cx + r, cy], width=1)
+            Line(points=[cx, cy - r, cx, cy + r], width=1)
+            # sweep wedge (decoration: it reveals the records one by one)
+            for j in range(18):
+                a = self.sweep - j * 2.0
+                Color(0.30, 1.0, 0.55, 0.22 * (1 - j / 18))
+                rad = math.radians(a)
+                Line(points=[cx, cy, cx + r * math.sin(rad), cy + r * math.cos(rad)], width=dp(1.4))
+            for i in self.seen:
+                p = self.pts[i]
+                d = r * min(1.0, p["km"] / self.rng)
+                rad = math.radians(p["brg"])
+                x, y = cx + d * math.sin(rad), cy + d * math.cos(rad)
+                sz = dp(9) if p["src"] == "Gov record" else dp(6)
+                Color(p["col"][0], p["col"][1], p["col"][2], 0.25)
+                Ellipse(pos=(x - sz, y - sz), size=(2 * sz, 2 * sz))
+                Color(*p["col"])
+                Ellipse(pos=(x - sz / 2, y - sz / 2), size=(sz, sz))
+            Color(1, 1, 1, 1)
+            Ellipse(pos=(cx - dp(5), cy - dp(5)), size=(dp(10), dp(10)))
+        # labels: N and ring distances
+        self.lbls[0].text = "[b]N[/b]"
+        self.lbls[0].markup = True
+        self.lbls[0].size = (dp(30), dp(16))
+        self.lbls[0].center = (cx, cy + r + dp(9))
+        for k in (1, 2, 3, 4):
+            v = self.rng * k / 4
+            self.lbls[k].text = (f"{v:.0f} km" if v >= 1 else f"{v * 1000:.0f} m")
+            self.lbls[k].size = (dp(50), dp(14))
+            self.lbls[k].center = (cx + dp(22), cy - r * k / 4 + dp(8))
+
+
+class _MsBars(BoxLayout):
+    def __init__(self, **kw):
+        super().__init__(orientation="vertical", spacing=dp(2), **kw)
+
+    def set(self, pts, rng):
+        self.clear_widgets()
+        counts = {}
+        for p in pts:
+            if p["km"] <= rng:
+                counts[p["kind"]] = counts.get(p["kind"], 0) + 1
+        if not counts:
+            self.add_widget(Label(text=f"No recorded mineral sites within {rng:.0f} km. Tap Range to look wider.",
+                                  color=HINT, font_size="13sp"))
+            return
+        top = max(counts.values())
+        for keys, col, name in MS_COLORS:
+            n = counts.get(name)
+            if not n:
+                continue
+            row = BoxLayout(size_hint_y=None, height=dp(20), spacing=dp(6))
+            lab = Label(text=name, color=TEXTCOL, font_size="12sp", size_hint_x=0.48, halign="right", valign="middle")
+            lab.bind(size=lambda w, s: setattr(w, "text_size", s))
+            row.add_widget(lab)
+            bar = Widget(size_hint_x=0.42)
+
+            def paint(w, *_a, c=col, f=n / top):
+                w.canvas.clear()
+                with w.canvas:
+                    Color(*c)
+                    RoundedRectangle(pos=(w.x, w.y + dp(3)), size=(max(dp(4), w.width * f), w.height - dp(6)),
+                                     radius=[dp(4)])
+            bar.bind(pos=paint, size=paint)
+            row.add_widget(bar)
+            row.add_widget(Label(text=str(n), color=TEXTCOL, font_size="12sp", bold=True, size_hint_x=0.10))
+            self.add_widget(row)
+
+
+class _MsGps:
+    """Phone GPS through plyer, asking the location permission first."""
+
+    def __init__(self, cb, err):
+        self.cb, self.err, self.on = cb, err, False
+
+    def start(self):
+        try:
+            from android.permissions import request_permissions, Permission, check_permission
+            perms = [Permission.ACCESS_FINE_LOCATION, Permission.ACCESS_COARSE_LOCATION]
+            if not check_permission(Permission.ACCESS_FINE_LOCATION):
+                request_permissions(perms, lambda p, g: Clock.schedule_once(
+                    lambda *_: self._go() if any(g) else self.err("Location permission was not allowed."), 0))
+                return
+        except Exception:
+            pass
+        self._go()
+
+    def _go(self):
+        try:
+            from plyer import gps
+            gps.configure(on_location=lambda **kw: Clock.schedule_once(lambda *_: self.cb(kw), 0),
+                          on_status=lambda s, t: log(f"MSCAN gps {s} {t}"))
+            gps.start(minTime=2000, minDistance=0)
+            self.on = True
+        except Exception as e:
+            log(f"MSCAN: gps failed {type(e).__name__}: {e}")
+            self.err("GPS isn't available here.")
+
+    def stop(self):
+        if self.on:
+            try:
+                from plyer import gps
+                gps.stop()
+            except Exception:
+                pass
+        self.on = False
+
+
+def _ms_reverse(lat, lon):
+    try:
+        q = urllib.parse.urlencode({"lat": lat, "lon": lon, "format": "json", "zoom": 14})
+        d = _min_get("https://nominatim.openstreetmap.org/reverse?" + q, timeout=12)
+        a = d.get("address", {})
+        return a.get("village") or a.get("suburb") or a.get("town") or a.get("city") or a.get("county") or ""
+    except Exception:
+        return ""
+
+
+def mineral_scan(screen, place=None):
+    """Full-screen scan of real mineral records around the person."""
+    root = BoxLayout(orientation="vertical", spacing=dp(4), padding=[dp(8), dp(4)])
+    pop = Popup(title="Mineral Scan", content=root, size_hint=(1, 1), separator_color=GOLD, title_color=GOLD,
+                title_size="20sp")
+    st = {"open": True, "lat": None, "lon": None, "name": "", "osm": [], "acc": None, "pts": []}
+    ranges = [10.0, 25.0, 50.0, 100.0, 300.0]
+
+    status = Label(text="Finding where you are...", color=HINT, font_size="13sp", markup=True,
+                   size_hint_y=None, height=dp(34), halign="center", valign="middle")
+    status.bind(size=lambda w, s: setattr(w, "text_size", (s[0], None)))
+    root.add_widget(status)
+    radar = _MsRadar(size_hint_y=None, height=dp(290))
+    root.add_widget(radar)
+    head = Label(text="", markup=True, color=GOLD, font_size="15sp", bold=True, size_hint_y=None, height=dp(24))
+    root.add_widget(head)
+    bars = _MsBars(size_hint_y=None, height=dp(104))
+    root.add_widget(bars)
+    sv = ScrollView()
+    lst = Label(text="", markup=True, color=TEXTCOL, font_size="13sp", size_hint_y=None, halign="left",
+                valign="top")
+    lst.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(6), None)),
+             texture_size=lambda w, t: setattr(w, "height", t[1] + dp(6)))
+    sv.add_widget(lst)
+    root.add_widget(sv)
+    note = Label(text="Dots are Government mineral records and mapped mines, not readings from under your feet. "
+                      "Only a lab test proves a mineral.", color=HINT, font_size="11sp",
+                 size_hint_y=None, height=dp(30), halign="center", valign="middle")
+    note.bind(size=lambda w, s: setattr(w, "text_size", (s[0], None)))
+    root.add_widget(note)
+
+    def btn(text, col, fn):
+        b = RoundButton(text=text, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
+                        font_size="14sp", bold=True)
+        b.bind(on_press=lambda *_: fn())
+        return b
+
+    def refresh():
+        if st["lat"] is None:
+            return
+        st["pts"] = ms_points(st["lat"], st["lon"], st["osm"])
+        radar.pts = st["pts"]
+        radar.reset_scan()
+        rng = radar.rng
+        inr = [p for p in st["pts"] if p["km"] <= rng]
+        head.text = f"{len(inr)} sites within {rng:.0f} km"
+        bars.set(st["pts"], rng)
+        rows = []
+        for p in (inr or st["pts"][:5])[:25]:
+            c = "%02x%02x%02x" % tuple(int(v * 255) for v in p["col"][:3])
+            where = f" ({p['where']})" if p["where"] else ""
+            km = ("about " if p["approx"] else "") + (f"{p['km']:.1f}" if p["km"] < 10 else f"{p['km']:.0f}")
+            rows.append(f"[color={c}]●[/color] [b]{km} km {ms_dir(p['brg'])}[/b]  {p['name']}{where}: "
+                        f"{p['what']}  [color=9ea3c7]{p['src']}[/color]")
+        if not inr:
+            rows.insert(0, "[color=9ea3c7]Nothing inside this range. Nearest:[/color]")
+        lst.text = "\n".join(rows)
+
+    def cycle_range():
+        i = ranges.index(radar.rng) if radar.rng in ranges else 2
+        radar.rng = ranges[(i + 1) % len(ranges)]
+        b_rng.text = f"Range {radar.rng:.0f} km"
+        refresh()
+
+    def fetch_osm():
+        lat, lon = st["lat"], st["lon"]
+
+        def work():
+            osm = min_osm_nearby(lat, lon, 30000) or []
+            Clock.schedule_once(lambda *_: done(osm), 0)
+
+        def done(osm):
+            if not st["open"]:
+                return
+            st["osm"] = osm
+            refresh()
+        threading.Thread(target=work, daemon=True).start()
+
+    def set_pos(lat, lon, how):
+        first = st["lat"] is None or _min_km(st["lat"], st["lon"], lat, lon) > 0.5
+        st["lat"], st["lon"] = lat, lon
+        status.text = f"[b]You:[/b] {lat:.5f}, {lon:.5f}  {how}"
+        if first:
+            refresh()
+            fetch_osm()
+
+            def rev():
+                nm = _ms_reverse(lat, lon)
+                if nm and st["open"]:
+                    Clock.schedule_once(lambda *_: setattr(
+                        status, "text", f"[b]You: {nm}[/b]  {lat:.4f}, {lon:.4f}  {how}"), 0)
+            threading.Thread(target=rev, daemon=True).start()
+
+    def on_gps(kw):
+        if not st["open"]:
+            return
+        try:
+            lat, lon = float(kw["lat"]), float(kw["lon"])
+        except Exception:
+            return
+        acc = kw.get("accuracy")
+        how = f"GPS ±{float(acc):.0f} m" if acc else "GPS"
+        st["gps_ok"] = True
+        set_pos(lat, lon, how)
+        d = life_load()
+        d["my_gps"] = [lat, lon]
+        life_save(d)
+
+    def use_place(pl, why=""):
+        def work():
+            g = min_geocode(pl)
+            Clock.schedule_once(lambda *_: (set_pos(g["lat"], g["lon"], f"({g['name']}, from the place you typed)")
+                                            if g else setattr(status, "text",
+                                                              f"Couldn't find {pl}. Close and say: minerals <your town>")), 0)
+        status.text = (why + " " if why else "") + f"Using {pl}..."
+        threading.Thread(target=work, daemon=True).start()
+
+    def gps_fail(msg):
+        d = life_load()
+        if d.get("my_gps"):
+            la, lo = d["my_gps"]
+            set_pos(la, lo, "(last GPS fix)")
+        elif d.get("my_place"):
+            use_place(d["my_place"], msg)
+        else:
+            status.text = msg + " Close and say: minerals <your town>"
+
+    gps = _MsGps(on_gps, gps_fail)
+
+    def gps_timeout(*_):
+        if st["open"] and not st.get("gps_ok") and st["lat"] is None:
+            gps_fail("No GPS fix yet (go outside, under open sky).")
+
+    def show_steps():
+        screen.show("AI", MIN_STEPS)
+
+    def close():
+        pop.dismiss()
+
+    row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+    b_rng = btn("Range 50 km", GOLD, cycle_range)
+    row.add_widget(b_rng)
+    row.add_widget(btn("Rescan", BLUE, lambda: (radar.reset_scan(), gps.start() if not gps.on else None)))
+    row.add_widget(btn("Steps", BLUE, show_steps))
+    row.add_widget(btn("Close", GREY, close))
+    root.add_widget(row)
+
+    tick = Clock.schedule_interval(lambda dt: radar.step(dt) if st["open"] else None, 1 / 30.0)
+
+    def on_close(*_):
+        st["open"] = False
+        tick.cancel()
+        gps.stop()
+    pop.bind(on_dismiss=on_close)
+    pop.open()
+
+    if place:
+        use_place(place)
+    else:
+        gps.start()
+        Clock.schedule_once(gps_timeout, 25)
+    log("MSCAN: opened")
+# =================== end Mineral Scan ===================
 
 
 if __name__ == "__main__":
