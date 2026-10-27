@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "114.0"
+VERSION = "114.1"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -89,6 +89,64 @@ from kivy.graphics import Color, RoundedRectangle, Rectangle
 from kivy.metrics import dp
 
 Window.softinput_mode = ""   # 110.3: screen never slides; the typing box lifts itself above the keyboard
+
+
+# ---------------- 114.1 Smart keyboard: use the phone's full keyboard (Gboard / phone keyboard) ----------------
+# Kivy asks Android for a "raw" keyboard by default, which hides suggestions, autocorrect, auto-capitals,
+# emoji suggestions, glide typing and voice typing. Ask for a normal text keyboard instead, like other apps.
+KB_SIMPLE_FLAG = "keyboard_simple.flag"
+_KB_TEXT = 1 | 16384 | 32768          # TEXT + capital first letter + autocorrect
+_KB_PASSWORD = 1 | 128                # TEXT + password (no suggestions, nothing learned)
+_KB_DECIMAL = 2 | 8192                # NUMBER + decimal point
+_ti_orig_init = TextInput.__init__
+
+
+def _kb_smart():
+    return not os.path.exists(KB_SIMPLE_FLAG)
+
+
+def _kb_android_type(ti):
+    if getattr(ti, "password", False):
+        return _KB_PASSWORD
+    if ti.input_filter == "float":
+        return _KB_DECIMAL
+    if ti.input_type == "text" and not ti.input_filter:
+        return _KB_TEXT
+    return None
+
+
+def _kb_on_focus(ti, focused):
+    if not focused or not _kb_smart():
+        return
+    v = _kb_android_type(ti)
+    if v is None:
+        return
+
+    def _set(*_):
+        try:
+            from jnius import autoclass
+            autoclass("org.kivy.android.PythonActivity").changeKeyboard(v)
+        except Exception:
+            pass
+    Clock.schedule_once(_set, 0)
+
+
+def _ti_smart_init(self, **kw):
+    if _kb_smart() and "input_type" not in kw:
+        if kw.get("password"):
+            kw["input_type"], kw["keyboard_suggestions"] = "text", False
+        elif kw.get("input_filter") in ("int", "float"):
+            kw["input_type"] = "number"
+        else:
+            kw["input_type"] = "text"
+    _ti_orig_init(self, **kw)
+    try:
+        self.bind(focus=_kb_on_focus)
+    except Exception:
+        pass
+
+
+TextInput.__init__ = _ti_smart_init
 
 
 _KB_VIEWS = {}
@@ -527,7 +585,11 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-27"
-CHANGELOG = """Genius 114.0 (2026-10-27)
+CHANGELOG = """Genius 114.1 (2026-10-27)
+- Smart keyboard: Genius now uses your phone's full keyboard, like other apps, with word suggestions, autocorrect, capital letters, emoji, glide typing and voice typing. Number boxes open the number pad. Password boxes never show suggestions.
+- Say keyboard simple to switch back to the old plain keyboard, or keyboard smart to turn it on again.
+
+Genius 114.0 (2026-10-27)
 - New Genius AI, a smarter personal assistant like the AI on new iPhones. Say genius ai.
 - Knows the world: fact questions get fresh Wikipedia facts, with the source named.
 - Learns: say learn about <topic>. Genius studies it, keeps the key facts and uses them, even offline. See them with what i learned.
@@ -16896,6 +16958,21 @@ def ga_handle(screen, line, action, arg, low):
         ga_watch_loop(screen)
     except Exception:
         pass
+    if lw in ("keyboard simple", "simple keyboard", "old keyboard"):
+        open(KB_SIMPLE_FLAG, "w").write("1")
+        screen.show("AI", "Simple keyboard is on: no suggestions or autocorrect. Close and reopen Genius to apply. "
+                          "Say keyboard smart to go back.")
+        return True
+    if lw in ("keyboard smart", "smart keyboard", "keyboard", "normal keyboard", "google keyboard", "gboard"):
+        try:
+            os.remove(KB_SIMPLE_FLAG)
+        except Exception:
+            pass
+        screen.show("AI", "Smart keyboard is on. Genius uses your phone's full keyboard, with suggestions, autocorrect, "
+                          "capital letters, emoji, glide typing and voice typing. If Genius still opened with the simple "
+                          "one, close and reopen it. To use Google's keyboard everywhere, install Gboard from the Play "
+                          "Store, then pick it in Settings > System > Keyboard.")
+        return True
     if lw in ("genius ai", "siri", "siri ai", "apple ai", "iphone ai", "ai like iphone", "genius intelligence"):
         ga_panel(screen)
         return True
