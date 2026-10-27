@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "112.5"
+VERSION = "112.6"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -345,6 +345,7 @@ ALLOWED = MappingProxyType({
     "key": "Set up a free AI key step by step (also: setup, getkey, apikey, ekisumuluzo)",
     "setkey": "setkey YOURKEY - lets me answer anything",
     "help": "List commands",
+    "minerals": "Minerals near me: Government mineral records, mines and quarries near your town (minerals Mityana, minerals steps)",
     "metal": "Metal Finder: finds iron, steel and magnets with the phone sensor (metal guide, metal spots). coil uses a coil detector for all metals",
     "change code": "Create or change your hidden secret code for login",
     "fun": "Fun studio: collage, transform (effects), slideshow (video), fun videos",
@@ -525,7 +526,12 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-27"
-CHANGELOG = """Genius 112.5 (2026-10-27)
+CHANGELOG = """Genius 112.6 (2026-10-27)
+- New: Minerals near me. Say minerals and your town (e.g. minerals Mityana), or tap it in Tools.
+- Shows Uganda Government records of mineral areas nearest you (gold, tin, lithium, kaolin and more) with distances, plus mines and quarries mapped within 30 km.
+- Honest steps to turn a find into money: lab test at DGSM Entebbe, check licences, get a licence, sell to licensed dealers. Plus scam warnings.
+
+Genius 112.5 (2026-10-27)
 - Metal Finder: the graph now keeps moving after the first 10 seconds.
 - Phones that don't send magnetic readings are told plainly, with the coil option.
 
@@ -3081,6 +3087,180 @@ def ask(question):
         headers={{"Content-Type": "application/json", "x-goog-api-key": key}})
     d = json.load(urllib.request.urlopen(req, timeout=60))
     return d["candidates"][0]["content"]["parts"][0]["text"]
+
+
+# ===================== 112.6 Minerals near me =====================
+# Real data only: Uganda Government (DGSM) mineral records + mines and quarries mapped on OpenStreetMap.
+MIN_CACHE = "minerals_cache.json"
+MIN_PORTAL = "https://dgsmportal.minerals.go.ug/"
+MIN_SITES = [["Kamalenge", "Kassanda", "Gold", "5 million ounces (AUC Mining lease)", 0.6749, 31.7604, 0], ["Kisita", "Kassanda", "Gold", "Kisita Mining Company, rock and alluvial gold", 0.5333, 31.7628, 1], ["Ngugo", "Kassanda", "Gold", "alluvial gold (Kisita Mining)", 0.5333, 31.7628, 1], ["Bukuya", "Kassanda", "Gold", "high-potential gold field", 0.6786, 31.8197, 0], ["Kayonza", "Kassanda", "Gold", "high-potential gold field", 0.3565, 31.6493, 0], ["Lugigi", "Kassanda", "Gold", "high-potential gold field", 0.5333, 31.7628, 1], ["Kitumbi", "Kassanda", "Gold", "gold field area", 0.7461, 31.675, 0], ["Mbale Estate", "Mubende", "Beryl, lithium, columbite-tantalite", "pegmatites, needs exploration", 0.5154, 31.4095, 1], ["Nampeyo", "Mubende", "Lithium", "pegmatite, needs exploration", 0.5154, 31.4095, 1], ["Kyasampawo", "Mubende", "Tungsten (wolfram)", "occurrence", 0.5154, 31.4095, 1], ["Kiganda", "Mubende", "Granite", "granite mining lease, cut stone", 0.4563, 31.6702, 0], ["Mubende", "Mubende", "Silver", "silver in the Mubende granite, needs exploration", 0.5154, 31.4095, 1], ["Namasera", "Wakiso", "Kaolin", "kaolin clay", 0.3761, 32.4561, 1], ["Migadde", "Wakiso", "Kaolin", "kaolin clay", 0.5247, 32.5178, 0], ["Buwambo", "Wakiso", "Kaolin", "kaolin clay", 0.5028, 32.548, 0], ["Lunya", "Mukono", "Beryl, lithium, columbite-tantalite, feldspar", "pegmatites", 0.4417, 32.9243, 0], ["Kome Island", "Buvuma", "Silica (glass) sand", "99.95% silica", 0.1953, 33.2914, 1], ["Bukakata", "Masaka", "Silica (glass) sand", "99.93% silica", -0.3054, 32.0387, 0], ["Lwera", "Kalungu", "Silica sand", "sand", -0.0913, 31.8106, 1], ["Kisai", "Rakai", "Kaolin", "1 million tonnes", -0.7264, 31.3401, 1], ["Buyaga", "Rakai", "Tungsten (wolfram)", "occurrence", -0.7264, 31.3401, 1], ["Mashonga", "Bushenyi", "Gold", "1 million ounces (Sino Minerals)", -0.3824, 30.13, 0], ["Tiira", "Busia", "Gold", "500,000 ounces (Greenstone Resources)", 0.5084, 34.0851, 0], ["Alupe", "Busia", "Gold", "30 Mt at 1.2 g/t (Wagagai mine)", 0.4768, 34.1085, 0], ["Kilembe", "Kasese", "Copper, cobalt", "old Kilembe copper mine", 0.2314, 29.9799, 0], ["Muko", "Rubanda", "Iron ore", "152 Mt at 60-65% iron", -1.2052, 29.8137, 0], ["Sukulu", "Tororo", "Phosphate, iron, niobium, rare earths", "carbonatite", 0.6593, 34.1516, 0], ["Makuutu", "Bugweri", "Rare earth elements", "world-class clay-hosted deposit", 0.5066, 33.5906, 0], ["Namekhara", "Manafwa", "Vermiculite", "world-class vermiculite mine", 0.8813, 34.2696, 1], ["Hima", "Kasese", "Limestone", "cement", 0.2922, 30.183, 0], ["Rupa", "Moroto", "Marble, gold", "marble and gold", 2.5922, 34.7631, 0], ["Kikagati", "Isingiro", "Tin", "tin mining", -1.0437, 30.6578, 0], ["Mwerasandu", "Ntungamo", "Tin, lithium", "tin", -1.0057, 30.3869, 0], ["Nyamuliro", "Kabale", "Tungsten (wolfram)", "old tungsten mine", -1.15, 29.8, 0], ["Orom", "Kitgum", "Graphite", "graphite mining lease", 3.4017, 33.4685, 0], ["Katwe", "Kasese", "Salt", "salt lake", -0.1445, 29.8846, 0], ["Kaiso", "Hoima", "Bentonite", "over 1 billion tonnes", 1.5256, 30.9683, 0], ["Kitaka", "Kamwenge", "Copper, lead, zinc, silver", "needs exploration", -0.1191, 30.3129, 0], ["Katenga", "Buhweju", "Gold", "Buhweju gold field", -0.3203, 30.3162, 1], ["Kafunzo", "Ntungamo", "Tin, nickel", "small-scale tin mining", -1.0443, 30.4382, 0]]   # [place, district, minerals, note, lat, lon, approx] from DGSM "Mineral Potential of Uganda 2024"
+
+MIN_STEPS = """[b]Turning a find into money, the honest way[/b]
+1. [b]Look, don't dig yet.[/b] Note the place, take clear photos of the rock or sand, and collect a fist-sized sample from the surface.
+2. [b]Test it for real.[/b] The Government mineral laboratory (DGSM, Plot 21-29 Johnstone Road, Entebbe, tel 0414 320656) tests rocks, soil and gold for what is inside. A lab result is the only proof.
+3. [b]Check who holds the land.[/b] Search the official Mining Cadastre map (dgsmportal.minerals.go.ug) to see if a company already holds a licence there.
+4. [b]Get the right licence.[/b] Minerals belong to the Government. Ugandans can apply through the cadastre portal (an artisanal licence is the small one). Mining without one can lead to arrest and losing everything.
+5. [b]Sell only to licensed dealers.[/b] The portal lists every Mineral Dealer's Licence.
+
+[b]Scam alarm[/b]
+- Anyone selling "gold" cheap, or asking you to pay first for "gold in a box", fake export papers or "black money" cleaning: it's a scam.
+- Real gold doesn't stick to a magnet, isn't light, and is never sold by the roadside at a discount.
+- Genius will never tell you there is gold under your land without a lab result."""
+
+
+def _min_get(url, timeout=25, data=None):
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": "Genius/" + VERSION + " (Android; minerals)"})
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as r:
+        return json.loads(r.read().decode("utf-8", "ignore"))
+
+
+def _min_km(a, b, c, d):
+    import math
+    r = 6371.0
+    p1, p2 = math.radians(a), math.radians(c)
+    dp_, dl = math.radians(c - a), math.radians(d - b)
+    h = math.sin(dp_ / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(h))
+
+
+def _min_cache():
+    try:
+        return json.load(open(MIN_CACHE))
+    except Exception:
+        return {}
+
+
+def min_geocode(place):
+    c = _min_cache()
+    key = place.lower().strip()
+    if key in c:
+        return c[key]
+    q = urllib.parse.urlencode({"q": place + ", Uganda", "format": "json", "limit": 1, "countrycodes": "ug",
+                                "addressdetails": 1})
+    try:
+        res = _min_get("https://nominatim.openstreetmap.org/search?" + q)
+    except Exception as e:
+        log(f"MINERALS: nominatim {type(e).__name__}")
+        res = []
+    if not res:
+        try:
+            ph = _min_get("https://photon.komoot.io/api/?" + urllib.parse.urlencode({"q": place + " Uganda", "limit": 5}))
+            for f in ph.get("features", []):
+                p = f.get("properties", {})
+                if p.get("countrycode") == "UG":
+                    lo, la = f["geometry"]["coordinates"]
+                    g = {"lat": la, "lon": lo, "name": p.get("name") or place,
+                         "district": (p.get("county") or p.get("state") or "").replace(" District", "")}
+                    c[key] = g
+                    json.dump(c, open(MIN_CACHE, "w"))
+                    return g
+        except Exception as e:
+            log(f"MINERALS: photon {type(e).__name__}")
+        return None
+    a = res[0].get("address", {})
+    g = {"lat": float(res[0]["lat"]), "lon": float(res[0]["lon"]),
+         "name": res[0].get("display_name", place).split(",")[0],
+         "district": (a.get("county") or a.get("state_district") or a.get("city") or "").replace(" District", "")}
+    c[key] = g
+    try:
+        json.dump(c, open(MIN_CACHE, "w"))
+    except Exception:
+        pass
+    return g
+
+
+def min_osm_nearby(lat, lon, radius_m=30000):
+    q = f"""[out:json][timeout:25];
+(nwr["landuse"="quarry"](around:{radius_m},{lat},{lon});
+ nwr["man_made"="mineshaft"](around:{radius_m},{lat},{lon});
+ nwr["industrial"="mine"](around:{radius_m},{lat},{lon});
+ nwr["historic"="mine"](around:{radius_m},{lat},{lon});
+ nwr["resource"](around:{radius_m},{lat},{lon}););
+out center tags 60;"""
+    for host in ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"):
+        try:
+            d = _min_get(host, timeout=35, data=urllib.parse.urlencode({"data": q}).encode())
+            out = []
+            for e in d.get("elements", []):
+                t = e.get("tags", {})
+                la = e.get("lat") or e.get("center", {}).get("lat")
+                lo = e.get("lon") or e.get("center", {}).get("lon")
+                if la is None:
+                    continue
+                what = t.get("resource") or t.get("product") or t.get("mineral") or \
+                    ("quarry" if t.get("landuse") == "quarry" else "mine")
+                out.append({"name": t.get("name") or "", "what": what.replace(";", ", "),
+                            "km": _min_km(lat, lon, la, lo)})
+            out.sort(key=lambda x: x["km"])
+            return out
+        except Exception as e:
+            log(f"MINERALS: overpass {host} {type(e).__name__}")
+    return None
+
+
+def minerals_report(place):
+    g = min_geocode(place)
+    if not g:
+        return (f"I couldn't find '{place}' on the map. Try a bigger nearby town or your district, "
+                "e.g. minerals Mityana.")
+    lat, lon = g["lat"], g["lon"]
+    near = sorted(([_min_km(lat, lon, s[4], s[5])] + s for s in MIN_SITES), key=lambda x: x[0])
+    lines = [f"[b]Minerals near {g['name']}[/b]" + (f" ({g['district']})" if g.get("district") else ""),
+             "", "[b]Official mineral areas (Uganda Government records)[/b]"]
+    for km, p, dist, mins, note, la, lo, ap in near[:8]:
+        lines.append(f"- {p}, {dist}: [b]{mins}[/b], {'about ' if ap else ''}{km:.0f} km away. {note}")
+    gold = [x for x in near if "Gold" in x[3]]
+    if gold:
+        k = gold[0]
+        lines.append(f"\nNearest recorded gold area: {k[1]} ({k[2]}), about {k[0]:.0f} km away.")
+    osm = min_osm_nearby(lat, lon)
+    lines.append("\n[b]Mines and quarries mapped within 30 km[/b]")
+    if osm is None:
+        lines.append("The map service didn't answer. Say minerals again in a minute.")
+    elif not osm:
+        lines.append("None mapped yet near you. Most local work here is stone, sand and clay.")
+    else:
+        kinds = {}
+        for o in osm:
+            kinds[o["what"]] = kinds.get(o["what"], 0) + 1
+        lines.append(", ".join(f"{n} {k}" for k, n in sorted(kinds.items(), key=lambda x: -x[1])[:6]))
+        for o in osm[:6]:
+            lines.append(f"- {o['name'] or o['what'].title()}: {o['what']}, {o['km']:.1f} km")
+    lines.append("\n[b]What this means[/b]\nThese are places where minerals are officially recorded or mined. "
+                 "It does NOT prove minerals are under your own land. Only a lab test of a sample can say that.")
+    lines.append("\n" + MIN_STEPS)
+    lines.append(f"\nLicences map: {MIN_PORTAL}\nSay 'minerals <another place>' to check somewhere else.")
+    return "\n".join(lines)
+
+
+def minerals_handle(screen, line, action, arg, low):
+    lw = low.strip(" .!?")
+    trig = ("minerals near me", "mineral map", "minerals around me", "find minerals", "minerals here",
+            "minerals in my area", "mineral near me")
+    if action in ("minerals", "mineral", "ebyobugagga") or any(t in lw for t in trig) and len(lw.split()) <= 8:
+        a = arg.strip()
+        for junk in ("near me", "around me", "here", "in my area", "map"):
+            if a.lower() == junk:
+                a = ""
+        if a.lower().startswith(("near ", "in ", "at ", "around ")):
+            a = a.split(" ", 1)[1].strip()
+        if a.lower() in ("steps", "how", "sell", "licence", "license", "test", "scam", "help"):
+            screen.show("AI", MIN_STEPS)
+            return True
+        d = life_load()
+        if a:
+            d["my_place"] = a
+            life_save(d)
+        place = a or d.get("my_place")
+        if not place:
+            screen.say("Which village or town are you near? Type it like: minerals Mityana. "
+                       "Genius saves it for next time.")
+            return True
+        screen._bg(lambda: minerals_report(place), f"Checking Government mineral records and maps around {place}...",
+                   speak=False)
+        return True
+    return False
+# =================== end Minerals near me ===================
 
 
 if __name__ == "__main__":
@@ -9744,6 +9924,11 @@ def v110_handle(screen, line, action, arg, low):
     """Genius 110 commands. Returns True when handled."""
     lw = low.strip(" .!?")
     try:
+        if minerals_handle(screen, line, action, arg, low):
+            return True
+    except Exception as e:
+        log(f"MINERALS: command failed {type(e).__name__}: {e}")
+    try:
         if metal_handle(screen, line, action, arg, low):
             return True
     except Exception as e:
@@ -10508,7 +10693,8 @@ class ChatScreen(BoxLayout):
         sv = ScrollView()
         lst = BoxLayout(orientation="vertical", spacing=8, size_hint_y=None)
         lst.bind(minimum_height=lst.setter("height"))
-        more = [("Metal Finder", lambda: self.handle("metal"), GOLD),
+        more = [("Minerals near me", lambda: self.handle("minerals"), GOLD),
+                ("Metal Finder", lambda: self.handle("metal"), GOLD),
                 ("Profile", self.profile_drawer, BLUE),
                 ("Set up AI key", self.key_wizard, GOLD),
                 ("Fun studio (collage, effects, video)", self.fun_studio, GOLD),
