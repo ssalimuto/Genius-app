@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "112.9"
+VERSION = "113.0"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -527,7 +527,12 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-10-27"
-CHANGELOG = """Genius 112.9 (2026-10-27)
+CHANGELOG = """Genius 113.0 (2026-10-27)
+- New: Pinpointer. Say pinpointer (or tap it in Tools) to use the pen-size coil detector you build with an ESP32-C3. Big coil detectors work the same way.
+- Better sound: the beep rises in pitch as metal gets closer, and the "wiii" plays at a very strong signal.
+- Target hint from the coil: "Fast target" (small gold, foil, thin metal) or "Slow target" (iron, big coin, silver). It's a hint, not proof.
+
+Genius 112.9 (2026-10-27)
 - Rock Test now names the rock in plain words: "It's likely: Fool's gold (pyrite)" or "It's likely: Tin ore", says how sure it is, and whether it's worth money.
 - New Colour button (gold, silver, white, black, red, green, pink) makes the answer surer, along with the Magnet button.
 
@@ -3103,858 +3108,6 @@ def ask(question):
         headers={{"Content-Type": "application/json", "x-goog-api-key": key}})
     d = json.load(urllib.request.urlopen(req, timeout=60))
     return d["candidates"][0]["content"]["parts"][0]["text"]
-
-
-# ===================== 112.6 Minerals near me =====================
-# Real data only: Uganda Government (DGSM) mineral records + mines and quarries mapped on OpenStreetMap.
-MIN_CACHE = "minerals_cache.json"
-MIN_PORTAL = "https://dgsmportal.minerals.go.ug/"
-MIN_SITES = [["Kamalenge", "Kassanda", "Gold", "5 million ounces (AUC Mining lease)", 0.6749, 31.7604, 0], ["Kisita", "Kassanda", "Gold", "Kisita Mining Company, rock and alluvial gold", 0.5333, 31.7628, 1], ["Ngugo", "Kassanda", "Gold", "alluvial gold (Kisita Mining)", 0.5333, 31.7628, 1], ["Bukuya", "Kassanda", "Gold", "high-potential gold field", 0.6786, 31.8197, 0], ["Kayonza", "Kassanda", "Gold", "high-potential gold field", 0.3565, 31.6493, 0], ["Lugigi", "Kassanda", "Gold", "high-potential gold field", 0.5333, 31.7628, 1], ["Kitumbi", "Kassanda", "Gold", "gold field area", 0.7461, 31.675, 0], ["Mbale Estate", "Mubende", "Beryl, lithium, columbite-tantalite", "pegmatites, needs exploration", 0.5154, 31.4095, 1], ["Nampeyo", "Mubende", "Lithium", "pegmatite, needs exploration", 0.5154, 31.4095, 1], ["Kyasampawo", "Mubende", "Tungsten (wolfram)", "occurrence", 0.5154, 31.4095, 1], ["Kiganda", "Mubende", "Granite", "granite mining lease, cut stone", 0.4563, 31.6702, 0], ["Mubende", "Mubende", "Silver", "silver in the Mubende granite, needs exploration", 0.5154, 31.4095, 1], ["Namasera", "Wakiso", "Kaolin", "kaolin clay", 0.3761, 32.4561, 1], ["Migadde", "Wakiso", "Kaolin", "kaolin clay", 0.5247, 32.5178, 0], ["Buwambo", "Wakiso", "Kaolin", "kaolin clay", 0.5028, 32.548, 0], ["Lunya", "Mukono", "Beryl, lithium, columbite-tantalite, feldspar", "pegmatites", 0.4417, 32.9243, 0], ["Kome Island", "Buvuma", "Silica (glass) sand", "99.95% silica", 0.1953, 33.2914, 1], ["Bukakata", "Masaka", "Silica (glass) sand", "99.93% silica", -0.3054, 32.0387, 0], ["Lwera", "Kalungu", "Silica sand", "sand", -0.0913, 31.8106, 1], ["Kisai", "Rakai", "Kaolin", "1 million tonnes", -0.7264, 31.3401, 1], ["Buyaga", "Rakai", "Tungsten (wolfram)", "occurrence", -0.7264, 31.3401, 1], ["Mashonga", "Bushenyi", "Gold", "1 million ounces (Sino Minerals)", -0.3824, 30.13, 0], ["Tiira", "Busia", "Gold", "500,000 ounces (Greenstone Resources)", 0.5084, 34.0851, 0], ["Alupe", "Busia", "Gold", "30 Mt at 1.2 g/t (Wagagai mine)", 0.4768, 34.1085, 0], ["Kilembe", "Kasese", "Copper, cobalt", "old Kilembe copper mine", 0.2314, 29.9799, 0], ["Muko", "Rubanda", "Iron ore", "152 Mt at 60-65% iron", -1.2052, 29.8137, 0], ["Sukulu", "Tororo", "Phosphate, iron, niobium, rare earths", "carbonatite", 0.6593, 34.1516, 0], ["Makuutu", "Bugweri", "Rare earth elements", "world-class clay-hosted deposit", 0.5066, 33.5906, 0], ["Namekhara", "Manafwa", "Vermiculite", "world-class vermiculite mine", 0.8813, 34.2696, 1], ["Hima", "Kasese", "Limestone", "cement", 0.2922, 30.183, 0], ["Rupa", "Moroto", "Marble, gold", "marble and gold", 2.5922, 34.7631, 0], ["Kikagati", "Isingiro", "Tin", "tin mining", -1.0437, 30.6578, 0], ["Mwerasandu", "Ntungamo", "Tin, lithium", "tin", -1.0057, 30.3869, 0], ["Nyamuliro", "Kabale", "Tungsten (wolfram)", "old tungsten mine", -1.15, 29.8, 0], ["Orom", "Kitgum", "Graphite", "graphite mining lease", 3.4017, 33.4685, 0], ["Katwe", "Kasese", "Salt", "salt lake", -0.1445, 29.8846, 0], ["Kaiso", "Hoima", "Bentonite", "over 1 billion tonnes", 1.5256, 30.9683, 0], ["Kitaka", "Kamwenge", "Copper, lead, zinc, silver", "needs exploration", -0.1191, 30.3129, 0], ["Katenga", "Buhweju", "Gold", "Buhweju gold field", -0.3203, 30.3162, 1], ["Kafunzo", "Ntungamo", "Tin, nickel", "small-scale tin mining", -1.0443, 30.4382, 0]]   # [place, district, minerals, note, lat, lon, approx] from DGSM "Mineral Potential of Uganda 2024"
-
-MIN_STEPS = """[b]Turning a find into money, the honest way[/b]
-1. [b]Look, don't dig yet.[/b] Note the place, take clear photos of the rock or sand, and collect a fist-sized sample from the surface.
-2. [b]Test it for real.[/b] The Government mineral laboratory (DGSM, Plot 21-29 Johnstone Road, Entebbe, tel 0414 320656) tests rocks, soil and gold for what is inside. A lab result is the only proof.
-3. [b]Check who holds the land.[/b] Search the official Mining Cadastre map (dgsmportal.minerals.go.ug) to see if a company already holds a licence there.
-4. [b]Get the right licence.[/b] Minerals belong to the Government. Ugandans can apply through the cadastre portal (an artisanal licence is the small one). Mining without one can lead to arrest and losing everything.
-5. [b]Sell only to licensed dealers.[/b] The portal lists every Mineral Dealer's Licence.
-
-[b]Scam alarm[/b]
-- Anyone selling "gold" cheap, or asking you to pay first for "gold in a box", fake export papers or "black money" cleaning: it's a scam.
-- Real gold doesn't stick to a magnet, isn't light, and is never sold by the roadside at a discount.
-- Genius will never tell you there is gold under your land without a lab result."""
-
-
-def _min_get(url, timeout=25, data=None):
-    req = urllib.request.Request(url, data=data, headers={"User-Agent": "Genius/" + VERSION + " (Android; minerals)"})
-    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as r:
-        return json.loads(r.read().decode("utf-8", "ignore"))
-
-
-def _min_km(a, b, c, d):
-    import math
-    r = 6371.0
-    p1, p2 = math.radians(a), math.radians(c)
-    dp_, dl = math.radians(c - a), math.radians(d - b)
-    h = math.sin(dp_ / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(h))
-
-
-def _min_cache():
-    try:
-        return json.load(open(MIN_CACHE))
-    except Exception:
-        return {}
-
-
-def min_geocode(place):
-    c = _min_cache()
-    key = place.lower().strip()
-    if key in c:
-        return c[key]
-    q = urllib.parse.urlencode({"q": place + ", Uganda", "format": "json", "limit": 1, "countrycodes": "ug",
-                                "addressdetails": 1})
-    try:
-        res = _min_get("https://nominatim.openstreetmap.org/search?" + q)
-    except Exception as e:
-        log(f"MINERALS: nominatim {type(e).__name__}")
-        res = []
-    if not res:
-        try:
-            ph = _min_get("https://photon.komoot.io/api/?" + urllib.parse.urlencode({"q": place + " Uganda", "limit": 5}))
-            for f in ph.get("features", []):
-                p = f.get("properties", {})
-                if p.get("countrycode") == "UG":
-                    lo, la = f["geometry"]["coordinates"]
-                    g = {"lat": la, "lon": lo, "name": p.get("name") or place,
-                         "district": (p.get("county") or p.get("state") or "").replace(" District", "")}
-                    c[key] = g
-                    json.dump(c, open(MIN_CACHE, "w"))
-                    return g
-        except Exception as e:
-            log(f"MINERALS: photon {type(e).__name__}")
-        return None
-    a = res[0].get("address", {})
-    g = {"lat": float(res[0]["lat"]), "lon": float(res[0]["lon"]),
-         "name": res[0].get("display_name", place).split(",")[0],
-         "district": (a.get("county") or a.get("state_district") or a.get("city") or "").replace(" District", "")}
-    c[key] = g
-    try:
-        json.dump(c, open(MIN_CACHE, "w"))
-    except Exception:
-        pass
-    return g
-
-
-def min_osm_nearby(lat, lon, radius_m=30000):
-    q = f"""[out:json][timeout:25];
-(nwr["landuse"="quarry"](around:{radius_m},{lat},{lon});
- nwr["man_made"="mineshaft"](around:{radius_m},{lat},{lon});
- nwr["industrial"="mine"](around:{radius_m},{lat},{lon});
- nwr["historic"="mine"](around:{radius_m},{lat},{lon});
- nwr["resource"](around:{radius_m},{lat},{lon}););
-out center tags 60;"""
-    for host in ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"):
-        try:
-            d = _min_get(host, timeout=35, data=urllib.parse.urlencode({"data": q}).encode())
-            out = []
-            for e in d.get("elements", []):
-                t = e.get("tags", {})
-                la = e.get("lat") or e.get("center", {}).get("lat")
-                lo = e.get("lon") or e.get("center", {}).get("lon")
-                if la is None:
-                    continue
-                what = t.get("resource") or t.get("product") or t.get("mineral") or \
-                    ("quarry" if t.get("landuse") == "quarry" else "mine")
-                out.append({"name": t.get("name") or "", "what": what.replace(";", ", "),
-                            "km": _min_km(lat, lon, la, lo), "brg": ms_bearing(lat, lon, la, lo)})
-            out.sort(key=lambda x: x["km"])
-            return out
-        except Exception as e:
-            log(f"MINERALS: overpass {host} {type(e).__name__}")
-    return None
-
-
-def minerals_report(place):
-    g = min_geocode(place)
-    if not g:
-        return (f"I couldn't find '{place}' on the map. Try a bigger nearby town or your district, "
-                "e.g. minerals Mityana.")
-    lat, lon = g["lat"], g["lon"]
-    near = sorted(([_min_km(lat, lon, s[4], s[5])] + s for s in MIN_SITES), key=lambda x: x[0])
-    lines = [f"[b]Minerals near {g['name']}[/b]" + (f" ({g['district']})" if g.get("district") else ""),
-             "", "[b]Official mineral areas (Uganda Government records)[/b]"]
-    for km, p, dist, mins, note, la, lo, ap in near[:8]:
-        lines.append(f"- {p}, {dist}: [b]{mins}[/b], {'about ' if ap else ''}{km:.0f} km away. {note}")
-    gold = [x for x in near if "Gold" in x[3]]
-    if gold:
-        k = gold[0]
-        lines.append(f"\nNearest recorded gold area: {k[1]} ({k[2]}), about {k[0]:.0f} km away.")
-    osm = min_osm_nearby(lat, lon)
-    lines.append("\n[b]Mines and quarries mapped within 30 km[/b]")
-    if osm is None:
-        lines.append("The map service didn't answer. Say minerals again in a minute.")
-    elif not osm:
-        lines.append("None mapped yet near you. Most local work here is stone, sand and clay.")
-    else:
-        kinds = {}
-        for o in osm:
-            kinds[o["what"]] = kinds.get(o["what"], 0) + 1
-        lines.append(", ".join(f"{n} {k}" for k, n in sorted(kinds.items(), key=lambda x: -x[1])[:6]))
-        for o in osm[:6]:
-            lines.append(f"- {o['name'] or o['what'].title()}: {o['what']}, {o['km']:.1f} km")
-    lines.append("\n[b]What this means[/b]\nThese are places where minerals are officially recorded or mined. "
-                 "It does NOT prove minerals are under your own land. Only a lab test of a sample can say that.")
-    lines.append("\n" + MIN_STEPS)
-    lines.append(f"\nLicences map: {MIN_PORTAL}\nSay 'minerals <another place>' to check somewhere else.")
-    return "\n".join(lines)
-
-
-def minerals_handle(screen, line, action, arg, low):
-    lw = low.strip(" .!?")
-    trig = ("scan minerals", "mineral scan", "minerals scan", "minerals near me", "mineral map", "minerals around me", "find minerals", "minerals here",
-            "minerals in my area", "mineral near me")
-    if action in ("minerals", "mineral", "ebyobugagga") or any(t in lw for t in trig) and len(lw.split()) <= 8:
-        a = arg.strip()
-        for junk in ("near me", "around me", "here", "in my area", "map"):
-            if a.lower() == junk:
-                a = ""
-        if a.lower().startswith(("near ", "in ", "at ", "around ")):
-            a = a.split(" ", 1)[1].strip()
-        if a.lower() in ("steps", "how", "sell", "licence", "license", "test", "scam", "help"):
-            screen.show("AI", MIN_STEPS)
-            return True
-        report = False
-        if a.lower().startswith(("report", "list", "text")):
-            report = True
-            a = a.split(" ", 1)[1].strip() if " " in a else ""
-        d = life_load()
-        if a:
-            d["my_place"] = a
-            life_save(d)
-        if not report:
-            mineral_scan(screen, a or None)
-            return True
-        place = a or d.get("my_place")
-        if not place:
-            screen.say("Which village or town are you near? Type it like: minerals report Mityana.")
-            return True
-        screen._bg(lambda: minerals_report(place), f"Checking Government mineral records and maps around {place}...",
-                   speak=False)
-        return True
-    return False
-# =================== end Minerals near me ===================
-
-
-# ===================== 112.7 Mineral Scan (radar + graph) =====================
-# Shows REAL records around the person: Uganda Government (DGSM) mineral areas and
-# mines/quarries mapped on OpenStreetMap, placed by true distance and direction from the phone's GPS.
-MS_COLORS = [
-    (("Gold",), (1.00, 0.80, 0.20, 1), "Gold"),
-    (("Lithium", "Beryl", "tantalite", "Rare earth", "niobium"), (0.75, 0.45, 1.00, 1), "Lithium, beryl, rare metals"),
-    (("Tin", "Tungsten", "Copper", "Iron", "Silver", "lead", "zinc", "cobalt", "nickel"), (0.55, 0.80, 1.00, 1),
-     "Tin, tungsten, copper, iron"),
-    (("Granite", "Marble", "quarry", "stone"), (0.90, 0.55, 0.30, 1), "Stone and quarries"),
-    ((), (0.92, 0.92, 0.85, 1), "Clay, sand, salt, other"),
-]
-
-
-def ms_kind(minerals):
-    m = minerals.lower()
-    for keys, col, name in MS_COLORS:
-        if any(k.lower() in m for k in keys):
-            return col, name
-    return MS_COLORS[-1][1], MS_COLORS[-1][2]
-
-
-def ms_bearing(lat1, lon1, lat2, lon2):
-    import math
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dl = math.radians(lon2 - lon1)
-    x = math.sin(dl) * math.cos(p2)
-    y = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
-    return (math.degrees(math.atan2(x, y)) + 360) % 360
-
-
-def ms_dir(b):
-    return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][int((b + 22.5) // 45) % 8]
-
-
-def ms_points(lat, lon, osm=None):
-    pts = []
-    for p, dist, mins, note, la, lo, ap in MIN_SITES:
-        col, kind = ms_kind(mins)
-        pts.append({"name": p, "where": dist, "what": mins, "note": note, "km": _min_km(lat, lon, la, lo),
-                    "brg": ms_bearing(lat, lon, la, lo), "col": col, "kind": kind, "src": "Gov record",
-                    "approx": bool(ap)})
-    for o in osm or []:
-        col, kind = ms_kind(o["what"] if o["what"] not in ("mine",) else "mine")
-        pts.append({"name": o["name"] or o["what"].title(), "where": "", "what": o["what"], "note": "",
-                    "km": o["km"], "brg": o.get("brg", 0), "col": col, "kind": kind, "src": "Mapped site",
-                    "approx": False})
-    pts.sort(key=lambda x: x["km"])
-    return pts
-
-
-class _MsRadar(Widget):
-    def __init__(self, **kw):
-        super().__init__(**kw)
-        self.pts, self.rng, self.sweep, self.seen, self.full = [], 50.0, 0.0, set(), False
-        self.lbls = [Label(text="", font_size="11sp", color=HINT) for _ in range(5)]
-        for l in self.lbls:
-            self.add_widget(l)
-        self.bind(pos=lambda *_: self.draw(), size=lambda *_: self.draw())
-
-    def reset_scan(self):
-        self.seen, self.full, self.sweep = set(), False, 0.0
-
-    def step(self, dt):
-        old = self.sweep
-        self.sweep = (self.sweep + 120 * dt) % 360
-        if self.sweep < old:
-            self.full = True
-        for i, p in enumerate(self.pts):
-            if p["km"] <= self.rng and (self.full or p["brg"] <= self.sweep):
-                if i not in self.seen and not self.full and getattr(self, "sound", True) and \
-                        p["kind"] in ("Gold", "Lithium, beryl, rare metals") and time.time() - getattr(self, "_wt", 0) > 1.3:
-                    self._wt = time.time()
-                    try:
-                        rt_wiii()
-                    except Exception:
-                        pass
-                self.seen.add(i)
-        self.draw()
-
-    def draw(self):
-        import math
-        cx, cy = self.center_x, self.center_y
-        r = min(self.width, self.height) / 2 - dp(16)
-        self.canvas.clear()
-        with self.canvas:
-            Color(0.05, 0.12, 0.08, 1)
-            Line(circle=(cx, cy, r), width=dp(1.5))
-            Color(0.20, 0.90, 0.50, 0.08)
-            from kivy.graphics import Ellipse
-            Ellipse(pos=(cx - r, cy - r), size=(2 * r, 2 * r))
-            Color(0.30, 0.95, 0.55, 0.30)
-            for k in (1, 2, 3, 4):
-                Line(circle=(cx, cy, r * k / 4), width=1)
-            Line(points=[cx - r, cy, cx + r, cy], width=1)
-            Line(points=[cx, cy - r, cx, cy + r], width=1)
-            # sweep wedge (decoration: it reveals the records one by one)
-            for j in range(18):
-                a = self.sweep - j * 2.0
-                Color(0.30, 1.0, 0.55, 0.22 * (1 - j / 18))
-                rad = math.radians(a)
-                Line(points=[cx, cy, cx + r * math.sin(rad), cy + r * math.cos(rad)], width=dp(1.4))
-            for i in self.seen:
-                p = self.pts[i]
-                d = r * min(1.0, p["km"] / self.rng)
-                rad = math.radians(p["brg"])
-                x, y = cx + d * math.sin(rad), cy + d * math.cos(rad)
-                sz = dp(9) if p["src"] == "Gov record" else dp(6)
-                Color(p["col"][0], p["col"][1], p["col"][2], 0.25)
-                Ellipse(pos=(x - sz, y - sz), size=(2 * sz, 2 * sz))
-                Color(*p["col"])
-                Ellipse(pos=(x - sz / 2, y - sz / 2), size=(sz, sz))
-            Color(1, 1, 1, 1)
-            Ellipse(pos=(cx - dp(5), cy - dp(5)), size=(dp(10), dp(10)))
-        # labels: N and ring distances
-        self.lbls[0].text = "[b]N[/b]"
-        self.lbls[0].markup = True
-        self.lbls[0].size = (dp(30), dp(16))
-        self.lbls[0].center = (cx, cy + r + dp(9))
-        for k in (1, 2, 3, 4):
-            v = self.rng * k / 4
-            self.lbls[k].text = (f"{v:.0f} km" if v >= 1 else f"{v * 1000:.0f} m")
-            self.lbls[k].size = (dp(50), dp(14))
-            self.lbls[k].center = (cx + dp(22), cy - r * k / 4 + dp(8))
-
-
-class _MsBars(BoxLayout):
-    def __init__(self, **kw):
-        super().__init__(orientation="vertical", spacing=dp(2), **kw)
-
-    def set(self, pts, rng):
-        self.clear_widgets()
-        counts = {}
-        for p in pts:
-            if p["km"] <= rng:
-                counts[p["kind"]] = counts.get(p["kind"], 0) + 1
-        if not counts:
-            self.add_widget(Label(text=f"No recorded mineral sites within {rng:.0f} km. Tap Range to look wider.",
-                                  color=HINT, font_size="13sp"))
-            return
-        top = max(counts.values())
-        for keys, col, name in MS_COLORS:
-            n = counts.get(name)
-            if not n:
-                continue
-            row = BoxLayout(size_hint_y=None, height=dp(20), spacing=dp(6))
-            lab = Label(text=name, color=TEXTCOL, font_size="12sp", size_hint_x=0.48, halign="right", valign="middle")
-            lab.bind(size=lambda w, s: setattr(w, "text_size", s))
-            row.add_widget(lab)
-            bar = Widget(size_hint_x=0.42)
-
-            def paint(w, *_a, c=col, f=n / top):
-                w.canvas.clear()
-                with w.canvas:
-                    Color(*c)
-                    RoundedRectangle(pos=(w.x, w.y + dp(3)), size=(max(dp(4), w.width * f), w.height - dp(6)),
-                                     radius=[dp(4)])
-            bar.bind(pos=paint, size=paint)
-            row.add_widget(bar)
-            row.add_widget(Label(text=str(n), color=TEXTCOL, font_size="12sp", bold=True, size_hint_x=0.10))
-            self.add_widget(row)
-
-
-class _MsGps:
-    """Phone GPS through plyer, asking the location permission first."""
-
-    def __init__(self, cb, err):
-        self.cb, self.err, self.on = cb, err, False
-
-    def start(self):
-        try:
-            from android.permissions import request_permissions, Permission, check_permission
-            perms = [Permission.ACCESS_FINE_LOCATION, Permission.ACCESS_COARSE_LOCATION]
-            if not check_permission(Permission.ACCESS_FINE_LOCATION):
-                request_permissions(perms, lambda p, g: Clock.schedule_once(
-                    lambda *_: self._go() if any(g) else self.err("Location permission was not allowed."), 0))
-                return
-        except Exception:
-            pass
-        self._go()
-
-    def _go(self):
-        try:
-            from plyer import gps
-            gps.configure(on_location=lambda **kw: Clock.schedule_once(lambda *_: self.cb(kw), 0),
-                          on_status=lambda s, t: log(f"MSCAN gps {s} {t}"))
-            gps.start(minTime=2000, minDistance=0)
-            self.on = True
-        except Exception as e:
-            log(f"MSCAN: gps failed {type(e).__name__}: {e}")
-            self.err("GPS isn't available here.")
-
-    def stop(self):
-        if self.on:
-            try:
-                from plyer import gps
-                gps.stop()
-            except Exception:
-                pass
-        self.on = False
-
-
-def _ms_reverse(lat, lon):
-    try:
-        q = urllib.parse.urlencode({"lat": lat, "lon": lon, "format": "json", "zoom": 14})
-        d = _min_get("https://nominatim.openstreetmap.org/reverse?" + q, timeout=12)
-        a = d.get("address", {})
-        return a.get("village") or a.get("suburb") or a.get("town") or a.get("city") or a.get("county") or ""
-    except Exception:
-        return ""
-
-
-def mineral_scan(screen, place=None):
-    """Full-screen scan of real mineral records around the person."""
-    root = BoxLayout(orientation="vertical", spacing=dp(4), padding=[dp(8), dp(4)])
-    pop = Popup(title="Mineral Scan", content=root, size_hint=(1, 1), separator_color=GOLD, title_color=GOLD,
-                title_size="20sp")
-    st = {"open": True, "lat": None, "lon": None, "name": "", "osm": [], "acc": None, "pts": []}
-    ranges = [10.0, 25.0, 50.0, 100.0, 300.0]
-
-    status = Label(text="Finding where you are...", color=HINT, font_size="13sp", markup=True,
-                   size_hint_y=None, height=dp(34), halign="center", valign="middle")
-    status.bind(size=lambda w, s: setattr(w, "text_size", (s[0], None)))
-    root.add_widget(status)
-    radar = _MsRadar(size_hint_y=None, height=dp(290))
-    root.add_widget(radar)
-    head = Label(text="", markup=True, color=GOLD, font_size="15sp", bold=True, size_hint_y=None, height=dp(24))
-    root.add_widget(head)
-    bars = _MsBars(size_hint_y=None, height=dp(104))
-    root.add_widget(bars)
-    sv = ScrollView()
-    lst = Label(text="", markup=True, color=TEXTCOL, font_size="13sp", size_hint_y=None, halign="left",
-                valign="top")
-    lst.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(6), None)),
-             texture_size=lambda w, t: setattr(w, "height", t[1] + dp(6)))
-    sv.add_widget(lst)
-    root.add_widget(sv)
-    note = Label(text="Dots are Government mineral records and mapped mines, not readings from under your feet. "
-                      "Only a lab test proves a mineral.", color=HINT, font_size="11sp",
-                 size_hint_y=None, height=dp(30), halign="center", valign="middle")
-    note.bind(size=lambda w, s: setattr(w, "text_size", (s[0], None)))
-    root.add_widget(note)
-
-    def btn(text, col, fn):
-        b = RoundButton(text=text, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
-                        font_size="14sp", bold=True)
-        b.bind(on_press=lambda *_: fn())
-        return b
-
-    def refresh():
-        if st["lat"] is None:
-            return
-        st["pts"] = ms_points(st["lat"], st["lon"], st["osm"])
-        radar.pts = st["pts"]
-        radar.reset_scan()
-        rng = radar.rng
-        inr = [p for p in st["pts"] if p["km"] <= rng]
-        head.text = f"{len(inr)} sites within {rng:.0f} km"
-        bars.set(st["pts"], rng)
-        rows = []
-        for p in (inr or st["pts"][:5])[:25]:
-            c = "%02x%02x%02x" % tuple(int(v * 255) for v in p["col"][:3])
-            where = f" ({p['where']})" if p["where"] else ""
-            km = ("about " if p["approx"] else "") + (f"{p['km']:.1f}" if p["km"] < 10 else f"{p['km']:.0f}")
-            rows.append(f"[color={c}]●[/color] [b]{km} km {ms_dir(p['brg'])}[/b]  {p['name']}{where}: "
-                        f"{p['what']}  [color=9ea3c7]{p['src']}[/color]")
-        if not inr:
-            rows.insert(0, "[color=9ea3c7]Nothing inside this range. Nearest:[/color]")
-        lst.text = "\n".join(rows)
-
-    def cycle_range():
-        i = ranges.index(radar.rng) if radar.rng in ranges else 2
-        radar.rng = ranges[(i + 1) % len(ranges)]
-        b_rng.text = f"Range {radar.rng:.0f} km"
-        refresh()
-
-    def fetch_osm():
-        lat, lon = st["lat"], st["lon"]
-
-        def work():
-            osm = min_osm_nearby(lat, lon, 30000) or []
-            Clock.schedule_once(lambda *_: done(osm), 0)
-
-        def done(osm):
-            if not st["open"]:
-                return
-            st["osm"] = osm
-            refresh()
-        threading.Thread(target=work, daemon=True).start()
-
-    def set_pos(lat, lon, how):
-        first = st["lat"] is None or _min_km(st["lat"], st["lon"], lat, lon) > 0.5
-        st["lat"], st["lon"] = lat, lon
-        status.text = f"[b]You:[/b] {lat:.5f}, {lon:.5f}  {how}"
-        if first:
-            refresh()
-            fetch_osm()
-
-            def rev():
-                nm = _ms_reverse(lat, lon)
-                if nm and st["open"]:
-                    Clock.schedule_once(lambda *_: setattr(
-                        status, "text", f"[b]You: {nm}[/b]  {lat:.4f}, {lon:.4f}  {how}"), 0)
-            threading.Thread(target=rev, daemon=True).start()
-
-    def on_gps(kw):
-        if not st["open"]:
-            return
-        try:
-            lat, lon = float(kw["lat"]), float(kw["lon"])
-        except Exception:
-            return
-        acc = kw.get("accuracy")
-        how = f"GPS ±{float(acc):.0f} m" if acc else "GPS"
-        st["gps_ok"] = True
-        set_pos(lat, lon, how)
-        d = life_load()
-        d["my_gps"] = [lat, lon]
-        life_save(d)
-
-    def use_place(pl, why=""):
-        def work():
-            g = min_geocode(pl)
-            Clock.schedule_once(lambda *_: (set_pos(g["lat"], g["lon"], f"({g['name']}, from the place you typed)")
-                                            if g else setattr(status, "text",
-                                                              f"Couldn't find {pl}. Close and say: minerals <your town>")), 0)
-        status.text = (why + " " if why else "") + f"Using {pl}..."
-        threading.Thread(target=work, daemon=True).start()
-
-    def gps_fail(msg):
-        d = life_load()
-        if d.get("my_gps"):
-            la, lo = d["my_gps"]
-            set_pos(la, lo, "(last GPS fix)")
-        elif d.get("my_place"):
-            use_place(d["my_place"], msg)
-        else:
-            status.text = msg + " Close and say: minerals <your town>"
-
-    gps = _MsGps(on_gps, gps_fail)
-
-    def gps_timeout(*_):
-        if st["open"] and not st.get("gps_ok") and st["lat"] is None:
-            gps_fail("No GPS fix yet (go outside, under open sky).")
-
-    def show_steps():
-        screen.show("AI", MIN_STEPS)
-
-    def close():
-        pop.dismiss()
-
-    row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
-    b_rng = btn("Range 50 km", GOLD, cycle_range)
-    row.add_widget(b_rng)
-    row.add_widget(btn("Rescan", BLUE, lambda: (radar.reset_scan(), gps.start() if not gps.on else None)))
-    row.add_widget(btn("Steps", BLUE, show_steps))
-
-    def toggle_snd():
-        radar.sound = not getattr(radar, "sound", True)
-        b_snd.text = "Sound" if radar.sound else "Muted"
-    b_snd = btn("Sound", BLUE, toggle_snd)
-    row.add_widget(b_snd)
-    row.add_widget(btn("Close", GREY, close))
-    root.add_widget(row)
-
-    tick = Clock.schedule_interval(lambda dt: radar.step(dt) if st["open"] else None, 1 / 30.0)
-
-    def on_close(*_):
-        st["open"] = False
-        tick.cancel()
-        gps.stop()
-    pop.bind(on_dismiss=on_close)
-    pop.open()
-
-    if place:
-        use_place(place)
-    else:
-        gps.start()
-        Clock.schedule_once(gps_timeout, 25)
-    log("MSCAN: opened")
-# =================== end Mineral Scan ===================
-
-
-# ===================== 112.8 Rock Test (density) + "wiii" sound =====================
-# Real identification help: specific gravity (density) from two kitchen-scale readings.
-RT_FILE = "rock_tests.json"
-RT_WIII = "wiii.wav"
-# name, low SG, high SG, valuable?, note
-RT_MINERALS = [
-    ("Quartz", 2.60, 2.70, False, "common white or clear rock, not valuable on its own"),
-    ("Feldspar", 2.55, 2.76, False, "pink or white, common in granite"),
-    ("Mica", 2.75, 3.10, False, "shiny flakes, often mistaken for gold, light and soft"),
-    ("Beryl", 2.63, 2.92, True, "beryllium ore, gem forms (aquamarine, emerald)"),
-    ("Spodumene (lithium)", 3.10, 3.20, True, "lithium ore"),
-    ("Tourmaline", 3.00, 3.25, False, "black or coloured crystals"),
-    ("Garnet", 3.50, 4.30, False, "red crystals"),
-    ("Chalcopyrite (copper ore)", 4.10, 4.30, True, "brassy yellow, copper ore, often called fool's gold"),
-    ("Pyrite (fool's gold)", 4.95, 5.10, False, "brassy cubes, the most common fake gold"),
-    ("Magnetite (iron ore)", 5.10, 5.20, False, "black, a magnet sticks strongly"),
-    ("Hematite (iron ore)", 5.00, 5.30, False, "red-brown streak"),
-    ("Columbite-tantalite (coltan)", 5.20, 8.00, True, "black, heavy, valuable"),
-    ("Cassiterite (tin ore)", 6.80, 7.10, True, "brown-black, very heavy for its size"),
-    ("Wolframite (tungsten ore)", 7.10, 7.50, True, "dark, very heavy"),
-    ("Galena (lead ore)", 7.40, 7.60, True, "silver-grey cubes, may carry silver"),
-    ("Brass (fake gold)", 8.40, 8.73, False, "yellow metal used to fake gold bars"),
-    ("Copper", 8.90, 8.96, True, "native copper"),
-    ("Silver", 10.10, 10.50, True, "native silver"),
-    ("Lead", 11.30, 11.35, False, "soft grey metal"),
-    ("Gold (natural)", 15.00, 19.32, True, "natural gold is 15 to 19.3 because it carries some silver"),
-    ("Platinum", 14.00, 21.45, True, "very rare"),
-]
-
-RT_COLOUR = {'Quartz': 'white', 'Feldspar': 'white pink', 'Mica': 'gold silver black', 'Beryl': 'green white', 'Spodumene (lithium)': 'white green pink', 'Tourmaline': 'black green pink', 'Garnet': 'red', 'Chalcopyrite (copper ore)': 'gold', "Pyrite (fool's gold)": 'gold', 'Magnetite (iron ore)': 'black', 'Hematite (iron ore)': 'red black silver', 'Columbite-tantalite (coltan)': 'black', 'Cassiterite (tin ore)': 'black red', 'Wolframite (tungsten ore)': 'black', 'Galena (lead ore)': 'silver', 'Brass (fake gold)': 'gold', 'Copper': 'red', 'Silver': 'silver', 'Lead': 'silver', 'Gold (natural)': 'gold', 'Platinum': 'silver'}
-RT_SIMPLE = {'Quartz': 'Quartz, a common rock', 'Feldspar': 'Feldspar, a common rock', 'Mica': 'Mica, shiny flakes (not gold)', 'Beryl': 'Beryl, a gem mineral', 'Spodumene (lithium)': 'Lithium ore', 'Tourmaline': 'Tourmaline crystal', 'Garnet': 'Garnet crystal', 'Chalcopyrite (copper ore)': 'Copper ore', "Pyrite (fool's gold)": "Fool's gold (pyrite)", 'Magnetite (iron ore)': 'Iron ore', 'Hematite (iron ore)': 'Iron ore', 'Columbite-tantalite (coltan)': 'Coltan', 'Cassiterite (tin ore)': 'Tin ore', 'Wolframite (tungsten ore)': 'Tungsten ore', 'Galena (lead ore)': 'Lead ore', 'Brass (fake gold)': 'Brass, fake gold', 'Copper': 'Copper metal', 'Silver': 'Silver', 'Lead': 'Lead metal', 'Gold (natural)': 'GOLD', 'Platinum': 'Platinum'}
-RT_COMMON = {'Quartz': 10, 'Feldspar': 9, 'Mica': 7, "Pyrite (fool's gold)": 7, 'Hematite (iron ore)': 6, 'Magnetite (iron ore)': 5, 'Garnet': 5, 'Tourmaline': 5, 'Brass (fake gold)': 5, 'Lead': 3}
-RT_HOW = """[b]How to test a rock with a kitchen scale[/b]
-1. Clean and dry the sample. Bigger is more accurate (try 20 g or more).
-2. [b]A: weigh it dry[/b] in grams.
-3. Put a cup of water on the scale and press Tare (zero).
-4. Hang the rock on a thread so it is fully under water but touches nothing. [b]B: read the scale.[/b]
-5. Type A and B. Genius works out the density (A divided by B).
-
-Tips: a scale that shows 0.1 g is much better than 1 g. Test twice.
-[b]Warning:[/b] fake gold bars are filled with tungsten, which has nearly the same density as gold. Density narrows it down; only a lab assay (DGSM Entebbe) proves it."""
-
-
-def rt_wiii_path():
-    """Make the rising 'wiiii' sound once (pure tone sweep)."""
-    if os.path.exists(RT_WIII):
-        return RT_WIII
-    import wave, struct, math
-    rate, secs = 22050, 1.1
-    n = int(rate * secs)
-    ph, frames = 0.0, bytearray()
-    for i in range(n):
-        t = i / n
-        f = 500 + 1900 * (t ** 1.4) + 60 * math.sin(2 * math.pi * 7 * t * secs)   # rising "wiii" with wobble
-        ph += 2 * math.pi * f / rate
-        env = min(1.0, i / 800) * min(1.0, (n - i) / 2500)
-        frames += struct.pack("<h", int(14000 * env * (math.sin(ph) + 0.25 * math.sin(2 * ph))))
-    w = wave.open(RT_WIII, "wb")
-    w.setnchannels(1)
-    w.setsampwidth(2)
-    w.setframerate(rate)
-    w.writeframes(bytes(frames))
-    w.close()
-    return RT_WIII
-
-
-_rt_snd = {"s": None}
-
-
-def rt_wiii():
-    try:
-        from kivy.core.audio import SoundLoader
-        if _rt_snd["s"] is None:
-            _rt_snd["s"] = SoundLoader.load(rt_wiii_path())
-        s = _rt_snd["s"]
-        if s:
-            s.stop()
-            s.play()
-            return True
-    except Exception as e:
-        log(f"ROCK: wiii failed {e}")
-    return False
-
-
-def rt_compute(a, b, res=0.1, magnet=None, colour=None):
-    """a = dry grams, b = displaced water grams. Returns dict with SG, range and matches."""
-    import math
-    if a <= 0 or b <= 0:
-        raise ValueError("Both readings must be above 0.")
-    if b >= a:
-        raise ValueError("B must be smaller than A. Check the rock hangs freely in the water.")
-    sg = a / b
-    err = sg * math.sqrt((res / a) ** 2 + (res / b) ** 2) + 0.03 * sg
-    lo, hi = sg - err, sg + err
-    m = [x for x in RT_MINERALS if x[1] <= hi and x[2] >= lo]
-    if magnet is True:
-        m = [x for x in m if "Magnetite" in x[0]] or [x for x in m if "Hematite" in x[0]] or m
-    elif magnet is False:
-        m = [x for x in m if "Magnetite" not in x[0]]
-    if colour:
-        m = [x for x in m if colour in RT_COLOUR.get(x[0], "")] or m
-    if not m:
-        m = sorted(RT_MINERALS, key=lambda x: min(abs(x[1] - sg), abs(x[2] - sg)))[:2]
-
-    def score(x):
-        mid = (x[1] + x[2]) / 2
-        inside = 0 if x[1] <= sg <= x[2] else 1
-        return (inside, abs(sg - mid) / max(0.2, (x[2] - x[1])) - RT_COMMON.get(x[0], 0) * 0.08)
-    m = sorted(m, key=score)
-    best = m[0]
-    sure = "very likely" if len(m) == 1 else ("likely" if score(m[0])[0] == 0 and (len(m) < 3 or colour) else "maybe")
-    if best[0].startswith(("Gold", "Platinum")):
-        sure = "possibly"          # tungsten-filled fakes have the same density
-    return {"best": best, "sure": sure, "colour": colour, "sg": sg, "lo": lo, "hi": hi, "matches": m, "valuable": all(x[3] for x in m) or any(x[0].startswith(("Gold", "Platinum", "Silver")) for x in m),
-            "gold": any(x[0].startswith(("Gold", "Platinum")) for x in m)}
-
-
-def rt_text(r):
-    b = r["best"]
-    nm = RT_SIMPLE.get(b[0], b[0])
-    col = "ffcc33" if b[3] else "e8e8e8"
-    lines = [f"[size=24sp][b][color={col}]" + {"very likely": "It's very likely", "likely": "It's likely",
-                                                       "maybe": "It might be", "possibly": "It's possibly"}[r["sure"]] +
-             f": {nm}[/color][/b][/size]",
-             f"{b[4][0].upper() + b[4][1:]}.",
-             "[color=ffcc33]Worth money if there is a lot of it. Get it tested.[/color]" if b[3]
-             else "[color=9ea3c7]Not worth selling on its own.[/color]",
-             "", f"Density {r['sg']:.2f} (between {r['lo']:.2f} and {r['hi']:.2f})"]
-    if r["sure"] != "very likely":
-        lines.append("Tip: set the Colour and Magnet buttons to make the answer surer.")
-    lines += ["", "Other possibilities:" if len(r["matches"]) > 1 else ""]
-    r = dict(r, matches=r["matches"][1:])
-    for name, lo, hi, val, note in r["matches"]:
-        lines.append(f"- [b]{name}[/b] ({lo:g}-{hi:g}): {note}" + ("  [color=ffcc33]valuable[/color]" if val else ""))
-    if r["gold"]:
-        lines.append("\n[color=ffcc33][b]Gold-range density![/b][/color] Real gold is soft, never rusts, and a magnet "
-                     "won't stick. Tungsten-filled fakes read the same, so take it to the DGSM lab in Entebbe for an "
-                     "assay before buying, selling or paying anyone.")
-    elif r["sg"] < 3.3:
-        lines.append("\nThis is a light, common rock. Shiny yellow flakes in it are usually mica or pyrite, not gold.")
-    return "\n".join(lines)
-
-
-class _RtScale(Widget):
-    """Density bar from 1 to 21 with the sample marked and mineral bands below."""
-
-    def __init__(self, **kw):
-        super().__init__(**kw)
-        self.r = None
-        self.lbls = [Label(text=t, font_size="10sp", color=HINT) for t in ("1", "5", "10", "15", "20")]
-        for l in self.lbls:
-            self.add_widget(l)
-        self.bind(pos=lambda *_: self.draw(), size=lambda *_: self.draw())
-
-    def x_of(self, v):
-        return self.x + dp(8) + (self.width - dp(16)) * (min(21.5, max(1.0, v)) - 1) / 20.5
-
-    def draw(self):
-        self.canvas.clear()
-        y0 = self.y + dp(30)
-        with self.canvas:
-            Color(1, 1, 1, 0.08)
-            RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(10)])
-            for name, lo, hi, val, _n in RT_MINERALS:
-                Color(1.0, 0.8, 0.2, 0.55) if val else Color(1, 1, 1, 0.22)
-                RoundedRectangle(pos=(self.x_of(lo), y0), size=(max(dp(3), self.x_of(hi) - self.x_of(lo)), dp(14)),
-                                 radius=[dp(3)])
-            if self.r:
-                Color(0.30, 0.95, 0.55, 0.35)
-                RoundedRectangle(pos=(self.x_of(self.r["lo"]), y0 - dp(6)),
-                                 size=(max(dp(4), self.x_of(self.r["hi"]) - self.x_of(self.r["lo"])), dp(26)),
-                                 radius=[dp(4)])
-                Color(0.30, 0.95, 0.55, 1)
-                x = self.x_of(self.r["sg"])
-                Line(points=[x, y0 - dp(10), x, y0 + dp(30)], width=dp(2))
-        for l, v in zip(self.lbls, (1, 5, 10, 15, 20)):
-            l.size = (dp(24), dp(14))
-            l.center = (self.x_of(v), self.y + dp(12))
-
-
-def rock_test(screen):
-    root = BoxLayout(orientation="vertical", spacing=dp(6), padding=[dp(10), dp(6)])
-    pop = Popup(title="Rock Test (density)", content=root, size_hint=(1, 1), separator_color=GOLD,
-                title_color=GOLD, title_size="20sp")
-    st = {"magnet": None, "res": 0.1}
-
-    def field(hint):
-        t = TextInput(hint_text=hint, multiline=False, input_filter="float", font_size="18sp",
-                      size_hint_y=None, height=dp(48))
-        root.add_widget(t)
-        return t
-
-    root.add_widget(Label(text="A = dry weight.  B = reading with the rock hanging in a tared cup of water.",
-                          color=HINT, font_size="13sp", size_hint_y=None, height=dp(36),
-                          text_size=(Window.width - dp(30), None), halign="center"))
-    ta = field("A: dry weight (grams)")
-    tb = field("B: under-water reading (grams)")
-
-    def btn(text, col, fn, **kw):
-        b = RoundButton(text=text, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
-                        font_size="14sp", bold=True, **kw)
-        b.bind(on_press=lambda *_: fn())
-        return b
-
-    opt = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-
-    def cycle_mag():
-        st["magnet"] = {None: True, True: False, False: None}[st["magnet"]]
-        b_mag.text = {None: "Magnet: not tried", True: "Magnet: sticks", False: "Magnet: no"}[st["magnet"]]
-
-    def cycle_res():
-        st["res"] = {0.1: 1.0, 1.0: 0.01, 0.01: 0.1}[st["res"]]
-        b_res.text = f"Scale: {st['res']:g} g"
-    rt_cols = [None, "gold", "silver", "white", "black", "red", "green", "pink"]
-
-    def cycle_col():
-        st["colour"] = rt_cols[(rt_cols.index(st.get("colour")) + 1) % len(rt_cols)]
-        b_col.text = "Colour: " + (st["colour"] or "any")
-    b_col = btn("Colour: any", BLUE, cycle_col)
-    b_mag = btn("Magnet: not tried", BLUE, cycle_mag)
-    b_res = btn("Scale: 0.1 g", BLUE, cycle_res)
-    opt.add_widget(b_col)
-    opt.add_widget(b_mag)
-    opt.add_widget(b_res)
-    root.add_widget(opt)
-    scale = _RtScale(size_hint_y=None, height=dp(80))
-    root.add_widget(scale)
-    sv = ScrollView()
-    out = Label(text=RT_HOW, markup=True, color=TEXTCOL, font_size="14sp", size_hint_y=None, halign="left",
-                valign="top")
-    out.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(6), None)),
-             texture_size=lambda w, t: setattr(w, "height", t[1] + dp(8)))
-    sv.add_widget(out)
-    root.add_widget(sv)
-
-    def test():
-        try:
-            r = rt_compute(float(ta.text or 0), float(tb.text or 0), st["res"], st["magnet"], st.get("colour"))
-        except ValueError as e:
-            out.text = f"[color=ff6680]{e}[/color]\n\n" + RT_HOW
-            return
-        scale.r = r
-        scale.draw()
-        out.text = rt_text(r)
-        if r["valuable"]:
-            rt_wiii()
-            try:
-                vibrate()
-            except Exception:
-                pass
-        try:
-            h = json.load(open(RT_FILE)) if os.path.exists(RT_FILE) else []
-            h.append({"t": time.strftime("%Y-%m-%d %H:%M"), "a": ta.text, "b": tb.text, "sg": round(r["sg"], 2),
-                      "match": [RT_SIMPLE.get(x[0], x[0]) for x in r["matches"]]})
-            json.dump(h[-100:], open(RT_FILE, "w"))
-        except Exception:
-            pass
-
-    def history():
-        try:
-            h = json.load(open(RT_FILE))
-        except Exception:
-            h = []
-        out.text = "[b]My rock tests[/b]\n" + ("\n".join(
-            f"{x['t']}: density {x['sg']} - {', '.join(x['match'][:3])}" for x in reversed(h[-20:])) or "None yet.")
-
-    row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(6))
-    row.add_widget(btn("Test", GOLD, test))
-    row.add_widget(btn("My tests", BLUE, history))
-    row.add_widget(btn("How", BLUE, lambda: setattr(out, "text", RT_HOW)))
-    row.add_widget(btn("Close", GREY, pop.dismiss))
-    root.add_widget(row)
-    pop.open()
-
-
-def rock_handle(screen, line, action, arg, low):
-    lw = low.strip(" .!?")
-    if lw in ("rock test", "test rock", "rock", "density", "density test", "test my rock", "gold test",
-              "test gold", "is it gold", "rock check") or action in ("rocktest",):
-        rock_test(screen)
-        return True
-    if lw in ("wiii", "wiiii", "test sound", "mineral sound"):
-        rt_wiii()
-        screen.show("AI", "That's the Genius find sound. It plays when a Rock Test matches a valuable mineral, "
-                          "and when Mineral Scan sweeps over a recorded gold or rare-metal site.")
-        return True
-    return False
-# =================== end Rock Test ===================
 
 
 if __name__ == "__main__":
@@ -11395,6 +10548,7 @@ class ChatScreen(BoxLayout):
         more = [("Minerals near me", lambda: self.handle("minerals"), GOLD),
                 ("Rock Test (is it gold?)", lambda: self.handle("rock test"), GOLD),
                 ("Metal Finder", lambda: self.handle("metal"), GOLD),
+                ("Pinpointer (coil detector)", lambda: self.handle("pinpointer"), GOLD),
                 ("Profile", self.profile_drawer, BLUE),
                 ("Set up AI key", self.key_wizard, GOLD),
                 ("Fun studio (collage, effects, video)", self.fun_studio, GOLD),
@@ -15886,6 +15040,11 @@ class _MagSource:
                     with urllib.request.urlopen(url, timeout=1.5) as r:
                         d = json.loads(r.read().decode("utf-8", "ignore"))
                     self.vec = (float(d.get("v", 0)), 0.0, 0.0)
+                    try:                                  # 113.0: two-delay reading for a target-type hint
+                        self.coil_v, self.coil_b = float(d.get("v", 0)), float(d.get("base", 0))
+                        self.coil_l, self.coil_lb = float(d.get("late", 0)), float(d.get("lbase", 0))
+                    except Exception:
+                        self.coil_l = self.coil_lb = 0.0
                     self.count += 1
                     self.coil_err = ""
                     fails = 0
@@ -15912,25 +15071,78 @@ class _MagSource:
         self._sm = self._lis = self._plyer = None
 
 
+MD_PITCH = [0, 520, 820, 1250, 1750]
+
+
+def _md_tone_file(hz, ms=70):
+    fn = f"md_tone_{hz}.wav"
+    if os.path.exists(fn):
+        return fn
+    import wave, struct, math
+    rate = 22050
+    n = int(rate * ms / 1000)
+    fr = bytearray()
+    for i in range(n):
+        env = min(1.0, i / 120) * min(1.0, (n - i) / 300)
+        fr += struct.pack("<h", int(13000 * env * math.sin(2 * math.pi * hz * i / rate)))
+    w = wave.open(fn, "wb")
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(rate)
+    w.writeframes(bytes(fr))
+    w.close()
+    return fn
+
+
 class _MdBeeper:
     def __init__(self):
+        self.snd = {}
+        try:
+            from kivy.core.audio import SoundLoader
+            for lv in (1, 2, 3, 4):
+                sd = SoundLoader.load(_md_tone_file(MD_PITCH[lv]))
+                if sd:
+                    self.snd[lv] = sd
+        except Exception as e:
+            log(f"METAL: tones unavailable {e}")
+        self._init_tg()
+
+    def tone(self, lvl):
+        """Higher pitch for a stronger signal; falls back to the plain beep."""
+        sd = self.snd.get(lvl)
+        if sd is not None:
+            try:
+                sd.stop()
+                sd.play()
+                return
+            except Exception:
+                pass
+        self.beep(35)
+
+    def _init_tg(self):
         self.tg = None
         try:
             from jnius import autoclass
             TG = autoclass("android.media.ToneGenerator")
             self.tg = TG(3, 85)                      # music stream, 85% volume
-            self.tone = TG.TONE_PROP_BEEP
+            self.tg_tone = TG.TONE_PROP_BEEP
         except Exception:
             self.tg = None
 
     def beep(self, ms=45):
         try:
             if self.tg is not None:
-                self.tg.startTone(self.tone, ms)
+                self.tg.startTone(self.tg_tone, ms)
         except Exception:
             pass
 
     def release(self):
+        for sd in list(getattr(self, "snd", {}).values()):
+            try:
+                sd.unload()
+            except Exception:
+                pass
+        self.snd = {}
         try:
             if self.tg is not None:
                 self.tg.release()
@@ -16034,7 +15246,7 @@ def metal_finder(screen, coil=False):
     src = _MagSource()
     started = src.start_coil() or True if coil else src.start_phone()
     root = BoxLayout(orientation="vertical", spacing=dp(6), padding=[dp(8), dp(6)])
-    pop = Popup(title="Metal Finder" + (" - coil" if coil else ""), content=root, size_hint=(1, 1),
+    pop = Popup(title="Metal Finder" + (" - coil / pinpointer" if coil else ""), content=root, size_hint=(1, 1),
                 separator_color=GOLD, title_color=GOLD, title_size="20sp")
     st = {"open": True, "src": src}
 
@@ -16186,6 +15398,21 @@ def metal_finder(screen, coil=False):
             cos = max(-1.0, min(1.0, sum(x * y for x, y in zip(a, b)) / (na * nb)))
             status.text = ("Phone turned a lot: tap Zero again for a true reading"
                            if _md_math.degrees(_md_math.acos(cos)) > 35 else src.info)
+        if coil and lvl >= 2:
+            sig = getattr(src, "coil_v", 0) - getattr(src, "coil_b", 0)
+            late = getattr(src, "coil_l", 0) - getattr(src, "coil_lb", 0)
+            if abs(sig) > 1 and getattr(src, "coil_lb", 0):
+                rr = late / sig
+                hint = ("[color=FFD34D]Fast target: small gold, foil or thin metal[/color]" if rr < 0.35 else
+                        "[color=8FC8FF]Slow target: iron, big coin or silver[/color]" if rr > 0.6 else
+                        "Medium target: coin, ring or wire")
+                trend.text = hint + "   " + pk
+        if lvl >= 4 and st["lvl"] < 4 and st["sound"] and time.time() - st.get("wiii_t", 0) > 2.0:
+            st["wiii_t"] = time.time()
+            try:
+                rt_wiii()
+            except Exception:
+                pass
         if lvl >= 3 and st["lvl"] < 3:
             try:
                 from plyer import vibrator
@@ -16205,7 +15432,7 @@ def metal_finder(screen, coil=False):
         now = time.time()
         if st["sound"] and r and now - st.get("last_beep", 0) >= r:
             st["last_beep"] = now
-            beeper.beep(35 if r > 0.1 else 25)
+            beeper.tone(st.get("lvl", 1) or 1)
 
     st["tick"] = Clock.schedule_interval(tick, 1 / 15.0)
     st["beep_ev"] = Clock.schedule_interval(beep_loop, 0.03)
@@ -16215,7 +15442,7 @@ def metal_finder(screen, coil=False):
 
 def metal_handle(screen, line, action, arg, low):
     lw = low.strip(" .!?")
-    words = ("metal detector", "metal finder", "detect metal", "find metal", "treasure", "find gold",
+    words = ("pinpointer", "pin pointer", "mini detector", "metal detector", "metal finder", "detect metal", "find metal", "treasure", "find gold",
              "detect gold", "gold detector", "coil detector", "tressure")
     if action in ("metal", "detector", "metaldetector", "treasure", "tressure", "finder", "coil") or \
             any(w in lw for w in words) and len(lw.split()) <= 6:
@@ -16232,7 +15459,7 @@ def metal_handle(screen, line, action, arg, low):
             md_finds_save([])
             screen.say("Deleted your saved metal spots.")
             return True
-        use_coil = action == "coil" or "coil" in lw
+        use_coil = action == "coil" or "coil" in lw or "pinpoint" in lw or "pin pointer" in lw or "mini" in lw
         if ("gold" in lw or "treasure" in lw or "tressure" in lw) and not use_coil:
             screen.show("AI", "Opening the Metal Finder. Honest note: the phone sensor finds iron, steel and "
                               "magnets close by. For gold and coins you need the coil detector (see Guide).")
@@ -16358,6 +15585,858 @@ class GeniusApp(App):
             Clock.schedule_once(lambda *_: chat.run_action(a), 0.6)
         Clock.schedule_once(lambda *_: chat.life_start(), 2)
         Clock.schedule_once(lambda *_: chat.security_alert(), 1)
+
+
+# ===================== 112.6 Minerals near me =====================
+# Real data only: Uganda Government (DGSM) mineral records + mines and quarries mapped on OpenStreetMap.
+MIN_CACHE = "minerals_cache.json"
+MIN_PORTAL = "https://dgsmportal.minerals.go.ug/"
+MIN_SITES = [["Kamalenge", "Kassanda", "Gold", "5 million ounces (AUC Mining lease)", 0.6749, 31.7604, 0], ["Kisita", "Kassanda", "Gold", "Kisita Mining Company, rock and alluvial gold", 0.5333, 31.7628, 1], ["Ngugo", "Kassanda", "Gold", "alluvial gold (Kisita Mining)", 0.5333, 31.7628, 1], ["Bukuya", "Kassanda", "Gold", "high-potential gold field", 0.6786, 31.8197, 0], ["Kayonza", "Kassanda", "Gold", "high-potential gold field", 0.3565, 31.6493, 0], ["Lugigi", "Kassanda", "Gold", "high-potential gold field", 0.5333, 31.7628, 1], ["Kitumbi", "Kassanda", "Gold", "gold field area", 0.7461, 31.675, 0], ["Mbale Estate", "Mubende", "Beryl, lithium, columbite-tantalite", "pegmatites, needs exploration", 0.5154, 31.4095, 1], ["Nampeyo", "Mubende", "Lithium", "pegmatite, needs exploration", 0.5154, 31.4095, 1], ["Kyasampawo", "Mubende", "Tungsten (wolfram)", "occurrence", 0.5154, 31.4095, 1], ["Kiganda", "Mubende", "Granite", "granite mining lease, cut stone", 0.4563, 31.6702, 0], ["Mubende", "Mubende", "Silver", "silver in the Mubende granite, needs exploration", 0.5154, 31.4095, 1], ["Namasera", "Wakiso", "Kaolin", "kaolin clay", 0.3761, 32.4561, 1], ["Migadde", "Wakiso", "Kaolin", "kaolin clay", 0.5247, 32.5178, 0], ["Buwambo", "Wakiso", "Kaolin", "kaolin clay", 0.5028, 32.548, 0], ["Lunya", "Mukono", "Beryl, lithium, columbite-tantalite, feldspar", "pegmatites", 0.4417, 32.9243, 0], ["Kome Island", "Buvuma", "Silica (glass) sand", "99.95% silica", 0.1953, 33.2914, 1], ["Bukakata", "Masaka", "Silica (glass) sand", "99.93% silica", -0.3054, 32.0387, 0], ["Lwera", "Kalungu", "Silica sand", "sand", -0.0913, 31.8106, 1], ["Kisai", "Rakai", "Kaolin", "1 million tonnes", -0.7264, 31.3401, 1], ["Buyaga", "Rakai", "Tungsten (wolfram)", "occurrence", -0.7264, 31.3401, 1], ["Mashonga", "Bushenyi", "Gold", "1 million ounces (Sino Minerals)", -0.3824, 30.13, 0], ["Tiira", "Busia", "Gold", "500,000 ounces (Greenstone Resources)", 0.5084, 34.0851, 0], ["Alupe", "Busia", "Gold", "30 Mt at 1.2 g/t (Wagagai mine)", 0.4768, 34.1085, 0], ["Kilembe", "Kasese", "Copper, cobalt", "old Kilembe copper mine", 0.2314, 29.9799, 0], ["Muko", "Rubanda", "Iron ore", "152 Mt at 60-65% iron", -1.2052, 29.8137, 0], ["Sukulu", "Tororo", "Phosphate, iron, niobium, rare earths", "carbonatite", 0.6593, 34.1516, 0], ["Makuutu", "Bugweri", "Rare earth elements", "world-class clay-hosted deposit", 0.5066, 33.5906, 0], ["Namekhara", "Manafwa", "Vermiculite", "world-class vermiculite mine", 0.8813, 34.2696, 1], ["Hima", "Kasese", "Limestone", "cement", 0.2922, 30.183, 0], ["Rupa", "Moroto", "Marble, gold", "marble and gold", 2.5922, 34.7631, 0], ["Kikagati", "Isingiro", "Tin", "tin mining", -1.0437, 30.6578, 0], ["Mwerasandu", "Ntungamo", "Tin, lithium", "tin", -1.0057, 30.3869, 0], ["Nyamuliro", "Kabale", "Tungsten (wolfram)", "old tungsten mine", -1.15, 29.8, 0], ["Orom", "Kitgum", "Graphite", "graphite mining lease", 3.4017, 33.4685, 0], ["Katwe", "Kasese", "Salt", "salt lake", -0.1445, 29.8846, 0], ["Kaiso", "Hoima", "Bentonite", "over 1 billion tonnes", 1.5256, 30.9683, 0], ["Kitaka", "Kamwenge", "Copper, lead, zinc, silver", "needs exploration", -0.1191, 30.3129, 0], ["Katenga", "Buhweju", "Gold", "Buhweju gold field", -0.3203, 30.3162, 1], ["Kafunzo", "Ntungamo", "Tin, nickel", "small-scale tin mining", -1.0443, 30.4382, 0]]   # [place, district, minerals, note, lat, lon, approx] from DGSM "Mineral Potential of Uganda 2024"
+
+MIN_STEPS = """[b]Turning a find into money, the honest way[/b]
+1. [b]Look, don't dig yet.[/b] Note the place, take clear photos of the rock or sand, and collect a fist-sized sample from the surface.
+2. [b]Test it for real.[/b] The Government mineral laboratory (DGSM, Plot 21-29 Johnstone Road, Entebbe, tel 0414 320656) tests rocks, soil and gold for what is inside. A lab result is the only proof.
+3. [b]Check who holds the land.[/b] Search the official Mining Cadastre map (dgsmportal.minerals.go.ug) to see if a company already holds a licence there.
+4. [b]Get the right licence.[/b] Minerals belong to the Government. Ugandans can apply through the cadastre portal (an artisanal licence is the small one). Mining without one can lead to arrest and losing everything.
+5. [b]Sell only to licensed dealers.[/b] The portal lists every Mineral Dealer's Licence.
+
+[b]Scam alarm[/b]
+- Anyone selling "gold" cheap, or asking you to pay first for "gold in a box", fake export papers or "black money" cleaning: it's a scam.
+- Real gold doesn't stick to a magnet, isn't light, and is never sold by the roadside at a discount.
+- Genius will never tell you there is gold under your land without a lab result."""
+
+
+def _min_get(url, timeout=25, data=None):
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": "Genius/" + VERSION + " (Android; minerals)"})
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as r:
+        return json.loads(r.read().decode("utf-8", "ignore"))
+
+
+def _min_km(a, b, c, d):
+    import math
+    r = 6371.0
+    p1, p2 = math.radians(a), math.radians(c)
+    dp_, dl = math.radians(c - a), math.radians(d - b)
+    h = math.sin(dp_ / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(h))
+
+
+def _min_cache():
+    try:
+        return json.load(open(MIN_CACHE))
+    except Exception:
+        return {}
+
+
+def min_geocode(place):
+    c = _min_cache()
+    key = place.lower().strip()
+    if key in c:
+        return c[key]
+    q = urllib.parse.urlencode({"q": place + ", Uganda", "format": "json", "limit": 1, "countrycodes": "ug",
+                                "addressdetails": 1})
+    try:
+        res = _min_get("https://nominatim.openstreetmap.org/search?" + q)
+    except Exception as e:
+        log(f"MINERALS: nominatim {type(e).__name__}")
+        res = []
+    if not res:
+        try:
+            ph = _min_get("https://photon.komoot.io/api/?" + urllib.parse.urlencode({"q": place + " Uganda", "limit": 5}))
+            for f in ph.get("features", []):
+                p = f.get("properties", {})
+                if p.get("countrycode") == "UG":
+                    lo, la = f["geometry"]["coordinates"]
+                    g = {"lat": la, "lon": lo, "name": p.get("name") or place,
+                         "district": (p.get("county") or p.get("state") or "").replace(" District", "")}
+                    c[key] = g
+                    json.dump(c, open(MIN_CACHE, "w"))
+                    return g
+        except Exception as e:
+            log(f"MINERALS: photon {type(e).__name__}")
+        return None
+    a = res[0].get("address", {})
+    g = {"lat": float(res[0]["lat"]), "lon": float(res[0]["lon"]),
+         "name": res[0].get("display_name", place).split(",")[0],
+         "district": (a.get("county") or a.get("state_district") or a.get("city") or "").replace(" District", "")}
+    c[key] = g
+    try:
+        json.dump(c, open(MIN_CACHE, "w"))
+    except Exception:
+        pass
+    return g
+
+
+def min_osm_nearby(lat, lon, radius_m=30000):
+    q = f"""[out:json][timeout:25];
+(nwr["landuse"="quarry"](around:{radius_m},{lat},{lon});
+ nwr["man_made"="mineshaft"](around:{radius_m},{lat},{lon});
+ nwr["industrial"="mine"](around:{radius_m},{lat},{lon});
+ nwr["historic"="mine"](around:{radius_m},{lat},{lon});
+ nwr["resource"](around:{radius_m},{lat},{lon}););
+out center tags 60;"""
+    for host in ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"):
+        try:
+            d = _min_get(host, timeout=35, data=urllib.parse.urlencode({"data": q}).encode())
+            out = []
+            for e in d.get("elements", []):
+                t = e.get("tags", {})
+                la = e.get("lat") or e.get("center", {}).get("lat")
+                lo = e.get("lon") or e.get("center", {}).get("lon")
+                if la is None:
+                    continue
+                what = t.get("resource") or t.get("product") or t.get("mineral") or \
+                    ("quarry" if t.get("landuse") == "quarry" else "mine")
+                out.append({"name": t.get("name") or "", "what": what.replace(";", ", "),
+                            "km": _min_km(lat, lon, la, lo), "brg": ms_bearing(lat, lon, la, lo)})
+            out.sort(key=lambda x: x["km"])
+            return out
+        except Exception as e:
+            log(f"MINERALS: overpass {host} {type(e).__name__}")
+    return None
+
+
+def minerals_report(place):
+    g = min_geocode(place)
+    if not g:
+        return (f"I couldn't find '{place}' on the map. Try a bigger nearby town or your district, "
+                "e.g. minerals Mityana.")
+    lat, lon = g["lat"], g["lon"]
+    near = sorted(([_min_km(lat, lon, s[4], s[5])] + s for s in MIN_SITES), key=lambda x: x[0])
+    lines = [f"[b]Minerals near {g['name']}[/b]" + (f" ({g['district']})" if g.get("district") else ""),
+             "", "[b]Official mineral areas (Uganda Government records)[/b]"]
+    for km, p, dist, mins, note, la, lo, ap in near[:8]:
+        lines.append(f"- {p}, {dist}: [b]{mins}[/b], {'about ' if ap else ''}{km:.0f} km away. {note}")
+    gold = [x for x in near if "Gold" in x[3]]
+    if gold:
+        k = gold[0]
+        lines.append(f"\nNearest recorded gold area: {k[1]} ({k[2]}), about {k[0]:.0f} km away.")
+    osm = min_osm_nearby(lat, lon)
+    lines.append("\n[b]Mines and quarries mapped within 30 km[/b]")
+    if osm is None:
+        lines.append("The map service didn't answer. Say minerals again in a minute.")
+    elif not osm:
+        lines.append("None mapped yet near you. Most local work here is stone, sand and clay.")
+    else:
+        kinds = {}
+        for o in osm:
+            kinds[o["what"]] = kinds.get(o["what"], 0) + 1
+        lines.append(", ".join(f"{n} {k}" for k, n in sorted(kinds.items(), key=lambda x: -x[1])[:6]))
+        for o in osm[:6]:
+            lines.append(f"- {o['name'] or o['what'].title()}: {o['what']}, {o['km']:.1f} km")
+    lines.append("\n[b]What this means[/b]\nThese are places where minerals are officially recorded or mined. "
+                 "It does NOT prove minerals are under your own land. Only a lab test of a sample can say that.")
+    lines.append("\n" + MIN_STEPS)
+    lines.append(f"\nLicences map: {MIN_PORTAL}\nSay 'minerals <another place>' to check somewhere else.")
+    return "\n".join(lines)
+
+
+def minerals_handle(screen, line, action, arg, low):
+    lw = low.strip(" .!?")
+    trig = ("scan minerals", "mineral scan", "minerals scan", "minerals near me", "mineral map", "minerals around me", "find minerals", "minerals here",
+            "minerals in my area", "mineral near me")
+    if action in ("minerals", "mineral", "ebyobugagga") or any(t in lw for t in trig) and len(lw.split()) <= 8:
+        a = arg.strip()
+        for junk in ("near me", "around me", "here", "in my area", "map"):
+            if a.lower() == junk:
+                a = ""
+        if a.lower().startswith(("near ", "in ", "at ", "around ")):
+            a = a.split(" ", 1)[1].strip()
+        if a.lower() in ("steps", "how", "sell", "licence", "license", "test", "scam", "help"):
+            screen.show("AI", MIN_STEPS)
+            return True
+        report = False
+        if a.lower().startswith(("report", "list", "text")):
+            report = True
+            a = a.split(" ", 1)[1].strip() if " " in a else ""
+        d = life_load()
+        if a:
+            d["my_place"] = a
+            life_save(d)
+        if not report:
+            mineral_scan(screen, a or None)
+            return True
+        place = a or d.get("my_place")
+        if not place:
+            screen.say("Which village or town are you near? Type it like: minerals report Mityana.")
+            return True
+        screen._bg(lambda: minerals_report(place), f"Checking Government mineral records and maps around {place}...",
+                   speak=False)
+        return True
+    return False
+# =================== end Minerals near me ===================
+
+
+# ===================== 112.7 Mineral Scan (radar + graph) =====================
+# Shows REAL records around the person: Uganda Government (DGSM) mineral areas and
+# mines/quarries mapped on OpenStreetMap, placed by true distance and direction from the phone's GPS.
+MS_COLORS = [
+    (("Gold",), (1.00, 0.80, 0.20, 1), "Gold"),
+    (("Lithium", "Beryl", "tantalite", "Rare earth", "niobium"), (0.75, 0.45, 1.00, 1), "Lithium, beryl, rare metals"),
+    (("Tin", "Tungsten", "Copper", "Iron", "Silver", "lead", "zinc", "cobalt", "nickel"), (0.55, 0.80, 1.00, 1),
+     "Tin, tungsten, copper, iron"),
+    (("Granite", "Marble", "quarry", "stone"), (0.90, 0.55, 0.30, 1), "Stone and quarries"),
+    ((), (0.92, 0.92, 0.85, 1), "Clay, sand, salt, other"),
+]
+
+
+def ms_kind(minerals):
+    m = minerals.lower()
+    for keys, col, name in MS_COLORS:
+        if any(k.lower() in m for k in keys):
+            return col, name
+    return MS_COLORS[-1][1], MS_COLORS[-1][2]
+
+
+def ms_bearing(lat1, lon1, lat2, lon2):
+    import math
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lon2 - lon1)
+    x = math.sin(dl) * math.cos(p2)
+    y = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return (math.degrees(math.atan2(x, y)) + 360) % 360
+
+
+def ms_dir(b):
+    return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][int((b + 22.5) // 45) % 8]
+
+
+def ms_points(lat, lon, osm=None):
+    pts = []
+    for p, dist, mins, note, la, lo, ap in MIN_SITES:
+        col, kind = ms_kind(mins)
+        pts.append({"name": p, "where": dist, "what": mins, "note": note, "km": _min_km(lat, lon, la, lo),
+                    "brg": ms_bearing(lat, lon, la, lo), "col": col, "kind": kind, "src": "Gov record",
+                    "approx": bool(ap)})
+    for o in osm or []:
+        col, kind = ms_kind(o["what"] if o["what"] not in ("mine",) else "mine")
+        pts.append({"name": o["name"] or o["what"].title(), "where": "", "what": o["what"], "note": "",
+                    "km": o["km"], "brg": o.get("brg", 0), "col": col, "kind": kind, "src": "Mapped site",
+                    "approx": False})
+    pts.sort(key=lambda x: x["km"])
+    return pts
+
+
+class _MsRadar(Widget):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.pts, self.rng, self.sweep, self.seen, self.full = [], 50.0, 0.0, set(), False
+        self.lbls = [Label(text="", font_size="11sp", color=HINT) for _ in range(5)]
+        for l in self.lbls:
+            self.add_widget(l)
+        self.bind(pos=lambda *_: self.draw(), size=lambda *_: self.draw())
+
+    def reset_scan(self):
+        self.seen, self.full, self.sweep = set(), False, 0.0
+
+    def step(self, dt):
+        old = self.sweep
+        self.sweep = (self.sweep + 120 * dt) % 360
+        if self.sweep < old:
+            self.full = True
+        for i, p in enumerate(self.pts):
+            if p["km"] <= self.rng and (self.full or p["brg"] <= self.sweep):
+                if i not in self.seen and not self.full and getattr(self, "sound", True) and \
+                        p["kind"] in ("Gold", "Lithium, beryl, rare metals") and time.time() - getattr(self, "_wt", 0) > 1.3:
+                    self._wt = time.time()
+                    try:
+                        rt_wiii()
+                    except Exception:
+                        pass
+                self.seen.add(i)
+        self.draw()
+
+    def draw(self):
+        import math
+        cx, cy = self.center_x, self.center_y
+        r = min(self.width, self.height) / 2 - dp(16)
+        self.canvas.clear()
+        with self.canvas:
+            Color(0.05, 0.12, 0.08, 1)
+            Line(circle=(cx, cy, r), width=dp(1.5))
+            Color(0.20, 0.90, 0.50, 0.08)
+            from kivy.graphics import Ellipse
+            Ellipse(pos=(cx - r, cy - r), size=(2 * r, 2 * r))
+            Color(0.30, 0.95, 0.55, 0.30)
+            for k in (1, 2, 3, 4):
+                Line(circle=(cx, cy, r * k / 4), width=1)
+            Line(points=[cx - r, cy, cx + r, cy], width=1)
+            Line(points=[cx, cy - r, cx, cy + r], width=1)
+            # sweep wedge (decoration: it reveals the records one by one)
+            for j in range(18):
+                a = self.sweep - j * 2.0
+                Color(0.30, 1.0, 0.55, 0.22 * (1 - j / 18))
+                rad = math.radians(a)
+                Line(points=[cx, cy, cx + r * math.sin(rad), cy + r * math.cos(rad)], width=dp(1.4))
+            for i in self.seen:
+                p = self.pts[i]
+                d = r * min(1.0, p["km"] / self.rng)
+                rad = math.radians(p["brg"])
+                x, y = cx + d * math.sin(rad), cy + d * math.cos(rad)
+                sz = dp(9) if p["src"] == "Gov record" else dp(6)
+                Color(p["col"][0], p["col"][1], p["col"][2], 0.25)
+                Ellipse(pos=(x - sz, y - sz), size=(2 * sz, 2 * sz))
+                Color(*p["col"])
+                Ellipse(pos=(x - sz / 2, y - sz / 2), size=(sz, sz))
+            Color(1, 1, 1, 1)
+            Ellipse(pos=(cx - dp(5), cy - dp(5)), size=(dp(10), dp(10)))
+        # labels: N and ring distances
+        self.lbls[0].text = "[b]N[/b]"
+        self.lbls[0].markup = True
+        self.lbls[0].size = (dp(30), dp(16))
+        self.lbls[0].center = (cx, cy + r + dp(9))
+        for k in (1, 2, 3, 4):
+            v = self.rng * k / 4
+            self.lbls[k].text = (f"{v:.0f} km" if v >= 1 else f"{v * 1000:.0f} m")
+            self.lbls[k].size = (dp(50), dp(14))
+            self.lbls[k].center = (cx + dp(22), cy - r * k / 4 + dp(8))
+
+
+class _MsBars(BoxLayout):
+    def __init__(self, **kw):
+        super().__init__(orientation="vertical", spacing=dp(2), **kw)
+
+    def set(self, pts, rng):
+        self.clear_widgets()
+        counts = {}
+        for p in pts:
+            if p["km"] <= rng:
+                counts[p["kind"]] = counts.get(p["kind"], 0) + 1
+        if not counts:
+            self.add_widget(Label(text=f"No recorded mineral sites within {rng:.0f} km. Tap Range to look wider.",
+                                  color=HINT, font_size="13sp"))
+            return
+        top = max(counts.values())
+        for keys, col, name in MS_COLORS:
+            n = counts.get(name)
+            if not n:
+                continue
+            row = BoxLayout(size_hint_y=None, height=dp(20), spacing=dp(6))
+            lab = Label(text=name, color=TEXTCOL, font_size="12sp", size_hint_x=0.48, halign="right", valign="middle")
+            lab.bind(size=lambda w, s: setattr(w, "text_size", s))
+            row.add_widget(lab)
+            bar = Widget(size_hint_x=0.42)
+
+            def paint(w, *_a, c=col, f=n / top):
+                w.canvas.clear()
+                with w.canvas:
+                    Color(*c)
+                    RoundedRectangle(pos=(w.x, w.y + dp(3)), size=(max(dp(4), w.width * f), w.height - dp(6)),
+                                     radius=[dp(4)])
+            bar.bind(pos=paint, size=paint)
+            row.add_widget(bar)
+            row.add_widget(Label(text=str(n), color=TEXTCOL, font_size="12sp", bold=True, size_hint_x=0.10))
+            self.add_widget(row)
+
+
+class _MsGps:
+    """Phone GPS through plyer, asking the location permission first."""
+
+    def __init__(self, cb, err):
+        self.cb, self.err, self.on = cb, err, False
+
+    def start(self):
+        try:
+            from android.permissions import request_permissions, Permission, check_permission
+            perms = [Permission.ACCESS_FINE_LOCATION, Permission.ACCESS_COARSE_LOCATION]
+            if not check_permission(Permission.ACCESS_FINE_LOCATION):
+                request_permissions(perms, lambda p, g: Clock.schedule_once(
+                    lambda *_: self._go() if any(g) else self.err("Location permission was not allowed."), 0))
+                return
+        except Exception:
+            pass
+        self._go()
+
+    def _go(self):
+        try:
+            from plyer import gps
+            gps.configure(on_location=lambda **kw: Clock.schedule_once(lambda *_: self.cb(kw), 0),
+                          on_status=lambda s, t: log(f"MSCAN gps {s} {t}"))
+            gps.start(minTime=2000, minDistance=0)
+            self.on = True
+        except Exception as e:
+            log(f"MSCAN: gps failed {type(e).__name__}: {e}")
+            self.err("GPS isn't available here.")
+
+    def stop(self):
+        if self.on:
+            try:
+                from plyer import gps
+                gps.stop()
+            except Exception:
+                pass
+        self.on = False
+
+
+def _ms_reverse(lat, lon):
+    try:
+        q = urllib.parse.urlencode({"lat": lat, "lon": lon, "format": "json", "zoom": 14})
+        d = _min_get("https://nominatim.openstreetmap.org/reverse?" + q, timeout=12)
+        a = d.get("address", {})
+        return a.get("village") or a.get("suburb") or a.get("town") or a.get("city") or a.get("county") or ""
+    except Exception:
+        return ""
+
+
+def mineral_scan(screen, place=None):
+    """Full-screen scan of real mineral records around the person."""
+    root = BoxLayout(orientation="vertical", spacing=dp(4), padding=[dp(8), dp(4)])
+    pop = Popup(title="Mineral Scan", content=root, size_hint=(1, 1), separator_color=GOLD, title_color=GOLD,
+                title_size="20sp")
+    st = {"open": True, "lat": None, "lon": None, "name": "", "osm": [], "acc": None, "pts": []}
+    ranges = [10.0, 25.0, 50.0, 100.0, 300.0]
+
+    status = Label(text="Finding where you are...", color=HINT, font_size="13sp", markup=True,
+                   size_hint_y=None, height=dp(34), halign="center", valign="middle")
+    status.bind(size=lambda w, s: setattr(w, "text_size", (s[0], None)))
+    root.add_widget(status)
+    radar = _MsRadar(size_hint_y=None, height=dp(290))
+    root.add_widget(radar)
+    head = Label(text="", markup=True, color=GOLD, font_size="15sp", bold=True, size_hint_y=None, height=dp(24))
+    root.add_widget(head)
+    bars = _MsBars(size_hint_y=None, height=dp(104))
+    root.add_widget(bars)
+    sv = ScrollView()
+    lst = Label(text="", markup=True, color=TEXTCOL, font_size="13sp", size_hint_y=None, halign="left",
+                valign="top")
+    lst.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(6), None)),
+             texture_size=lambda w, t: setattr(w, "height", t[1] + dp(6)))
+    sv.add_widget(lst)
+    root.add_widget(sv)
+    note = Label(text="Dots are Government mineral records and mapped mines, not readings from under your feet. "
+                      "Only a lab test proves a mineral.", color=HINT, font_size="11sp",
+                 size_hint_y=None, height=dp(30), halign="center", valign="middle")
+    note.bind(size=lambda w, s: setattr(w, "text_size", (s[0], None)))
+    root.add_widget(note)
+
+    def btn(text, col, fn):
+        b = RoundButton(text=text, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
+                        font_size="14sp", bold=True)
+        b.bind(on_press=lambda *_: fn())
+        return b
+
+    def refresh():
+        if st["lat"] is None:
+            return
+        st["pts"] = ms_points(st["lat"], st["lon"], st["osm"])
+        radar.pts = st["pts"]
+        radar.reset_scan()
+        rng = radar.rng
+        inr = [p for p in st["pts"] if p["km"] <= rng]
+        head.text = f"{len(inr)} sites within {rng:.0f} km"
+        bars.set(st["pts"], rng)
+        rows = []
+        for p in (inr or st["pts"][:5])[:25]:
+            c = "%02x%02x%02x" % tuple(int(v * 255) for v in p["col"][:3])
+            where = f" ({p['where']})" if p["where"] else ""
+            km = ("about " if p["approx"] else "") + (f"{p['km']:.1f}" if p["km"] < 10 else f"{p['km']:.0f}")
+            rows.append(f"[color={c}]●[/color] [b]{km} km {ms_dir(p['brg'])}[/b]  {p['name']}{where}: "
+                        f"{p['what']}  [color=9ea3c7]{p['src']}[/color]")
+        if not inr:
+            rows.insert(0, "[color=9ea3c7]Nothing inside this range. Nearest:[/color]")
+        lst.text = "\n".join(rows)
+
+    def cycle_range():
+        i = ranges.index(radar.rng) if radar.rng in ranges else 2
+        radar.rng = ranges[(i + 1) % len(ranges)]
+        b_rng.text = f"Range {radar.rng:.0f} km"
+        refresh()
+
+    def fetch_osm():
+        lat, lon = st["lat"], st["lon"]
+
+        def work():
+            osm = min_osm_nearby(lat, lon, 30000) or []
+            Clock.schedule_once(lambda *_: done(osm), 0)
+
+        def done(osm):
+            if not st["open"]:
+                return
+            st["osm"] = osm
+            refresh()
+        threading.Thread(target=work, daemon=True).start()
+
+    def set_pos(lat, lon, how):
+        first = st["lat"] is None or _min_km(st["lat"], st["lon"], lat, lon) > 0.5
+        st["lat"], st["lon"] = lat, lon
+        status.text = f"[b]You:[/b] {lat:.5f}, {lon:.5f}  {how}"
+        if first:
+            refresh()
+            fetch_osm()
+
+            def rev():
+                nm = _ms_reverse(lat, lon)
+                if nm and st["open"]:
+                    Clock.schedule_once(lambda *_: setattr(
+                        status, "text", f"[b]You: {nm}[/b]  {lat:.4f}, {lon:.4f}  {how}"), 0)
+            threading.Thread(target=rev, daemon=True).start()
+
+    def on_gps(kw):
+        if not st["open"]:
+            return
+        try:
+            lat, lon = float(kw["lat"]), float(kw["lon"])
+        except Exception:
+            return
+        acc = kw.get("accuracy")
+        how = f"GPS ±{float(acc):.0f} m" if acc else "GPS"
+        st["gps_ok"] = True
+        set_pos(lat, lon, how)
+        d = life_load()
+        d["my_gps"] = [lat, lon]
+        life_save(d)
+
+    def use_place(pl, why=""):
+        def work():
+            g = min_geocode(pl)
+            Clock.schedule_once(lambda *_: (set_pos(g["lat"], g["lon"], f"({g['name']}, from the place you typed)")
+                                            if g else setattr(status, "text",
+                                                              f"Couldn't find {pl}. Close and say: minerals <your town>")), 0)
+        status.text = (why + " " if why else "") + f"Using {pl}..."
+        threading.Thread(target=work, daemon=True).start()
+
+    def gps_fail(msg):
+        d = life_load()
+        if d.get("my_gps"):
+            la, lo = d["my_gps"]
+            set_pos(la, lo, "(last GPS fix)")
+        elif d.get("my_place"):
+            use_place(d["my_place"], msg)
+        else:
+            status.text = msg + " Close and say: minerals <your town>"
+
+    gps = _MsGps(on_gps, gps_fail)
+
+    def gps_timeout(*_):
+        if st["open"] and not st.get("gps_ok") and st["lat"] is None:
+            gps_fail("No GPS fix yet (go outside, under open sky).")
+
+    def show_steps():
+        screen.show("AI", MIN_STEPS)
+
+    def close():
+        pop.dismiss()
+
+    row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+    b_rng = btn("Range 50 km", GOLD, cycle_range)
+    row.add_widget(b_rng)
+    row.add_widget(btn("Rescan", BLUE, lambda: (radar.reset_scan(), gps.start() if not gps.on else None)))
+    row.add_widget(btn("Steps", BLUE, show_steps))
+
+    def toggle_snd():
+        radar.sound = not getattr(radar, "sound", True)
+        b_snd.text = "Sound" if radar.sound else "Muted"
+    b_snd = btn("Sound", BLUE, toggle_snd)
+    row.add_widget(b_snd)
+    row.add_widget(btn("Close", GREY, close))
+    root.add_widget(row)
+
+    tick = Clock.schedule_interval(lambda dt: radar.step(dt) if st["open"] else None, 1 / 30.0)
+
+    def on_close(*_):
+        st["open"] = False
+        tick.cancel()
+        gps.stop()
+    pop.bind(on_dismiss=on_close)
+    pop.open()
+
+    if place:
+        use_place(place)
+    else:
+        gps.start()
+        Clock.schedule_once(gps_timeout, 25)
+    log("MSCAN: opened")
+# =================== end Mineral Scan ===================
+
+
+# ===================== 112.8 Rock Test (density) + "wiii" sound =====================
+# Real identification help: specific gravity (density) from two kitchen-scale readings.
+RT_FILE = "rock_tests.json"
+RT_WIII = "wiii.wav"
+# name, low SG, high SG, valuable?, note
+RT_MINERALS = [
+    ("Quartz", 2.60, 2.70, False, "common white or clear rock, not valuable on its own"),
+    ("Feldspar", 2.55, 2.76, False, "pink or white, common in granite"),
+    ("Mica", 2.75, 3.10, False, "shiny flakes, often mistaken for gold, light and soft"),
+    ("Beryl", 2.63, 2.92, True, "beryllium ore, gem forms (aquamarine, emerald)"),
+    ("Spodumene (lithium)", 3.10, 3.20, True, "lithium ore"),
+    ("Tourmaline", 3.00, 3.25, False, "black or coloured crystals"),
+    ("Garnet", 3.50, 4.30, False, "red crystals"),
+    ("Chalcopyrite (copper ore)", 4.10, 4.30, True, "brassy yellow, copper ore, often called fool's gold"),
+    ("Pyrite (fool's gold)", 4.95, 5.10, False, "brassy cubes, the most common fake gold"),
+    ("Magnetite (iron ore)", 5.10, 5.20, False, "black, a magnet sticks strongly"),
+    ("Hematite (iron ore)", 5.00, 5.30, False, "red-brown streak"),
+    ("Columbite-tantalite (coltan)", 5.20, 8.00, True, "black, heavy, valuable"),
+    ("Cassiterite (tin ore)", 6.80, 7.10, True, "brown-black, very heavy for its size"),
+    ("Wolframite (tungsten ore)", 7.10, 7.50, True, "dark, very heavy"),
+    ("Galena (lead ore)", 7.40, 7.60, True, "silver-grey cubes, may carry silver"),
+    ("Brass (fake gold)", 8.40, 8.73, False, "yellow metal used to fake gold bars"),
+    ("Copper", 8.90, 8.96, True, "native copper"),
+    ("Silver", 10.10, 10.50, True, "native silver"),
+    ("Lead", 11.30, 11.35, False, "soft grey metal"),
+    ("Gold (natural)", 15.00, 19.32, True, "natural gold is 15 to 19.3 because it carries some silver"),
+    ("Platinum", 14.00, 21.45, True, "very rare"),
+]
+
+RT_COLOUR = {'Quartz': 'white', 'Feldspar': 'white pink', 'Mica': 'gold silver black', 'Beryl': 'green white', 'Spodumene (lithium)': 'white green pink', 'Tourmaline': 'black green pink', 'Garnet': 'red', 'Chalcopyrite (copper ore)': 'gold', "Pyrite (fool's gold)": 'gold', 'Magnetite (iron ore)': 'black', 'Hematite (iron ore)': 'red black silver', 'Columbite-tantalite (coltan)': 'black', 'Cassiterite (tin ore)': 'black red', 'Wolframite (tungsten ore)': 'black', 'Galena (lead ore)': 'silver', 'Brass (fake gold)': 'gold', 'Copper': 'red', 'Silver': 'silver', 'Lead': 'silver', 'Gold (natural)': 'gold', 'Platinum': 'silver'}
+RT_SIMPLE = {'Quartz': 'Quartz, a common rock', 'Feldspar': 'Feldspar, a common rock', 'Mica': 'Mica, shiny flakes (not gold)', 'Beryl': 'Beryl, a gem mineral', 'Spodumene (lithium)': 'Lithium ore', 'Tourmaline': 'Tourmaline crystal', 'Garnet': 'Garnet crystal', 'Chalcopyrite (copper ore)': 'Copper ore', "Pyrite (fool's gold)": "Fool's gold (pyrite)", 'Magnetite (iron ore)': 'Iron ore', 'Hematite (iron ore)': 'Iron ore', 'Columbite-tantalite (coltan)': 'Coltan', 'Cassiterite (tin ore)': 'Tin ore', 'Wolframite (tungsten ore)': 'Tungsten ore', 'Galena (lead ore)': 'Lead ore', 'Brass (fake gold)': 'Brass, fake gold', 'Copper': 'Copper metal', 'Silver': 'Silver', 'Lead': 'Lead metal', 'Gold (natural)': 'GOLD', 'Platinum': 'Platinum'}
+RT_COMMON = {'Quartz': 10, 'Feldspar': 9, 'Mica': 7, "Pyrite (fool's gold)": 7, 'Hematite (iron ore)': 6, 'Magnetite (iron ore)': 5, 'Garnet': 5, 'Tourmaline': 5, 'Brass (fake gold)': 5, 'Lead': 3}
+RT_HOW = """[b]How to test a rock with a kitchen scale[/b]
+1. Clean and dry the sample. Bigger is more accurate (try 20 g or more).
+2. [b]A: weigh it dry[/b] in grams.
+3. Put a cup of water on the scale and press Tare (zero).
+4. Hang the rock on a thread so it is fully under water but touches nothing. [b]B: read the scale.[/b]
+5. Type A and B. Genius works out the density (A divided by B).
+
+Tips: a scale that shows 0.1 g is much better than 1 g. Test twice.
+[b]Warning:[/b] fake gold bars are filled with tungsten, which has nearly the same density as gold. Density narrows it down; only a lab assay (DGSM Entebbe) proves it."""
+
+
+def rt_wiii_path():
+    """Make the rising 'wiiii' sound once (pure tone sweep)."""
+    if os.path.exists(RT_WIII):
+        return RT_WIII
+    import wave, struct, math
+    rate, secs = 22050, 1.1
+    n = int(rate * secs)
+    ph, frames = 0.0, bytearray()
+    for i in range(n):
+        t = i / n
+        f = 500 + 1900 * (t ** 1.4) + 60 * math.sin(2 * math.pi * 7 * t * secs)   # rising "wiii" with wobble
+        ph += 2 * math.pi * f / rate
+        env = min(1.0, i / 800) * min(1.0, (n - i) / 2500)
+        frames += struct.pack("<h", int(14000 * env * (math.sin(ph) + 0.25 * math.sin(2 * ph))))
+    w = wave.open(RT_WIII, "wb")
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(rate)
+    w.writeframes(bytes(frames))
+    w.close()
+    return RT_WIII
+
+
+_rt_snd = {"s": None}
+
+
+def rt_wiii():
+    try:
+        from kivy.core.audio import SoundLoader
+        if _rt_snd["s"] is None:
+            _rt_snd["s"] = SoundLoader.load(rt_wiii_path())
+        s = _rt_snd["s"]
+        if s:
+            s.stop()
+            s.play()
+            return True
+    except Exception as e:
+        log(f"ROCK: wiii failed {e}")
+    return False
+
+
+def rt_compute(a, b, res=0.1, magnet=None, colour=None):
+    """a = dry grams, b = displaced water grams. Returns dict with SG, range and matches."""
+    import math
+    if a <= 0 or b <= 0:
+        raise ValueError("Both readings must be above 0.")
+    if b >= a:
+        raise ValueError("B must be smaller than A. Check the rock hangs freely in the water.")
+    sg = a / b
+    err = sg * math.sqrt((res / a) ** 2 + (res / b) ** 2) + 0.03 * sg
+    lo, hi = sg - err, sg + err
+    m = [x for x in RT_MINERALS if x[1] <= hi and x[2] >= lo]
+    if magnet is True:
+        m = [x for x in m if "Magnetite" in x[0]] or [x for x in m if "Hematite" in x[0]] or m
+    elif magnet is False:
+        m = [x for x in m if "Magnetite" not in x[0]]
+    if colour:
+        m = [x for x in m if colour in RT_COLOUR.get(x[0], "")] or m
+    if not m:
+        m = sorted(RT_MINERALS, key=lambda x: min(abs(x[1] - sg), abs(x[2] - sg)))[:2]
+
+    def score(x):
+        mid = (x[1] + x[2]) / 2
+        inside = 0 if x[1] <= sg <= x[2] else 1
+        return (inside, abs(sg - mid) / max(0.2, (x[2] - x[1])) - RT_COMMON.get(x[0], 0) * 0.08)
+    m = sorted(m, key=score)
+    best = m[0]
+    sure = "very likely" if len(m) == 1 else ("likely" if score(m[0])[0] == 0 and (len(m) < 3 or colour) else "maybe")
+    if best[0].startswith(("Gold", "Platinum")):
+        sure = "possibly"          # tungsten-filled fakes have the same density
+    return {"best": best, "sure": sure, "colour": colour, "sg": sg, "lo": lo, "hi": hi, "matches": m, "valuable": all(x[3] for x in m) or any(x[0].startswith(("Gold", "Platinum", "Silver")) for x in m),
+            "gold": any(x[0].startswith(("Gold", "Platinum")) for x in m)}
+
+
+def rt_text(r):
+    b = r["best"]
+    nm = RT_SIMPLE.get(b[0], b[0])
+    col = "ffcc33" if b[3] else "e8e8e8"
+    lines = [f"[size=24sp][b][color={col}]" + {"very likely": "It's very likely", "likely": "It's likely",
+                                                       "maybe": "It might be", "possibly": "It's possibly"}[r["sure"]] +
+             f": {nm}[/color][/b][/size]",
+             f"{b[4][0].upper() + b[4][1:]}.",
+             "[color=ffcc33]Worth money if there is a lot of it. Get it tested.[/color]" if b[3]
+             else "[color=9ea3c7]Not worth selling on its own.[/color]",
+             "", f"Density {r['sg']:.2f} (between {r['lo']:.2f} and {r['hi']:.2f})"]
+    if r["sure"] != "very likely":
+        lines.append("Tip: set the Colour and Magnet buttons to make the answer surer.")
+    lines += ["", "Other possibilities:" if len(r["matches"]) > 1 else ""]
+    r = dict(r, matches=r["matches"][1:])
+    for name, lo, hi, val, note in r["matches"]:
+        lines.append(f"- [b]{name}[/b] ({lo:g}-{hi:g}): {note}" + ("  [color=ffcc33]valuable[/color]" if val else ""))
+    if r["gold"]:
+        lines.append("\n[color=ffcc33][b]Gold-range density![/b][/color] Real gold is soft, never rusts, and a magnet "
+                     "won't stick. Tungsten-filled fakes read the same, so take it to the DGSM lab in Entebbe for an "
+                     "assay before buying, selling or paying anyone.")
+    elif r["sg"] < 3.3:
+        lines.append("\nThis is a light, common rock. Shiny yellow flakes in it are usually mica or pyrite, not gold.")
+    return "\n".join(lines)
+
+
+class _RtScale(Widget):
+    """Density bar from 1 to 21 with the sample marked and mineral bands below."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.r = None
+        self.lbls = [Label(text=t, font_size="10sp", color=HINT) for t in ("1", "5", "10", "15", "20")]
+        for l in self.lbls:
+            self.add_widget(l)
+        self.bind(pos=lambda *_: self.draw(), size=lambda *_: self.draw())
+
+    def x_of(self, v):
+        return self.x + dp(8) + (self.width - dp(16)) * (min(21.5, max(1.0, v)) - 1) / 20.5
+
+    def draw(self):
+        self.canvas.clear()
+        y0 = self.y + dp(30)
+        with self.canvas:
+            Color(1, 1, 1, 0.08)
+            RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(10)])
+            for name, lo, hi, val, _n in RT_MINERALS:
+                Color(1.0, 0.8, 0.2, 0.55) if val else Color(1, 1, 1, 0.22)
+                RoundedRectangle(pos=(self.x_of(lo), y0), size=(max(dp(3), self.x_of(hi) - self.x_of(lo)), dp(14)),
+                                 radius=[dp(3)])
+            if self.r:
+                Color(0.30, 0.95, 0.55, 0.35)
+                RoundedRectangle(pos=(self.x_of(self.r["lo"]), y0 - dp(6)),
+                                 size=(max(dp(4), self.x_of(self.r["hi"]) - self.x_of(self.r["lo"])), dp(26)),
+                                 radius=[dp(4)])
+                Color(0.30, 0.95, 0.55, 1)
+                x = self.x_of(self.r["sg"])
+                Line(points=[x, y0 - dp(10), x, y0 + dp(30)], width=dp(2))
+        for l, v in zip(self.lbls, (1, 5, 10, 15, 20)):
+            l.size = (dp(24), dp(14))
+            l.center = (self.x_of(v), self.y + dp(12))
+
+
+def rock_test(screen):
+    root = BoxLayout(orientation="vertical", spacing=dp(6), padding=[dp(10), dp(6)])
+    pop = Popup(title="Rock Test (density)", content=root, size_hint=(1, 1), separator_color=GOLD,
+                title_color=GOLD, title_size="20sp")
+    st = {"magnet": None, "res": 0.1}
+
+    def field(hint):
+        t = TextInput(hint_text=hint, multiline=False, input_filter="float", font_size="18sp",
+                      size_hint_y=None, height=dp(48))
+        root.add_widget(t)
+        return t
+
+    root.add_widget(Label(text="A = dry weight.  B = reading with the rock hanging in a tared cup of water.",
+                          color=HINT, font_size="13sp", size_hint_y=None, height=dp(36),
+                          text_size=(Window.width - dp(30), None), halign="center"))
+    ta = field("A: dry weight (grams)")
+    tb = field("B: under-water reading (grams)")
+
+    def btn(text, col, fn, **kw):
+        b = RoundButton(text=text, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
+                        font_size="14sp", bold=True, **kw)
+        b.bind(on_press=lambda *_: fn())
+        return b
+
+    opt = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+
+    def cycle_mag():
+        st["magnet"] = {None: True, True: False, False: None}[st["magnet"]]
+        b_mag.text = {None: "Magnet: not tried", True: "Magnet: sticks", False: "Magnet: no"}[st["magnet"]]
+
+    def cycle_res():
+        st["res"] = {0.1: 1.0, 1.0: 0.01, 0.01: 0.1}[st["res"]]
+        b_res.text = f"Scale: {st['res']:g} g"
+    rt_cols = [None, "gold", "silver", "white", "black", "red", "green", "pink"]
+
+    def cycle_col():
+        st["colour"] = rt_cols[(rt_cols.index(st.get("colour")) + 1) % len(rt_cols)]
+        b_col.text = "Colour: " + (st["colour"] or "any")
+    b_col = btn("Colour: any", BLUE, cycle_col)
+    b_mag = btn("Magnet: not tried", BLUE, cycle_mag)
+    b_res = btn("Scale: 0.1 g", BLUE, cycle_res)
+    opt.add_widget(b_col)
+    opt.add_widget(b_mag)
+    opt.add_widget(b_res)
+    root.add_widget(opt)
+    scale = _RtScale(size_hint_y=None, height=dp(80))
+    root.add_widget(scale)
+    sv = ScrollView()
+    out = Label(text=RT_HOW, markup=True, color=TEXTCOL, font_size="14sp", size_hint_y=None, halign="left",
+                valign="top")
+    out.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(6), None)),
+             texture_size=lambda w, t: setattr(w, "height", t[1] + dp(8)))
+    sv.add_widget(out)
+    root.add_widget(sv)
+
+    def test():
+        try:
+            r = rt_compute(float(ta.text or 0), float(tb.text or 0), st["res"], st["magnet"], st.get("colour"))
+        except ValueError as e:
+            out.text = f"[color=ff6680]{e}[/color]\n\n" + RT_HOW
+            return
+        scale.r = r
+        scale.draw()
+        out.text = rt_text(r)
+        if r["valuable"]:
+            rt_wiii()
+            try:
+                vibrate()
+            except Exception:
+                pass
+        try:
+            h = json.load(open(RT_FILE)) if os.path.exists(RT_FILE) else []
+            h.append({"t": time.strftime("%Y-%m-%d %H:%M"), "a": ta.text, "b": tb.text, "sg": round(r["sg"], 2),
+                      "match": [RT_SIMPLE.get(x[0], x[0]) for x in r["matches"]]})
+            json.dump(h[-100:], open(RT_FILE, "w"))
+        except Exception:
+            pass
+
+    def history():
+        try:
+            h = json.load(open(RT_FILE))
+        except Exception:
+            h = []
+        out.text = "[b]My rock tests[/b]\n" + ("\n".join(
+            f"{x['t']}: density {x['sg']} - {', '.join(x['match'][:3])}" for x in reversed(h[-20:])) or "None yet.")
+
+    row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(6))
+    row.add_widget(btn("Test", GOLD, test))
+    row.add_widget(btn("My tests", BLUE, history))
+    row.add_widget(btn("How", BLUE, lambda: setattr(out, "text", RT_HOW)))
+    row.add_widget(btn("Close", GREY, pop.dismiss))
+    root.add_widget(row)
+    pop.open()
+
+
+def rock_handle(screen, line, action, arg, low):
+    lw = low.strip(" .!?")
+    if lw in ("rock test", "test rock", "rock", "density", "density test", "test my rock", "gold test",
+              "test gold", "is it gold", "rock check") or action in ("rocktest",):
+        rock_test(screen)
+        return True
+    if lw in ("wiii", "wiiii", "test sound", "mineral sound"):
+        rt_wiii()
+        screen.show("AI", "That's the Genius find sound. It plays when a Rock Test matches a valuable mineral, "
+                          "and when Mineral Scan sweeps over a recorded gold or rare-metal site.")
+        return True
+    return False
+# =================== end Rock Test ===================
 
 
 if __name__ == "__main__":
