@@ -18,8 +18,13 @@ jobs:
           python-version: '3.11'
       - name: Install build tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev automake
+          # GitHub's Azure Ubuntu mirror sometimes fails; use the main Ubuntu servers and retry.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo "http://archive.ubuntu.com/ubuntu/	priority:1" | sudo tee /etc/apt/apt-mirrors.txt; fi
+          sudo sed -i 's#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g' /etc/apt/sources.list 2>/dev/null || true
+          for i in 1 2 3; do
+            sudo apt-get update -o Acquire::Retries=3 && sudo apt-get install -y -o Acquire::Retries=5 --fix-missing git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev automake && break
+            echo "apt failed, retrying in 20s"; sleep 20
+          done
           pip install --upgrade pip
           pip install buildozer cython==0.29.36
       - name: Add Genius app reader (messages, screen, share) to the Android manifest
