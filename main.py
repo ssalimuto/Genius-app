@@ -95,7 +95,7 @@ Window.softinput_mode = ""   # 110.3: screen never slides; the typing box lifts 
 # Kivy asks Android for a "raw" keyboard by default, which hides suggestions, autocorrect, auto-capitals,
 # emoji suggestions, glide typing and voice typing. Ask for a normal text keyboard instead, like other apps.
 KB_SIMPLE_FLAG = "keyboard_simple.flag"
-_KB_TEXT = 1 | 16384 | 32768          # TEXT + capital first letter + autocorrect
+_KB_TEXT = 1 | 144 | 524288          # TEXT, no word-guessing: stops the keyboard typing letters twice
 _KB_PASSWORD = 1 | 128                # TEXT + password (no suggestions, nothing learned)
 _KB_DECIMAL = 2 | 8192                # NUMBER + decimal point
 _ti_orig_init = TextInput.__init__
@@ -139,6 +139,7 @@ def _ti_smart_init(self, **kw):
             kw["input_type"] = "number"
         else:
             kw["input_type"] = "text"
+    kw.setdefault("keyboard_suggestions", False)      # suggestions made Android type some letters twice
     _ti_orig_init(self, **kw)
     try:
         self.bind(focus=_kb_on_focus)
