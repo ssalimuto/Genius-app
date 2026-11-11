@@ -1,6 +1,9 @@
 name: Build Genius APK
 on:
   push:
+    paths-ignore:
+      - 'ssalimuto/**'
+      - '.github/workflows/ssalimuto.yml'
   workflow_dispatch:
 permissions:
   contents: write
