@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "1.1"
+VERSION = "1.2"
 NEEDS_APK = "1.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "ssalimuto_live.py")
@@ -73,6 +73,14 @@ if __name__ == "__main__" and _boot_live():
     raise SystemExit(0)
 
 from kivy.app import App
+try:   # 1.2: clean modern letters (Inter, free font) for every word in the app
+    from kivy.core.text import LabelBase, DEFAULT_FONT
+    _FD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+    if os.path.exists(os.path.join(_FD, "Inter-Regular.ttf")):
+        LabelBase.register(DEFAULT_FONT, os.path.join(_FD, "Inter-Regular.ttf"), os.path.join(_FD, "Inter-Italic.ttf"),
+                           os.path.join(_FD, "Inter-Bold.ttf"), os.path.join(_FD, "Inter-BoldItalic.ttf"))
+except Exception:
+    pass
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.uix.boxlayout import BoxLayout
@@ -209,6 +217,12 @@ HINT     = (0.62, 0.64, 0.78, 1)
 # ---- Gold and Diamond looks (type: theme gold / theme diamond / theme classic) ----
 THEME_FILE = os.path.join(os.path.abspath(os.getcwd()), "theme.txt")
 THEMES = {
+    "hark": dict(BG=(0.055, 0.055, 0.065, 1), BG_TOP=(0.09, 0.09, 0.10, 1), BG_BOT=(0.04, 0.04, 0.05, 1),
+                 HEADER=(0.08, 0.08, 0.09, 0.94), PANEL=(1.0, 1.0, 1.0, 0.05),
+                 GOLD=(0.97, 0.96, 0.94, 1), GOLD2=(0.80, 0.78, 0.75, 1),
+                 BLUE=(0.98, 0.66, 0.42, 1), BLUE2=(0.86, 0.46, 0.30, 1),
+                 GREY=(1.0, 1.0, 1.0, 0.09), TEXTCOL=(0.95, 0.95, 0.96, 1), HINT=(0.60, 0.60, 0.64, 1),
+                 LINE=(0.30, 0.30, 0.33), SPARK=0),
     "gold": dict(BG=(0.03, 0.022, 0.0, 1), BG_TOP=(0.13, 0.095, 0.02, 1), BG_BOT=(0.015, 0.01, 0.0, 1),
                  HEADER=(0.11, 0.08, 0.02, 0.90), PANEL=(1.0, 0.85, 0.45, 0.07),
                  GOLD=(1.00, 0.80, 0.26, 1), GOLD2=(0.80, 0.52, 0.10, 1),
@@ -223,11 +237,11 @@ THEMES = {
                     LINE=(0.62, 0.88, 1.00), SPARK=1),
 }
 try:
-    THEME = open(THEME_FILE).read().strip().lower() or "gold"
+    THEME = open(THEME_FILE).read().strip().lower() or "hark"
 except Exception:
-    THEME = "gold"
+    THEME = "hark"
 if THEME not in THEMES and THEME != "classic":
-    THEME = "gold"
+    THEME = "hark"
 if THEME in THEMES:
     _t = THEMES[THEME]
     BG, BG_TOP, BG_BOT, HEADER, PANEL = _t["BG"], _t["BG_TOP"], _t["BG_BOT"], _t["HEADER"], _t["PANEL"]
@@ -266,8 +280,8 @@ _WALL_TEX = {}
 def wallpaper_texture():
     """The doodle wallpaper, recoloured for the current look (gold lines on black,
     or icy diamond lines with sparkles). Made once, then kept on the phone."""
-    if THEME not in THEMES:
-        return None
+    if THEME not in THEMES or THEME == "hark":
+        return None              # the clean look uses the smooth background as it is
     if THEME in _WALL_TEX:
         return _WALL_TEX[THEME]
     tex = None
@@ -471,7 +485,7 @@ ALLOWED = MappingProxyType({
     "intruders": "See who tried to break in",
     "tripwire": "Add a fake secret that traps hackers, e.g. tripwire momo_pin",
     "deep": "Turn deep thinking + web search on or off",
-    "theme": "Change the look: theme gold, theme diamond, or theme classic",
+    "theme": "Change the look: theme hark, theme gold, theme diamond, or theme classic",
     "news": "World news: Uganda, Africa, world, sports, tech (news brief for a summary)",
     "uneb": "UNEB-style question, e.g. uneb s4 biology, then mark <your answer>",
     "mark": "Mark your answer to the last UNEB question",
@@ -7297,7 +7311,7 @@ def colorize(text, pal=None):
 
 # ---- word / command suggestions while typing ----
 _SUGGEST_EXTRA = (
-    "play song", "stop music", "pause music", "lyrics", "music", "theme gold", "theme diamond", "theme classic",
+    "play song", "stop music", "pause music", "lyrics", "music", "theme hark", "theme gold", "theme diamond", "theme classic",
     "mic test", "help", "make song amapiano about ", "make song afrobeat about ", "make song gospel about ",
     "make song kadongo kamu about ", "make song dancehall about ", "make song hip hop about ",
     "make song rnb about ", "make song love ballad about ", "make song kids song about ",
@@ -13641,8 +13655,8 @@ class ChatScreen(BoxLayout):
             return
         if action == "theme":
             pick = arg.lower().strip()
-            if pick not in ("gold", "diamond", "classic"):
-                self.say(f"Your look is {THEME}. Type theme gold, theme diamond, or theme classic.")
+            if pick not in ("hark", "gold", "diamond", "classic"):
+                self.say(f"Your look is {THEME}. Type theme hark, theme gold, theme diamond, or theme classic.")
                 return
             try:
                 open(THEME_FILE, "w").write(pick)
