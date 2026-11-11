@@ -2484,13 +2484,23 @@ def gemini_reply(text, deep=False):
 
 
 # ---------------- agent: the AI chooses its own tools ----------------
+THINK_STYLE = (" How to think: first work out exactly what they are asking and what they really need. "
+               "For a problem, quietly plan the steps, do all maths exactly and check it twice, and check each fact "
+               "before you use it. If one key detail is missing and it changes the answer, ask one short question "
+               "instead of guessing. How to answer: put the answer first, in the first sentence. Take a side and "
+               "give one clear pick with the reason, not a long list of maybes. Be specific: real names, numbers, "
+               "prices in UGX, and steps they can do today. Keep it short; cut anything that does not help. "
+               "Never make up facts, links or numbers; for local prices or profits you do not know for sure, say they are a rough guess and tell them how to check. Say plainly when you are not sure. Match their mood: warm "
+               "when they are happy, calm and kind when things are hard. End with one useful next step or offer "
+               "when there is one.")
+
 ANSWER_STYLE = (" For questions about knowledge, people, places, history, science, school work or how something "
                 "works, answer like Google's AI Mode: start with one clear sentence that directly answers, then "
                 "2 to 5 short bullet points that each start with a bold label, like '- **Origin:** ...'. Use exact "
                 "names, dates and numbers. If you searched the web, add a last-but-one line 'Sources: ' with the "
                 "site names. Always finish knowledge answers with one final line exactly like "
                 "'Ask next: <short follow-up question> | <another short follow-up question>'. "
-                "For chat, feelings or simple tasks, just reply naturally without bullets or Ask next.")
+                "For chat, feelings or simple tasks, just reply naturally without bullets or Ask next.") + THINK_STYLE
 
 AGENT_RULES = ("You are Ssalimuto AI, the private assistant of ssalimuto, a young person in Uganda "
                "(timezone Africa/Kampala). Reply in clear, simple English. "
@@ -16723,7 +16733,7 @@ def ga_free(prompt, convo=None):
         ctx = ""
     sysmsg = ("You are Ssalimuto AI, a helpful AI made by Ssali Muto in Uganda, talking to " + str(CURRENT.get("name") or "the owner") +
               ", a young person in Uganda. Answer clearly, accurately and simply. If facts are given below, trust them "
-              "over your memory and mention the source name. Never invent facts; say when you are not sure.")
+              "over your memory and mention the source name. Never invent facts; say when you are not sure." + THINK_STYLE)
     if ctx:
         sysmsg += "\n\n" + ctx
     return free_ai(prompt, system=sysmsg, convo=convo)
