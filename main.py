@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "114.1"
+VERSION = "114.2"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -17026,7 +17026,7 @@ def ga_handle(screen, line, action, arg, low):
         screen.show("AI", "Stopped watching all pages.")
         return True
     if lw in ("check pages", "check watch"):
-        screen._bg(lambda: ("Changed: " + ", ".join(u for u, _ in ga_watch_check(screen))) or "No changes.",
+        screen._bg(lambda: (lambda c: ("Changed: " + ", ".join(u for u, _ in c)) if c else "No changes.")(ga_watch_check(screen)),
                    "Checking your pages...", speak=False)
         return True
     return False
@@ -17046,6 +17046,594 @@ def v110_prompt_prefix(text):
         log(f"GA context: {type(e).__name__}")
     return pre
 # =================== end Genius AI ===================
+
+
+# ===================== 114.2 Genius reads your apps and messages (real Android access, you switch it on) =====================
+# How it works, honestly:
+#  - Messages: Android "Notification Access". Genius saves messages that arrive as notifications
+#    (WhatsApp, Telegram, SMS, email, Facebook...). Only messages that arrive after it's switched on.
+#  - Screen: Android "Accessibility". Genius remembers the words on screen in the app you used last,
+#    so you can say "read screen" or "reply to this" after coming back to Genius.
+#  - SMS: the SMS inbox, after you allow the SMS permission.
+#  - Share: in any app, tap Share > Genius to send text straight to Genius.
+# All of it stays in Genius's private space on this phone. Password boxes, banking, mobile money and
+# security apps are skipped. Nothing is sent to an AI unless you ask (summarize, explain, reply).
+AR_PKG = "org.ssalimuto.genius"
+AR_APK = "https://github.com/ssalimuto/Genius-app/releases/download/android/Genius.apk"
+AR = {"dir": None, "shared": None, "shared_t": 0}
+_AR_MSG_Q = re.compile(r"\b(message|messages|msg|whatsapp|telegram|sms|texted|text me|sent me|said|say|says|wrote|chat|inbox|reply|replied)\b", re.I)
+
+
+def ar_dir():
+    """Genius's private files folder, where the Android services write."""
+    if AR["dir"]:
+        return AR["dir"]
+    d = None
+    try:
+        from jnius import autoclass
+        d = autoclass("org.kivy.android.PythonActivity").mActivity.getFilesDir().getAbsolutePath()
+    except Exception:
+        d = os.getcwd()
+    AR["dir"] = d
+    return d
+
+
+def ar_path(name):
+    return os.path.join(ar_dir(), name)
+
+
+def ar_has_services():
+    """True when this installed APK contains the reader services (114.2 or newer APK)."""
+    try:
+        from jnius import autoclass
+        autoclass("org.ssalimuto.genius.GeniusNotifListener")
+        return True
+    except Exception:
+        return False
+
+
+def _ar_secure(key):
+    try:
+        from jnius import autoclass
+        act = autoclass("org.kivy.android.PythonActivity").mActivity
+        Secure = autoclass("android.provider.Settings$Secure")
+        return str(Secure.getString(act.getContentResolver(), key) or "")
+    except Exception:
+        return ""
+
+
+def ar_notif_on():
+    return AR_PKG in _ar_secure("enabled_notification_listeners")
+
+
+def ar_screen_on():
+    return (AR_PKG + "/") in _ar_secure("enabled_accessibility_services")
+
+
+def ar_sms_on():
+    try:
+        from android.permissions import check_permission
+        return bool(check_permission("android.permission.READ_SMS"))
+    except Exception:
+        return False
+
+
+def ar_paused():
+    return os.path.exists(ar_path("genius_apps_paused.flag"))
+
+
+def _ar_open(action):
+    from jnius import autoclass
+    Intent = autoclass("android.content.Intent")
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    i = Intent(action)
+    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    act.startActivity(i)
+
+
+def ar_open_notif_settings():
+    try:
+        _ar_open("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+    except Exception:
+        open_app_settings()
+
+
+def ar_open_screen_settings():
+    try:
+        _ar_open("android.settings.ACCESSIBILITY_SETTINGS")
+    except Exception:
+        open_app_settings()
+
+
+def ar_ask_sms(after=None):
+    try:
+        from android.permissions import request_permissions
+        request_permissions(["android.permission.READ_SMS"], (lambda *a: after()) if after else None)
+    except Exception as e:
+        log(f"AR sms perm: {type(e).__name__}")
+
+
+def _ar_when(ms):
+    try:
+        t = float(ms) / 1000.0
+        if time.strftime("%Y%m%d", time.localtime(t)) == time.strftime("%Y%m%d"):
+            return time.strftime("%H:%M", time.localtime(t))
+        return time.strftime("%d %b %H:%M", time.localtime(t))
+    except Exception:
+        return ""
+
+
+def ar_messages(limit=20, app=None, who=None, since_hours=None):
+    """Newest saved messages first. Repeats (apps re-post the same notification) are removed."""
+    out, seen = [], set()
+    try:
+        lines = open(ar_path("genius_notifs.jsonl"), encoding="utf8", errors="ignore").read().splitlines()
+    except Exception:
+        lines = []
+    cut = (time.time() - since_hours * 3600) * 1000 if since_hours else 0
+    for ln in reversed(lines):
+        try:
+            m = json.loads(ln)
+        except Exception:
+            continue
+        if m.get("t", 0) < cut:
+            break
+        if app and app not in (m.get("app", "") + " " + m.get("pkg", "")).lower():
+            continue
+        if who and who not in (m.get("title", "") + " " + m.get("sub", "")).lower():
+            continue
+        k = (m.get("pkg"), m.get("title"), m.get("text"))
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(m)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def ar_sms(limit=20, who=None):
+    """Read the SMS inbox (needs the SMS permission)."""
+    res = []
+    from jnius import autoclass
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    Uri = autoclass("android.net.Uri")
+    cur = act.getContentResolver().query(Uri.parse("content://sms/inbox"), None, None, None, "date DESC")
+    if cur is None:
+        return res
+    try:
+        ia, ib, idt = cur.getColumnIndex("address"), cur.getColumnIndex("body"), cur.getColumnIndex("date")
+        while cur.moveToNext() and len(res) < limit:
+            frm = str(cur.getString(ia) or "")
+            if who and who not in frm.lower():
+                continue
+            res.append({"app": "SMS", "title": frm, "text": str(cur.getString(ib) or ""), "t": cur.getLong(idt)})
+    finally:
+        cur.close()
+    return res
+
+
+def ar_screen(n=0):
+    """The words on screen in the app used last (n=1 the one before, ...)."""
+    try:
+        if n == 0:
+            return json.load(open(ar_path("genius_screen.json"), encoding="utf8"))
+        lines = open(ar_path("genius_screens.jsonl"), encoding="utf8", errors="ignore").read().splitlines()
+        apps, out = set(), []
+        for ln in reversed(lines):
+            s = json.loads(ln)
+            if s.get("pkg") not in apps:
+                apps.add(s.get("pkg"))
+                out.append(s)
+        return out[n] if n < len(out) else None
+    except Exception:
+        return None
+
+
+def _ar_fmt(msgs, head):
+    if not msgs:
+        return None
+    rows = [f"[b]{_esc(head)}[/b]"]
+    for m in msgs:
+        who = m.get("title") or m.get("app")
+        rows.append(f"[color=#f5c542]{_esc(m.get('app', ''))}[/color] {_esc(_ar_when(m.get('t')))} - [b]{_esc(who)}[/b]: "
+                    f"{_esc(m.get('text', '')[:300])}")
+    return "\n".join(rows)
+
+
+def _ar_plain(msgs, n=40):
+    return "\n".join(f"[{m.get('app')}] {_ar_when(m.get('t'))} {m.get('title')}: {m.get('text', '')[:400]}" for m in msgs[:n])
+
+
+def ar_need(what):
+    """Friendly message telling the owner exactly how to switch a reader on."""
+    if not ar_has_services() and what in ("messages", "screen"):
+        return ("To read your apps, Genius needs the new app installed once (the normal update can't add this Android "
+                f"permission). Download and install it from:\n{AR_APK}\nThen say [b]connect apps[/b].")
+    if what == "messages":
+        return ("Message reading is off. Say [b]connect apps[/b] and tap [b]Turn on messages[/b], then switch on "
+                "[b]Genius messages[/b]. Genius saves messages that arrive after that.")
+    if what == "screen":
+        return ("Screen reading is off. Say [b]connect apps[/b] and tap [b]Turn on screen reading[/b], then open "
+                "[b]Genius screen reader[/b] and switch it on.")
+    return "SMS reading is off. Say [b]connect apps[/b] and tap [b]Allow SMS[/b]."
+
+
+def ar_status_text():
+    has = ar_has_services()
+    def st(on):
+        return "[color=#5fd35f]ON[/color]" if on else "[color=#ff7070]OFF[/color]"
+    t = ("[b]Genius reads your apps[/b] (only what you switch on)\n\n"
+         f"- [b]Messages[/b] (WhatsApp, Telegram, SMS, email... as they arrive): {st(has and ar_notif_on())}\n"
+         f"- [b]Screen[/b] (words in the app you used last): {st(has and ar_screen_on())}\n"
+         f"- [b]SMS inbox[/b]: {st(ar_sms_on())}\n")
+    if ar_paused():
+        t += "- [color=#ff7070]Paused[/color]: Genius isn't saving anything right now. Tap Resume.\n"
+    t += ("\nTry: [b]my messages[/b], [b]whatsapp messages[/b], [b]messages from Mum[/b], [b]what did I miss[/b], "
+          "[b]read sms[/b], [b]read screen[/b], [b]explain screen[/b], [b]reply to this[/b]. In any app you can also "
+          "tap [b]Share > Genius[/b].\n\n[size=12sp]Everything stays on this phone. Password boxes, banking, mobile money "
+          "and security apps are never read. Nothing goes to an AI unless you ask. If Android greys out the switch, open "
+          "Genius app info, tap the 3 dots, then Allow restricted settings.[/size]")
+    if not has:
+        t += f"\n\n[b]First:[/b] install the new Genius app once, from {AR_APK}"
+    return t
+
+
+def ar_panel(screen):
+    root = BoxLayout(orientation="vertical", spacing=dp(6), padding=[dp(10), dp(6)])
+    pop = Popup(title="Connect apps", content=root, size_hint=(1, 1), separator_color=GOLD,
+                title_color=GOLD, title_size="22sp")
+    sv = ScrollView(size_hint_y=0.5)
+    lb = Label(text=ar_status_text(), markup=True, color=TEXTCOL, font_size="15sp", size_hint_y=None,
+               halign="left", valign="top")
+    lb.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(6), None)),
+            texture_size=lambda w, t: setattr(w, "height", t[1] + dp(8)))
+    sv.add_widget(lb)
+    root.add_widget(sv)
+    grid = GridLayout(cols=2, spacing=dp(6), size_hint_y=None, height=dp(250))
+
+    def refresh(*_):
+        lb.text = ar_status_text()
+
+    def go(fn):
+        try:
+            fn()
+        except Exception as e:
+            log(f"AR panel: {type(e).__name__}: {e}")
+        Clock.schedule_once(refresh, 2)
+
+    def toggle_pause():
+        f = ar_path("genius_apps_paused.flag")
+        if os.path.exists(f):
+            os.remove(f)
+        else:
+            open(f, "w").write("1")
+        refresh()
+
+    def need_apk(fn):
+        if ar_has_services():
+            go(fn)
+        else:
+            try:
+                open_url(AR_APK)
+            except Exception:
+                pass
+    for label, col, fn in (("Turn on messages", GOLD, lambda: need_apk(ar_open_notif_settings)),
+                           ("Turn on screen reading", GOLD, lambda: need_apk(ar_open_screen_settings)),
+                           ("Allow SMS", GOLD, lambda: go(lambda: ar_ask_sms(lambda: Clock.schedule_once(refresh, 0)))),
+                           ("Genius app info", BLUE, lambda: go(open_app_settings)),
+                           ("Pause / Resume", BLUE, toggle_pause),
+                           ("Check again", BLUE, refresh),
+                           ("My messages", BLUE, lambda: (pop.dismiss(), screen.handle("my messages"))),
+                           ("Close", GREY, pop.dismiss)):
+        b = RoundButton(text=label, bg=col, fg=(0.1, 0.1, 0.1, 1) if col == GOLD else TEXTCOL,
+                        font_size="15sp", bold=True)
+        b.bind(on_press=lambda _b, f=fn: f())
+        grid.add_widget(b)
+    root.add_widget(grid)
+    pop.bind(on_dismiss=lambda *_: None)
+    pop.open()
+
+
+def _ar_ai(prompt, text):
+    r = ga_ask(prompt + "\n\n" + text[:6000], max_tokens=600)
+    if not r:
+        return "The AI didn't answer in time. Here's what I have:\n" + _esc(text[:1500])
+    return _esc(r) if "[" in r and "]" in r and "[b]" not in r else r
+
+
+_AR_APPS = {"whatsapp": "whatsapp", "telegram": "telegram", "facebook": "facebook", "messenger": "messenger",
+            "instagram": "instagram", "gmail": "gmail", "email": "mail", "emails": "mail", "tiktok": "tiktok",
+            "x": "twitter", "twitter": "twitter", "imo": "imo", "signal": "signal", "snapchat": "snapchat"}
+
+
+def ar_handle(screen, line, action, arg, low):
+    lw = low.strip(" .!?")
+    # --- the panel ---
+    if lw in ("connect apps", "app access", "apps access", "read my apps", "read apps", "read other apps",
+              "genius access", "read my phone", "messages access", "message access", "screen access", "app reader"):
+        ar_panel(screen)
+        return True
+    if lw in ("pause reading", "stop reading apps", "pause apps", "stop reading my messages"):
+        open(ar_path("genius_apps_paused.flag"), "w").write("1")
+        screen.show("AI", "Paused. Genius won't save your messages or screen until you say [b]resume reading[/b].")
+        return True
+    if lw in ("resume reading", "start reading apps", "resume apps"):
+        try:
+            os.remove(ar_path("genius_apps_paused.flag"))
+        except Exception:
+            pass
+        screen.show("AI", "Reading is back on for whatever you switched on.")
+        return True
+    if lw in ("clear messages", "delete saved messages", "forget my messages", "clear screen history"):
+        for f in ("genius_notifs.jsonl", "genius_screen.json", "genius_screens.jsonl"):
+            try:
+                os.remove(ar_path(f))
+            except Exception:
+                pass
+        screen.show("AI", "Deleted every message and screen Genius had saved.")
+        return True
+    # --- SMS ---
+    m = re.match(r"^(read )?(my )?(sms|sms messages|text messages|texts|sms inbox)( from (.+))?$", lw)
+    if m or lw in ("read sms", "read my sms", "check sms"):
+        who = (m.group(5) if m else None)
+        def job():
+            if not ar_sms_on():
+                ar_ask_sms()
+                return "Tap [b]Allow[/b] so Genius can read your SMS, then say [b]read sms[/b] again."
+            msgs = ar_sms(15, who.strip() if who else None)
+            return _ar_fmt(msgs, "Your SMS" + (f" from {who}" if who else "")) or "No SMS found."
+        screen._bg(job, "Reading your SMS...", speak=False)
+        return True
+    # --- messages from notifications ---
+    app, who = None, None
+    m1 = re.match(r"^(read |show |check )?(my )?(new |latest |recent )?(\w+) (messages|message|chats|msgs)$", lw)
+    m2 = re.match(r"^(read |show |check )?(my )?(new |latest |recent )?(messages|message|msgs|notifications)( from (.+?))?( on (\w+))?$", lw)
+    if m1 and m1.group(4) in _AR_APPS:
+        app = _AR_APPS[m1.group(4)]
+    elif m2:
+        tgt = (m2.group(6) or "").strip()
+        if m2.group(8):
+            app = _AR_APPS.get(m2.group(8), m2.group(8))
+        if tgt in _AR_APPS:
+            app = _AR_APPS[tgt]
+        elif tgt:
+            who = tgt
+    else:
+        m2 = None
+    if app or m2:
+        if not ar_has_services() or not ar_notif_on():
+            if not ar_messages(1):
+                screen.show("AI", ar_need("messages"))
+                return True
+        msgs = ar_messages(15, app=app, who=who)
+        if not msgs and not app and ar_sms_on():
+            try:
+                msgs = ar_sms(10, who)
+            except Exception:
+                msgs = []
+        head = "Your messages" + (f" on {app.title()}" if app else "") + (f" from {who.title()}" if who else "")
+        screen.show("AI", _ar_fmt(msgs, head) or
+                    ("No saved messages" + (f" from {who}" if who else "") + (f" on {app}" if app else "") +
+                     " yet. Genius saves new ones as they arrive."))
+        return True
+    if lw in ("what did i miss", "what have i missed", "summarize my messages", "summarise my messages",
+              "summary of my messages", "summarize messages", "summarise messages", "any important messages",
+              "important messages", "catch me up"):
+        def job():
+            msgs = ar_messages(60, since_hours=24)
+            if ar_sms_on():
+                try:
+                    msgs += ar_sms(15)
+                except Exception:
+                    pass
+            if not msgs:
+                return ar_need("messages") if not ar_notif_on() else "No new messages in the last day."
+            return "[b]What you missed[/b]\n" + _ar_ai(
+                "Summarize these phone messages for their owner in simple English. Group by person or app, put anything "
+                "urgent or needing a reply first, and keep it short. Don't invent anything.", _ar_plain(msgs, 60))
+        screen._bg(job, "Reading your messages...", speak=False)
+        return True
+    # --- screen ---
+    if lw in ("read screen", "read my screen", "what's on my screen", "whats on my screen", "what is on my screen",
+              "read last app", "screen text", "read the screen", "read that screen", "what was on my screen"):
+        s = ar_screen()
+        if not s:
+            screen.show("AI", ar_need("screen") if not (ar_has_services() and ar_screen_on()) else
+                        "Nothing saved yet. Open the app you want, then come back to Genius and say read screen.")
+            return True
+        screen.show("AI", f"[b]On screen in {_esc(s.get('app'))}[/b] ({_ar_when(s.get('t'))})\n{_esc(s.get('text', '')[:2500])}"
+                          "\n\nSay [b]explain screen[/b] or [b]reply to this[/b].")
+        return True
+    sm = re.match(r"^(explain|summarize|summarise|translate|what does) (this |that |the |my )?(screen|page)( to (\w+))?( mean)?$", lw)
+    if sm or lw in ("explain this", "explain that"):
+        s = ar_screen()
+        if not s:
+            screen.show("AI", ar_need("screen"))
+            return True
+        verb = sm.group(1) if sm else "explain"
+        lang = sm.group(5) if sm and sm.group(5) else None
+        if verb == "translate":
+            p = f"Translate this screen text from the {s.get('app')} app into {lang or 'English'}."
+        elif verb.startswith("summar"):
+            p = f"Summarize this text from the {s.get('app')} app in a few short lines."
+        else:
+            p = (f"This is the text on the owner's phone screen in the {s.get('app')} app. Explain simply what it says "
+                 "and what (if anything) they should do.")
+        screen._bg(lambda: _ar_ai(p, s.get("text", "")), f"Reading {s.get('app')}...", speak=False)
+        return True
+    rm = re.match(r"^(help me )?(reply|respond|answer)( to)? (this|that|it|screen|this chat|them|him|her)$", lw)
+    rn = re.match(r"^(help me )?(reply|respond)( to)? (.+?)( on (\w+))?$", lw)
+    if rm:
+        if AR.get("shared") and time.time() - AR["shared_t"] < 1800:
+            txt, src = AR["shared"], "a message they shared"
+        else:
+            s = ar_screen()
+            if not s:
+                screen.show("AI", ar_need("screen"))
+                return True
+            txt, src = s.get("text", ""), f"the {s.get('app')} app screen"
+        screen._bg(lambda: "[b]Reply you can send[/b]\n" + _ar_ai(
+            f"Below is text from {src}. Write one short, friendly reply the owner can send to the latest message. "
+            "Match its language (English or Luganda). Give only the reply.", txt), "Writing a reply...", speak=False)
+        return True
+    if rn and rn.group(4) not in ("to", "") and not rn.group(4).startswith(("this", "that")):
+        who = rn.group(4).strip()
+        msgs = ar_messages(6, who=who)
+        if msgs:
+            screen._bg(lambda: f"[b]Reply to {_esc(who.title())}[/b]\n" + _ar_ai(
+                "These are recent messages from one person. Write one short, friendly reply the owner can send. "
+                "Match their language. Give only the reply.", _ar_plain(list(reversed(msgs)))), "Writing a reply...",
+                speak=False)
+            return True
+    # --- text shared from another app ---
+    if AR.get("shared") and time.time() - AR["shared_t"] < 1800:
+        txt = AR["shared"]
+        jobs = {"summarize it": "Summarize this in a few short lines.", "summarise it": "Summarize this in a few short lines.",
+                "explain it": "Explain this simply.", "proofread it": "Fix spelling and grammar. Give only the fixed text.",
+                "key points": "List the key points as short lines starting with '- '."}
+        if lw in jobs:
+            screen._bg(lambda: _ar_ai(jobs[lw], txt), "Working on it...", speak=False)
+            return True
+        tm = re.match(r"^translate it( to| into)? (\w+)$", lw)
+        if tm:
+            screen._bg(lambda: _ar_ai(f"Translate this into {tm.group(2)}. Give only the translation.", txt),
+                       "Translating...", speak=False)
+            return True
+        if lw in ("note it", "save as note", "save it as a note", "add to notes"):
+            try:
+                with open(NOTES_FILE, "a", encoding="utf8") as f:
+                    f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M')}] {txt}\n")
+                screen.show("AI", "Saved to your notes.")
+            except Exception:
+                screen.show("AI", "I couldn't save it to notes.")
+            return True
+    return False
+
+
+def ar_context(q):
+    """Messages that match a question like 'what did Mum say?' (local, private)."""
+    if not _AR_MSG_Q.search(q or ""):
+        return ""
+    words = set(w for w in re.findall(r"[a-z0-9']+", q.lower()) if w not in _GA_STOP and len(w) > 2)
+    msgs = ar_messages(200, since_hours=24 * 7)
+    pick = [m for m in msgs if words & set(re.findall(r"[a-z0-9']+", (m.get("title", "") + " " + m.get("app", "") + " " +
+                                                                     m.get("text", "")).lower()))][:15] or msgs[:8]
+    return ("Recent messages on the owner's phone (private):\n" + _ar_plain(pick)) if pick else ""
+
+
+# --- plug into Genius AI ---
+_ar_prev_ga_handle = ga_handle
+
+
+def ga_handle(screen, line, action, arg, low):
+    try:
+        if ar_handle(screen, line, action, arg, low):
+            return True
+    except Exception as e:
+        log(f"APP READER: {type(e).__name__}: {e}")
+    return _ar_prev_ga_handle(screen, line, action, arg, low)
+
+
+_ar_prev_ga_context = ga_context
+
+
+def ga_context(q, web=True):
+    base = _ar_prev_ga_context(q, web)
+    try:
+        extra = ar_context(q)
+    except Exception:
+        extra = ""
+    return (base + "\n\n" + extra).strip() if extra else base
+
+
+GA_ABOUT = GA_ABOUT.split("\n\n[size=12sp]")[0] + (
+    "\n- [b]Reads your apps[/b] (114.2): say [b]connect apps[/b]. Then: [b]my messages[/b], [b]whatsapp messages[/b], "
+    "[b]what did I miss[/b], [b]read sms[/b], [b]read screen[/b], [b]explain screen[/b], [b]reply to this[/b], or "
+    "Share > Genius from any app. You switch each one on; it all stays on this phone.")
+
+
+# --- Share > Genius from any app ---
+def ar_shared_from(intent):
+    try:
+        if intent is None or str(intent.getAction() or "") != "android.intent.action.SEND":
+            return None
+        txt = intent.getStringExtra("android.intent.extra.TEXT")
+        sub = intent.getStringExtra("android.intent.extra.SUBJECT")
+        intent.setAction("genius.shared.done")
+        txt = str(txt or "").strip()
+        if sub and str(sub) not in txt:
+            txt = str(sub) + "\n" + txt
+        return txt[:8000] or None
+    except Exception:
+        return None
+
+
+def ar_show_shared(chat):
+    txt = AR.get("shared")
+    if not txt or chat is None or AR.get("shown") == AR["shared_t"]:
+        return
+    AR["shown"] = AR["shared_t"]
+    chat.show("AI", "[b]Shared with Genius[/b]\n" + _esc(txt[:1500]) +
+              "\n\nSay [b]summarize it[/b], [b]explain it[/b], [b]reply to it[/b], [b]translate it to Luganda[/b], "
+              "[b]proofread it[/b] or [b]note it[/b].")
+
+
+def _ar_took(txt):
+    if txt:
+        AR["shared"], AR["shared_t"] = txt, time.time()
+
+
+_ar_prev_on_start = GeniusApp.on_start
+
+
+def _ar_on_start(self):
+    try:
+        from jnius import autoclass
+        _ar_took(ar_shared_from(autoclass("org.kivy.android.PythonActivity").mActivity.getIntent()))
+    except Exception:
+        pass
+    return _ar_prev_on_start(self)
+
+
+_ar_prev_new_intent = GeniusApp._new_intent
+
+
+def _ar_new_intent(self, intent):
+    txt = ar_shared_from(intent)
+    if txt:
+        _ar_took(txt)
+        chat = getattr(self, "chat", None)
+        if chat is not None:
+            Clock.schedule_once(lambda *_: ar_show_shared(chat), 0.5)
+        return
+    return _ar_prev_new_intent(self, intent)
+
+
+_ar_prev_open_home = GeniusApp.open_home
+
+
+def _ar_open_home(self):
+    if AR.get("shared") and AR.get("shown") != AR["shared_t"]:
+        return self.open_chat()
+    return _ar_prev_open_home(self)
+
+
+_ar_prev_open_chat = GeniusApp.open_chat
+
+
+def _ar_open_chat(self):
+    r = _ar_prev_open_chat(self)
+    if AR.get("shared"):
+        Clock.schedule_once(lambda *_: ar_show_shared(getattr(self, "chat", None)), 1.0)
+    return r
+
+
+GeniusApp.on_start = _ar_on_start
+GeniusApp._new_intent = _ar_new_intent
+GeniusApp.open_home = _ar_open_home
+GeniusApp.open_chat = _ar_open_chat
+# =================== end app reader ===================
 
 
 if __name__ == "__main__":
