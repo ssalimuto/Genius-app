@@ -27,6 +27,8 @@ jobs:
           grep -n '^PLAY_BUILD' main.py
           sed -i 's/^android.permissions = .*/android.permissions = INTERNET,CAMERA,RECORD_AUDIO,VIBRATE,POST_NOTIFICATIONS,READ_MEDIA_IMAGES,SYSTEM_ALERT_WINDOW/' buildozer.spec
           sed -i 's/^android.api = .*/android.api = 35/' buildozer.spec
+          sed -i 's#^p4a.source_dir = .*#p4a.branch = v2024.01.21#' buildozer.spec
+          sed -i '/^android.manifest.intent_filters/d;/^android.manifest.launch_mode/d' buildozer.spec
           sed -i '/^\[buildozer\]/i android.release_artifact = aab' buildozer.spec
           cat buildozer.spec
       - name: Build AAB
