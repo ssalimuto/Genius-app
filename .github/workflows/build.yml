@@ -22,6 +22,13 @@ jobs:
           sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev automake
           pip install --upgrade pip
           pip install buildozer cython==0.29.36
+      - name: Add Genius app reader (messages, screen, share) to the Android manifest
+        run: |
+          git clone --depth 1 -b v2024.01.21 https://github.com/kivy/python-for-android.git p4a-src
+          python3 -c "p='p4a-src/pythonforandroid/bootstraps/sdl2/build/templates/AndroidManifest.tmpl.xml'; s=open(p).read(); x=open('android_extra/services.xml').read(); assert s.count('</application>')==1; open(p,'w').write(s.replace('</application>', x+'\n    </application>'))"
+          sed -i "s#^p4a.source_dir = .*#p4a.source_dir = $GITHUB_WORKSPACE/p4a-src#" buildozer.spec
+          grep -n "GeniusNotifListener\|GeniusScreenReader" p4a-src/pythonforandroid/bootstraps/sdl2/build/templates/AndroidManifest.tmpl.xml
+          grep -n "p4a.source_dir" buildozer.spec
       - name: Build APK
         run: yes | buildozer android debug
       - name: Prepare quiet update files
