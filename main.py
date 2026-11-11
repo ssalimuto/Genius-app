@@ -14938,14 +14938,36 @@ class HomeScreen(BoxLayout):
         col.add_widget(self.rate_lbl)
         grid = GridLayout(cols=2, spacing=12, size_hint_y=None)
         grid.bind(minimum_height=grid.setter("height"))
-        tiles = [("Chat with Genius", None, GOLD), ("Talk (voice)", "talk", BLUE),
+        top = Label(text="[b]Your space[/b]", markup=True, color=TEXTCOL, font_size="15sp", size_hint_y=None,
+                    height="26dp", halign="left", valign="middle")
+        top.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        col.add_widget(top)
+        main = GridLayout(cols=2, spacing=12, size_hint_y=None)
+        main.bind(minimum_height=main.setter("height"))
+        for label, sub, act in [("Chat", "Ask anything", None), ("Projects", "Long work, kept together", "projects"),
+                                ("Memory", "What I remember about you", "memory"), ("Build an app", "Describe it, I make it", "app builder"),
+                                ("My apps", "Apps you built", "my apps"), ("Daily brief", "Your day at a glance", "brief"),
+                                ("Connect apps", "Messages, screen, SMS", "connect apps"), ("Help", "Everything I can do", "help")]:
+            b = RoundButton(text=f"[b]{label}[/b]\n[size=12sp]{sub}[/size]", markup=True,
+                            bg=GOLD if act is None else GREY,
+                            fg=(0.08, 0.08, 0.09, 1) if act is None else TEXTCOL,
+                            size_hint_y=None, height="84dp", font_size="16sp", halign="center")
+            b.bind(size=lambda w, *_: setattr(w, "text_size", (max(10, w.width - 16), None)))
+            b.bind(on_press=lambda _b, a=act: self.go(a))
+            main.add_widget(b)
+        col.add_widget(main)
+        more = Label(text="[b]More[/b]", markup=True, color=TEXTCOL, font_size="15sp", size_hint_y=None,
+                     height="26dp", halign="left", valign="middle")
+        more.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        col.add_widget(more)
+        tiles = [("Talk (voice)", "talk", BLUE),
                  ("Genius Wealth", "wealth", GOLD), ("Read a trading chart", "chart", GOLD2),
                  ("Make music", "sound", BLUE2), ("Photo studio", "fun", BLUE),
                  ("Super zoom camera", "camera", BLUE2), ("Selfie camera", "selfie", GOLD2),
                  ("Genius Eye beauty", "genius eye", GOLD),
                  ("Genius Ultra photo", "ultra", BLUE),
                  ("My storage", "storage", GREY), ("Genius everywhere", "everywhere", GREY),
-                 ("Share Genius", "share", GREY), ("My plan", "premium", GREY)]
+                 ("Share Genius", "share", GREY)]
         for label, act, c in tiles:
             b = RoundButton(text=label, bg=c, fg=(0.1, 0.08, 0.02, 1) if c in (GOLD, GOLD2) else TEXTCOL,
                             size_hint_y=None, height="88dp", font_size="16sp", bold=True)
