@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="genius_a11y_desc">Lets Genius read the words on screen in the app you used last, only when you ask it (for example: read screen, explain screen, reply to this). Password boxes, banking, mobile money and security apps are never read. Everything stays on your phone.</string>
+</resources>
