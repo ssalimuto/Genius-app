@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "114.2"
+VERSION = "115.0"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -17634,6 +17634,487 @@ GeniusApp._new_intent = _ar_new_intent
 GeniusApp.open_home = _ar_open_home
 GeniusApp.open_chat = _ar_open_chat
 # =================== end app reader ===================
+
+
+# ===================== 115.0 Ideas from Hark: automatic memory, Projects, App Builder =====================
+HK_APP = "Genius"
+HK_PROJECTS = "genius_projects.json"
+HK_APPS_DIR = "my_apps"
+HK = {"dialog": None, "wv": None}
+
+# ---------- 1. Automatic memory: remembers you as you talk, no "remember" needed ----------
+_HK_MEM_PAT = re.compile(
+    r"^(my name is|call me|i am in (s\.?\s?[1-6]|senior\s+[1-6]|p\.?\s?[1-7]|year\s+\d|university|campus)|i'm in (s\.?\s?[1-6]|senior\s+[1-6])|"
+    r"my goal is|my dream is|i want to become|i want to be a|i plan to become|i like|i love|i prefer|i enjoy|i hate|i don't like|"
+    r"i live in|i stay in|i study at|i school at|i go to school at|i'm from|i am from|i was born|my birthday is|"
+    r"my (exam|exams|school|class teacher|teacher|mum|mother|dad|father|sister|brother|best friend|friend|village|home|"
+    r"favourite \w+|favorite \w+|phone is an?|hobby|hobbies|business|church|mosque|team|subject|subjects|exam date) (is|are|was)\b)",
+    re.I)
+
+
+def hk_auto_memory(text):
+    """Pick personal facts out of a normal chat message and keep them (silently)."""
+    if not text or len(text) > 600 or CURRENT.get("owner") is None:
+        return
+    for sent in re.split(r"(?<=[.!\n])\s+|\s+and\s+(?=(?:my|i)\b)", text.strip()):
+        s = sent.strip(" .!,")
+        if len(s) < 6 or "?" in s or not _HK_MEM_PAT.match(s):
+            continue
+        if re.search(r"\b(pin|password|passcode|otp|secret|cvv|code)\b", s.lower()):
+            continue
+        try:
+            d = mem_load()
+            known = " ".join([d.get("name", ""), d.get("class", "")] + d["goals"] + d["prefs"] + d["facts"]).lower()
+            if s.lower() in known:
+                continue
+            mem_remember(s)
+            log(f"AUTO-MEMORY: kept '{s[:60]}'")
+        except Exception as e:
+            log(f"AUTO-MEMORY: {type(e).__name__}")
+
+
+# ---------- 2. Projects: a separate space for long work (an exam, a business, a hackathon) ----------
+def hk_projects():
+    d = _v110_load(HK_PROJECTS, {})
+    d.setdefault("_active", "")
+    d.setdefault("items", {})
+    return d
+
+
+def hk_proj_save(d):
+    _v110_save(HK_PROJECTS, d)
+
+
+def hk_find(d, name):
+    name = name.strip().lower()
+    if name in d["items"]:
+        return name
+    for k in d["items"]:
+        if name and (name in k or k in name):
+            return k
+    return None
+
+
+def hk_proj_show(d, key):
+    p = d["items"][key]
+    notes = p.get("notes", [])
+    t = f"[b]Project: {_esc(p.get('title', key))}[/b]" + ("  (open)" if d["_active"] == key else "") + "\n"
+    t += f"Started {p.get('created', '')}. {len(notes)} note{'s' if len(notes) != 1 else ''}.\n"
+    if p.get("plan"):
+        t += "\n[b]Plan[/b]\n" + _esc(p["plan"][:1500]) + "\n"
+    if notes:
+        t += "\n[b]Latest notes[/b]\n" + "\n".join(f"- {_esc(n['t'])}: {_esc(n['text'][:200])}" for n in notes[-8:])
+    t += ("\n\nSay [b]project note <text>[/b], [b]project plan[/b], [b]project next[/b], [b]projects[/b] or "
+          "[b]close project[/b]. While a project is open, my answers use its notes.")
+    return t
+
+
+def hk_proj_context():
+    d = hk_projects()
+    k = d.get("_active")
+    if not k or k not in d["items"]:
+        return ""
+    p = d["items"][k]
+    notes = "\n".join(f"- {n['text'][:200]}" for n in p.get("notes", [])[-15:])
+    return (f"[Open project: {p.get('title', k)}. Use it when relevant.]\n" + (f"Plan: {p['plan'][:800]}\n" if p.get("plan") else "")
+            + (f"Notes:\n{notes}\n" if notes else ""))
+
+
+def hk_proj_handle(screen, line, lw):
+    m = re.match(r"^(new project|create project|start project|make project|make a project|start a project)\s*:?\s+(.+)$", lw)
+    if m:
+        title = line.strip()[len(m.group(1)):].strip(" :.!")[:60]
+        d = hk_projects()
+        key = title.lower()
+        d["items"].setdefault(key, {"title": title, "created": time.strftime("%Y-%m-%d"), "notes": [], "plan": ""})
+        d["_active"] = key
+        hk_proj_save(d)
+        screen.show("AI", f"Made the project [b]{_esc(title)}[/b] and opened it. Add things with [b]project note ...[/b], "
+                          "or say [b]project plan[/b] and I'll plan it step by step.")
+        return True
+    if lw in ("projects", "my projects", "list projects", "show projects"):
+        d = hk_projects()
+        if not d["items"]:
+            screen.show("AI", "No projects yet. Say [b]new project UCE exams[/b] (or a business, a hackathon...).")
+        else:
+            screen.show("AI", "[b]Your projects[/b]\n" + "\n".join(
+                f"- {_esc(p.get('title', k))}{'  [color=#f5c542](open)[/color]' if d['_active'] == k else ''} "
+                f"({len(p.get('notes', []))} notes)" for k, p in d["items"].items()) +
+                "\n\nSay [b]open project <name>[/b].")
+        return True
+    m = re.match(r"^(open project|switch to project|go to project|project)\s+(.+)$", lw)
+    if m and m.group(2) not in ("plan", "next", "notes") and not m.group(2).startswith(("note ", "note:")):
+        d = hk_projects()
+        k = hk_find(d, m.group(2))
+        if not k:
+            if m.group(1) == "project":
+                return False
+            screen.show("AI", f"No project called {_esc(m.group(2))}. Say [b]projects[/b] to see them.")
+            return True
+        d["_active"] = k
+        hk_proj_save(d)
+        screen.show("AI", hk_proj_show(d, k))
+        return True
+    m = re.match(r"^(project note|add to project|project add|note to project)\s*:?\s+(.+)$", lw)
+    if m:
+        d = hk_projects()
+        k = d.get("_active")
+        if not k:
+            screen.show("AI", "Open a project first: say [b]projects[/b], or [b]new project <name>[/b].")
+            return True
+        txt = line.strip()[len(m.group(1)):].strip(" :")
+        d["items"][k].setdefault("notes", []).append({"t": time.strftime("%Y-%m-%d %H:%M"), "text": txt[:1000]})
+        d["items"][k]["notes"] = d["items"][k]["notes"][-300:]
+        hk_proj_save(d)
+        screen.show("AI", f"Added to [b]{_esc(d['items'][k]['title'])}[/b].")
+        return True
+    if lw in ("project plan", "plan my project", "plan this project", "project next", "what next in my project",
+              "next step"):
+        d = hk_projects()
+        k = d.get("_active")
+        if not k:
+            screen.show("AI", "Open a project first: say [b]projects[/b].")
+            return True
+        p = d["items"][k]
+        nxt = lw in ("project next", "what next in my project", "next step")
+
+        def job():
+            notes = "\n".join(f"- {n['text']}" for n in p.get("notes", [])[-30:]) or "(no notes yet)"
+            if nxt:
+                ask = (f"Project: {p['title']}. Plan so far:\n{p.get('plan') or '(none)'}\nNotes:\n{notes}\n\n"
+                       "Today's date is " + time.strftime("%d %B %Y") + ". Give the 3 most useful next steps for today, short.")
+            else:
+                ask = (f"Make a clear step-by-step plan for this project for a young person in Uganda: {p['title']}.\n"
+                       f"Their notes:\n{notes}\nToday's date is {time.strftime('%d %B %Y')}. Use dated steps where useful, "
+                       "max 12 short lines starting with '- '. No intro.")
+            r = ga_ask(ask, max_tokens=700)
+            if not r:
+                return "The AI didn't answer in time. Try again in a moment."
+            if not nxt:
+                dd = hk_projects()
+                if k in dd["items"]:
+                    dd["items"][k]["plan"] = r.strip()[:3000]
+                    hk_proj_save(dd)
+            return f"[b]{'Next steps' if nxt else 'Plan'}: {_esc(p['title'])}[/b]\n" + _esc(r)
+        screen._bg(job, "Planning...", speak=False)
+        return True
+    if lw in ("close project", "leave project", "exit project"):
+        d = hk_projects()
+        d["_active"] = ""
+        hk_proj_save(d)
+        screen.show("AI", "Project closed. Back to normal chat.")
+        return True
+    m = re.match(r"^(delete project|remove project)\s+(.+)$", lw)
+    if m:
+        d = hk_projects()
+        k = hk_find(d, m.group(2))
+        if not k:
+            screen.show("AI", "No project with that name.")
+            return True
+        t = d["items"].pop(k).get("title", k)
+        if d["_active"] == k:
+            d["_active"] = ""
+        hk_proj_save(d)
+        screen.show("AI", f"Deleted the project {_esc(t)}.")
+        return True
+    return False
+
+
+# ---------- 3. App Builder: describe an app, AI builds it, it runs inside the app ----------
+_HK_APP_RULES = (
+    "You are an expert mobile web app developer. Build a COMPLETE, working single-file HTML5 app.\n"
+    "Rules: one file only, starting with <!DOCTYPE html>; all CSS in <style> and all JavaScript in <script>; "
+    "NO external files, CDNs, fonts or images from the internet (use emoji, CSS shapes or inline SVG); must work offline; "
+    "mobile-first, big touch-friendly buttons, looks modern and beautiful (rounded cards, gradient header, good spacing); "
+    "include <meta name=viewport content='width=device-width,initial-scale=1'>; save user data with localStorage; "
+    "no alert() for normal use; every button must work; no placeholder or TODO code. "
+    "Reply with ONLY the HTML code, nothing before or after.")
+
+
+def hk_apps_dir():
+    d = HK_APPS_DIR
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def hk_slug(t):
+    s = re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")[:40]
+    return s or ("app-" + time.strftime("%H%M%S"))
+
+
+def hk_extract_html(r):
+    if not r:
+        return None
+    r = re.sub(r"^```(?:html)?\s*", "", r.strip(), flags=re.I)
+    r = re.sub(r"\s*```\s*$", "", r)
+    i = r.lower().find("<!doctype html")
+    if i < 0:
+        i = r.lower().find("<html")
+    if i < 0:
+        return None
+    h = r[i:]
+    j = h.lower().rfind("</html>")
+    if j >= 0:
+        h = h[:j + 7]
+    else:
+        if "<script" in h.lower() and h.lower().count("<script") > h.lower().count("</script>"):
+            h += "\n</script>"
+        h += "\n</body></html>"
+    if "<body" not in h.lower() or len(h) < 300:
+        return None
+    return h
+
+
+def hk_ai_code(prompt):
+    """Ask for code: strongest AI first, free backup if it fails or is cut short."""
+    r = None
+    try:
+        r, _, _ = race_answer(lambda: ask_gemini(prompt, max_tokens=7000, system=_HK_APP_RULES), prompt,
+                              hedge_after=25, deadline=110)
+    except Exception as e:
+        log(f"APP BUILDER: main AI {type(e).__name__}")
+    h = hk_extract_html(r)
+    if not h:
+        try:
+            h = hk_extract_html(free_ai(prompt, system=_HK_APP_RULES, max_tokens=6000))
+        except Exception as e:
+            log(f"APP BUILDER: free AI {type(e).__name__}")
+    return h
+
+
+def hk_apps():
+    try:
+        out = []
+        for f in os.listdir(hk_apps_dir()):
+            if f.endswith(".html"):
+                p = os.path.join(hk_apps_dir(), f)
+                out.append((os.path.getmtime(p), f[:-5], p))
+        return [(n, p) for _, n, p in sorted(out, reverse=True)]
+    except Exception:
+        return []
+
+
+def hk_find_app(name):
+    name = hk_slug(name)
+    apps = hk_apps()
+    for n, p in apps:
+        if n == name:
+            return n, p
+    for n, p in apps:
+        if name in n or n in name:
+            return n, p
+    return None, None
+
+
+def hk_build(desc, label=None):
+    if not net_online():
+        return None, "I need internet to build a new app. Your saved apps still open offline: say [b]my apps[/b]."
+    h = hk_ai_code("Build this app: " + desc.strip() + "\nGive it a short name shown at the top.")
+    if not h:
+        return None, "The AI couldn't finish the app this time. Say the same again and I'll retry, or describe it more simply."
+    name = hk_slug(re.sub(r"^(an?|the|my)\s+", "", (label or desc).strip(), flags=re.I)[:40])
+    path = os.path.join(hk_apps_dir(), name + ".html")
+    open(path, "w", encoding="utf8").write(h)
+    try:
+        dl = genius_dl("apps")
+        os.makedirs(dl, exist_ok=True)
+        open(os.path.join(dl, name + ".html"), "w", encoding="utf8").write(h)
+    except Exception:
+        pass
+    return name, None
+
+
+def hk_edit(name, change):
+    n, p = hk_find_app(name)
+    if not p:
+        return None, f"No app called {name}. Say [b]my apps[/b]."
+    old = open(p, encoding="utf8").read()
+    h = hk_ai_code("Here is an existing app:\n" + old[:24000] + "\n\nChange it like this: " + change +
+                   "\nKeep everything else working. Return the full updated file.")
+    if not h:
+        return None, "The AI couldn't finish that change. Try again or describe it more simply."
+    open(p, "w", encoding="utf8").write(h)
+    return n, None
+
+
+def hk_show_app(path, screen=None):
+    """Run a built app full screen inside this app (Android WebView). Back button closes it."""
+    html = open(path, encoding="utf8").read()
+    try:
+        from jnius import autoclass
+        from android.runnable import run_on_ui_thread
+    except Exception:
+        import webbrowser
+        webbrowser.open("file://" + os.path.abspath(path))
+        return
+
+    @run_on_ui_thread
+    def show():
+        try:
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            WebView = autoclass("android.webkit.WebView")
+            Dialog = autoclass("android.app.Dialog")
+            style = autoclass("android.R$style")
+            wv = WebView(act)
+            st = wv.getSettings()
+            st.setJavaScriptEnabled(True)
+            st.setDomStorageEnabled(True)
+            wv.loadDataWithBaseURL("https://apps.local/" + os.path.basename(path), html, "text/html", "utf-8", None)
+            d = Dialog(act, style.Theme_Black_NoTitleBar_Fullscreen)
+            d.setContentView(wv)
+            d.setCancelable(True)
+            d.show()
+            HK["dialog"], HK["wv"] = d, wv
+        except Exception as e:
+            log(f"APP BUILDER show: {type(e).__name__}: {e}")
+            if screen is not None:
+                Clock.schedule_once(lambda *_: screen.show("AI", "I couldn't open the app viewer on this phone. "
+                                                                  f"The app is saved in {nice_where(path)}."), 0)
+    show()
+
+
+def hk_builder_panel(screen):
+    root = BoxLayout(orientation="vertical", spacing=dp(6), padding=[dp(10), dp(6)])
+    pop = Popup(title="App Builder", content=root, size_hint=(1, 1), separator_color=GOLD,
+                title_color=GOLD, title_size="22sp")
+    info = Label(text="[b]Describe any app[/b] and the AI builds it. It runs right here, even offline, and saves your data.\n"
+                      "[size=13sp]Ideas: a quiz on S4 biology, a shop sales tracker in UGX, a timetable, a calculator for "
+                      "boda fares, a Luganda word game, a budget planner.[/size]",
+                 markup=True, color=TEXTCOL, font_size="15sp", size_hint_y=None, height=dp(96), halign="left", valign="top")
+    info.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(6), None)))
+    root.add_widget(info)
+    ti = TextInput(hint_text="e.g. a quiz app about Uganda's history with 10 questions and a score",
+                   multiline=True, font_size="16sp", size_hint_y=None, height=dp(96))
+    root.add_widget(ti)
+    b = RoundButton(text="Build my app", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), font_size="17sp", bold=True,
+                    size_hint_y=None, height=dp(52))
+
+    def go(*_):
+        if ti.text.strip():
+            pop.dismiss()
+            screen.handle("build app " + ti.text.strip())
+        else:
+            ti.hint_text = "Type what your app should do first"
+    b.bind(on_press=go)
+    root.add_widget(b)
+    sv = ScrollView()
+    lst = GridLayout(cols=1, spacing=dp(6), size_hint_y=None)
+    lst.bind(minimum_height=lst.setter("height"))
+    apps = hk_apps()
+    if not apps:
+        lst.add_widget(Label(text="Your apps will show here.", color=TEXTCOL, size_hint_y=None, height=dp(40)))
+    for n, p in apps[:30]:
+        ab = RoundButton(text="Open  " + n.replace("-", " ").title(), bg=BLUE, fg=TEXTCOL, font_size="15sp",
+                         size_hint_y=None, height=dp(46))
+        ab.bind(on_press=lambda _b, pp=p: (pop.dismiss(), hk_show_app(pp, screen)))
+        lst.add_widget(ab)
+    sv.add_widget(lst)
+    root.add_widget(sv)
+    c = RoundButton(text="Close", bg=GREY, fg=TEXTCOL, font_size="15sp", size_hint_y=None, height=dp(46))
+    c.bind(on_press=lambda *_: pop.dismiss())
+    root.add_widget(c)
+    pop.open()
+
+
+def hk_app_handle(screen, line, lw):
+    if lw in ("app builder", "build app", "build an app", "make app", "make an app", "create app", "apps builder",
+              "website builder", "build a website", "page builder"):
+        hk_builder_panel(screen)
+        return True
+    m = re.match(r"^(build|make|create|code|design)( me)?( an?| the)? (app|application|website|web app|game|tool|page)"
+                 r"( that| which| for| to| about| called|:)?\s+(.+)$", lw)
+    if m:
+        desc = line.strip()[len(line.strip()) - len(m.group(6)):]
+        kind = m.group(4)
+        full = (f"a {kind} " + (m.group(5) or "").strip(": ") + " " + desc).strip()
+
+        def job():
+            name, err = hk_build(full, desc)
+            if err:
+                return err
+            Clock.schedule_once(lambda *_: hk_show_app(os.path.join(hk_apps_dir(), name + ".html"), screen), 0.3)
+            return (f"Your app [b]{_esc(name.replace('-', ' ').title())}[/b] is ready and opening now. Press back to close it.\n"
+                    f"Say [b]open app {name}[/b] any time, [b]change app {name}: make it blue[/b] to improve it, or "
+                    "[b]my apps[/b] to see all. A copy is in Download/" + HK_APP.replace(" ", "") + "/apps to share.")
+        screen._bg(job, f"Building your {kind}... (about 30-90 seconds)", speak=False)
+        return True
+    if lw in ("my apps", "apps i built", "my websites", "my games", "built apps"):
+        apps = hk_apps()
+        screen.show("AI", ("[b]Apps you built[/b]\n" + "\n".join(f"- {n}" for n, _ in apps[:40]) +
+                           "\n\nSay [b]open app <name>[/b].") if apps else
+                    "No apps yet. Say [b]build app[/b] and describe it, e.g. build app a quiz about Uganda.")
+        return True
+    m = re.match(r"^(open|run|start|play) (app|game|website|page) (.+)$", lw)
+    if m:
+        n, p = hk_find_app(m.group(3))
+        if not p:
+            return False
+        hk_show_app(p, screen)
+        screen.show("AI", f"Opening {_esc(n)}. Press back to close it.")
+        return True
+    m = re.match(r"^(change|edit|improve|update|fix) (app|game|website|page) ([^:]+?)\s*[:,-]\s*(.+)$", lw)
+    if m:
+        name, change = m.group(3), line.strip()[len(line.strip()) - len(m.group(4)):]
+
+        def job():
+            n, err = hk_edit(name, change)
+            if err:
+                return err
+            Clock.schedule_once(lambda *_: hk_show_app(os.path.join(hk_apps_dir(), n + ".html"), screen), 0.3)
+            return f"Updated [b]{_esc(n)}[/b]. Opening it now."
+        screen._bg(job, "Changing your app...", speak=False)
+        return True
+    m = re.match(r"^(delete|remove) (app|game|website|page) (.+)$", lw)
+    if m:
+        n, p = hk_find_app(m.group(3))
+        if not p:
+            screen.show("AI", "No app with that name. Say [b]my apps[/b].")
+            return True
+        os.remove(p)
+        screen.show("AI", f"Deleted {_esc(n)}.")
+        return True
+    return False
+
+
+# ---------- plug in ----------
+_hk_prev_ga_handle = ga_handle
+
+
+def ga_handle(screen, line, action, arg, low):
+    lw = low.strip(" .!?")
+    try:
+        if hk_proj_handle(screen, line, lw) or hk_app_handle(screen, line, lw):
+            return True
+    except Exception as e:
+        log(f"HK: {type(e).__name__}: {e}")
+    return _hk_prev_ga_handle(screen, line, action, arg, low)
+
+
+_hk_prev_prefix = v110_prompt_prefix
+
+
+def v110_prompt_prefix(text):
+    pre = _hk_prev_prefix(text)
+    try:
+        threading.Thread(target=hk_auto_memory, args=(text,), daemon=True).start()
+    except Exception:
+        pass
+    try:
+        pc = hk_proj_context()
+        if pc:
+            pre += pc
+    except Exception:
+        pass
+    return pre
+
+
+GA_ABOUT = GA_ABOUT + (
+    "\n- [b]Remembers you[/b] (115): tell me things like 'my exam is on 20 November' in normal chat and I keep them, "
+    "no 'remember' needed. Say [b]memory[/b] to see or [b]forget ...[/b] to remove.\n"
+    "- [b]Projects[/b]: [b]new project UCE exams[/b], [b]project note ...[/b], [b]project plan[/b], [b]project next[/b], [b]projects[/b].\n"
+    "- [b]App Builder[/b]: [b]build app a quiz about Uganda[/b]. The AI codes it and it runs right here. [b]my apps[/b], "
+    "[b]change app <name>: ...[/b]")
+# =================== end Hark ideas ===================
 
 
 if __name__ == "__main__":
