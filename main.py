@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "115.0"
+VERSION = "115.1"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -584,7 +584,7 @@ What this means
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
-VERSION_DATE = "2026-10-27"
+VERSION_DATE = "2026-11-11"
 CHANGELOG = """Genius 114.1 (2026-10-27)
 - Smart keyboard: Genius now uses your phone's full keyboard, like other apps, with word suggestions, autocorrect, capital letters, emoji, glide typing and voice typing. Number boxes open the number pad. Password boxes never show suggestions.
 - Say keyboard simple to switch back to the old plain keyboard, or keyboard smart to turn it on again.
@@ -3892,8 +3892,8 @@ def other_ai(name, text, system=None, convo=None, max_tokens=700):
 NO_AI_MSG = ("I need an AI key to answer that. Type key and I'll walk you through getting a free one "
              "in about 2 minutes (or type setgroq / setkey if you already have one). "
              "Offline I can still do notes, calc, money, quiz, music, effects and more: type help.")
-NET_AI_MSG = ("I couldn't reach any AI just now. Check your internet or move to better signal, "
-              "then ask again.")
+NET_AI_MSG = ("I couldn't reach a free AI this second because many people share them. I'll answer "
+              "by myself in a moment, no need to ask again. For instant answers, type key and add a free Gemini key.")
 
 
 # ================= Key wizard: anyone can get and save a free AI key by themselves =================
@@ -6779,39 +6779,71 @@ def wait_for_net(sec=15):
     return False
 
 
+APP_NAME_FREE = "Genius"
+FREE_WAYS = [  # free AIs that need no key; each has its own limit, so Genius moves to the next at once
+    ("https://text.pollinations.ai/openai", "openai"),
+    ("https://api.llm7.io/v1/chat/completions", "default"),
+    ("https://text.pollinations.ai/openai", "openai-fast"),
+    ("https://api.llm7.io/v1/chat/completions", "mistral-Nemo-Instruct-2407"),
+]
+FREE_COOL = {}          # host -> time it can be used again
+_FREE_LOCK = threading.Lock()
+
+
+def _free_host(url):
+    return url.split("/")[2]
+
+
 def free_ai(prompt, system=None, convo=None, max_tokens=700, _waited=False):
-    """Backup AI that needs no key. Used only when every connected AI failed."""
+    """Free AIs that need no key. Tries each free service; a busy one is skipped, never waited on long."""
     msgs = [{"role": "system", "content": system or (
-        "You are Genius, a helpful AI made by Ssali Muto in Uganda, talking to " + CURRENT["name"] +
-        ", a young person in Uganda. Answer clearly, accurately and simply.")}]
+        "You are " + APP_NAME_FREE + ", a helpful AI made by Ssali Muto in Uganda, talking to " + str(CURRENT.get("name") or "the owner") +
+        ", a young person in Uganda. Think step by step in your head, check facts and maths, then give the answer "
+        "first in clear, simple words. Never invent facts; say when you are not sure.")}]
     for m in (convo or [])[-8:]:
         t = " ".join(p.get("text", "") for p in m.get("parts", []))
         if t:
             msgs.append({"role": "assistant" if m["role"] == "model" else "user", "content": t[:3000]})
     msgs.append({"role": "user", "content": prompt})
-    for model in ("openai", "openai-fast", "mistral"):
-        try:
-            req = urllib.request.Request(FREE_AI_URL, data=json.dumps(
-                {"model": model, "messages": msgs, "max_tokens": max_tokens + 600}).encode(),
-                headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=40, context=ssl_context()) as r:
-                d = json.load(r)
-            t = (d["choices"][0]["message"].get("content") or "").strip()
-            if t:
-                LAST_AI["name"] = "genius-backup"
-                return t
-        except urllib.error.HTTPError as e:
-            log(f"free AI {model}: HTTP {e.code}")
-            if e.code in (402, 429):              # free limit: one reply every ~30 s; wait once, then retry
-                if not _waited:
-                    _waited = True
-                    time.sleep(12)
-                    return free_ai(prompt, system, convo, max_tokens, _waited=True)
-                break
-        except Exception as e:
-            log(f"free AI {model}: {type(e).__name__}")
-            if _is_net_error(e):
-                break
+    for rnd in range(2):
+        soonest = None
+        for url, model in FREE_WAYS:
+            host = _free_host(url)
+            with _FREE_LOCK:
+                ready = FREE_COOL.get(host, 0)
+            if ready > time.time():
+                soonest = ready if soonest is None else min(soonest, ready)
+                continue
+            try:
+                req = urllib.request.Request(url, data=json.dumps(
+                    {"model": model, "messages": msgs, "max_tokens": max_tokens + 600}).encode(),
+                    headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Linux; Android 12)"})
+                with urllib.request.urlopen(req, timeout=25, context=ssl_context()) as r:
+                    d = json.load(r)
+                t = (d["choices"][0]["message"].get("content") or "").strip()
+                if t:
+                    LAST_AI["name"] = "free-" + host.split(".")[-2]
+                    return t
+            except urllib.error.HTTPError as e:
+                log(f"free AI {host} {model}: HTTP {e.code}")
+                if e.code in (402, 429, 503):
+                    wait = 45 if "pollinations" in host else 20
+                    try:
+                        wait = int(e.headers.get("retry-after") or wait)
+                    except Exception:
+                        pass
+                    with _FREE_LOCK:
+                        FREE_COOL[host] = time.time() + min(wait, 60)
+            except Exception as e:
+                log(f"free AI {host} {model}: {type(e).__name__}")
+                if _is_net_error(e) and not net_online():
+                    return None
+        if rnd == 0 and soonest is not None:
+            gap = soonest - time.time()
+            if 0 < gap <= 20:               # every free AI is busy: wait the short gap once, then try again
+                time.sleep(gap + 0.5)
+                continue
+        break
     return None
 
 
