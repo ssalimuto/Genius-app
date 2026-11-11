@@ -6667,6 +6667,50 @@ def newest_file(images_only=False):
     return best
 
 
+def free_read_text(path, kind):
+    """No key needed: read the words in a screenshot, photo of a page, or PDF (free OCR.space service)."""
+    try:
+        send = path
+        if kind == "image":
+            send = compress_image(path, max_side=1800, quality=78)
+            if os.path.getsize(send) > 950 * 1024:
+                send = compress_image(path, max_side=1300, quality=65)
+        if os.path.getsize(send) > 1024 * 1024:
+            return ""
+        bnd = "----ssa" + str(random.randint(10 ** 8, 10 ** 9))
+        mime = "application/pdf" if kind == "pdf" else "image/jpeg"
+        fields = {"apikey": "helloworld", "language": "eng", "OCREngine": "2", "scale": "true"}
+        body = b""
+        for k, v in fields.items():
+            body += ("--" + bnd + "\r\nContent-Disposition: form-data; name=\"" + k + "\"\r\n\r\n" + v + "\r\n").encode()
+        body += ("--" + bnd + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"f." +
+                 ("pdf" if kind == "pdf" else "jpg") + "\"\r\nContent-Type: " + mime + "\r\n\r\n").encode()
+        body += open(send, "rb").read() + ("\r\n--" + bnd + "--\r\n").encode()
+        req = urllib.request.Request("https://api.ocr.space/parse/image", data=body,
+                                     headers={"Content-Type": "multipart/form-data; boundary=" + bnd})
+        with urllib.request.urlopen(req, timeout=40, context=ssl_context()) as r:
+            d = json.load(r)
+        return "\n".join((x.get("ParsedText") or "") for x in (d.get("ParsedResults") or [])).strip()
+    except Exception as e:
+        log(f"free OCR: {type(e).__name__}")
+        return ""
+
+
+def free_file_answer(path, kind, q):
+    """Answer about a picture or PDF with no key: read its words, then a free AI answers only from them."""
+    words = free_read_text(path, kind)
+    if not words:
+        return None
+    sysm = ("You are " + APP_NAME_FREE + ". The text below was read by a scanner from the user's " +
+            ("PDF" if kind == "pdf" else "screenshot or photo") + ". Some letters may be misread. Answer the question "
+            "ONLY from this text. Do not guess what is not in it; if something is unclear or missing, say so plainly. "
+            "Put the answer first, in simple clear English." + THINK_STYLE)
+    r = free_ai("Text from the file:\n" + words[:12000] + "\n\nQuestion: " + q, system=sysm, max_tokens=700)
+    if r and not is_fail_reply(r):
+        return r + "\n\n[i](Read the words in it. For full picture understanding, type key to add a free Gemini key.)[/i]"
+    return None
+
+
 def ask_about_file(path, kind, question):
     """Answer a question about an attached picture, PDF or text file."""
     q = question.strip() or "Explain what this is and the important information in it, simply."
@@ -6679,11 +6723,12 @@ def ask_about_file(path, kind, question):
             return NO_AI_MSG
         return ask_gemini("File " + os.path.basename(path) + ":\n" + content +
                           "\n\nQuestion: " + q, 900) or NET_AI_MSG
-    if not os.path.exists(KEY_FILE):
-        return ("To read pictures and PDFs I need a Gemini key. Type setkey and your free key from "
-                "aistudio.google.com/apikey, then ask again.")
     if not os.path.exists(path):
         return "I can't find that file any more. Add it again with +."
+    if not os.path.exists(KEY_FILE):
+        return free_file_answer(path, kind, q) or (
+            "I couldn't read the words in that file just now. Try again in a minute, or type key to add a free "
+            "Gemini key so I can see pictures fully.")
     key = clean_key(open(KEY_FILE).read())
     mime = "application/pdf" if kind == "pdf" else (
         "image/png" if path.lower().endswith(".png") else "image/webp" if path.lower().endswith(".webp") else "image/jpeg")
@@ -6691,7 +6736,7 @@ def ask_about_file(path, kind, question):
         return "That file is too big (over 15 MB). Try a smaller one."
     body = json.dumps({"contents": [{"role": "user", "parts": [
         {"inlineData": {"mimeType": mime, "data": base64.b64encode(open(path, "rb").read()).decode()}},
-        {"text": q + " Answer in simple, clear English."}]}],
+        {"text": q + " Look carefully at every part of it and read all text exactly. Answer only from what is really there; if something is unclear, say so. Answer first, in simple, clear English."}]}],
         "generationConfig": {"maxOutputTokens": 900, "temperature": 0.4}}).encode()
     last = "I couldn't read it. Try again."
     for model in FAST_MODELS + DEEP_MODELS[:1]:
@@ -6718,7 +6763,7 @@ def ask_about_file(path, kind, question):
             last = "Your internet is too slow right now. Move to better signal and ask again."
             if _is_net_error(e):
                 break
-    return last
+    return free_file_answer(path, kind, q) or last
 
 
 def ask_gemini(prompt, max_tokens=600, json_mode=False, search=False, system=None):
