@@ -45,8 +45,7 @@ jobs:
           V=$(grep -m1 '^VERSION = ' main.py | cut -d'"' -f2)
           NV="$V.$GITHUB_RUN_NUMBER"
           sed -i "0,/^VERSION = \"$V\"/s//VERSION = \"$NV\"/" main.py
-          sed -i "0,/^version = .*/s//version = $NV/" buildozer.spec
-          grep -m1 '^VERSION = ' main.py; grep -m1 '^version = ' buildozer.spec
+          grep -m1 '^VERSION = ' main.py
       - name: Build APK
         run: yes | buildozer android debug
       - name: Prepare quiet update files
