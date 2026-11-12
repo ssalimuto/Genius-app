@@ -525,7 +525,7 @@ HELP_EXTRA = {
     "apps / open <app>": "List or open your phone's apps (owner only)",
     "wealth / market <coin or currency>": "Money bot, crypto and exchange rates",
     "home": "Home page with big buttons",
-    "premium": "Your plan and how to unlock premium",
+    "premium": "Ssalimuto AI is free for everyone: no plans, no trials, no charges",
     "everywhere": "Floating bubble, 'Hey Ssalimuto AI' and home-screen shortcuts",
     "share": "Share Ssalimuto AI with friends",
     "accounts": "Manage guest accounts (owner)",
