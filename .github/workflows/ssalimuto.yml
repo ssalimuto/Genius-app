@@ -40,6 +40,13 @@ jobs:
           sed -i "s#^p4a.source_dir = .*#p4a.source_dir = $PWD/p4a-src#" buildozer.spec
           grep -n "GeniusNotifListener\|GeniusScreenReader" p4a-src/pythonforandroid/bootstraps/sdl2/build/templates/AndroidManifest.tmpl.xml
           grep -n "p4a.source_dir" buildozer.spec
+      - name: Stamp a new version on every build (so phones update themselves)
+        run: |
+          V=$(grep -m1 '^VERSION = ' main.py | cut -d'"' -f2)
+          NV="$V.$GITHUB_RUN_NUMBER"
+          sed -i "0,/^VERSION = \"$V\"/s//VERSION = \"$NV\"/" main.py
+          sed -i "0,/^version = .*/s//version = $NV/" buildozer.spec
+          grep -m1 '^VERSION = ' main.py; grep -m1 '^version = ' buildozer.spec
       - name: Build APK
         run: yes | buildozer android debug
       - name: Prepare quiet update files
