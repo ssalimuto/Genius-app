@@ -601,6 +601,8 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-11-12"
 CHANGELOG = """Ssalimuto AI 1.5 (2026-11-12)
+- Opportunities: "opportunities", "hackathons", "scholarships", "competitions for robotics"
+- Background brain: studies what you ask about and reviews itself; say "brain" to see it
 - Find links: "find links for cheap phones" or "where can I apply for a passport" gives the best pages to tap
 - Read any web page: paste a link and ask about it, then "page: <question>" for more
 - Deep research: say "research <topic>" and it reads Wikipedia and today's news, then writes a designed report with sources
@@ -15903,6 +15905,7 @@ class GeniusApp(App):
         live_started_ok()
         everywhere_load()
         threading.Thread(target=lambda: brain_self_review(), daemon=True).start()
+        threading.Thread(target=hk_background_brain, daemon=True).start()
         threading.Thread(target=lambda: (time.sleep(60), daily_problem_report()), daemon=True).start()
         def check_update():
             # Auto-update: after unlock, then every 6 hours, Ssalimuto AI fetches the new
@@ -18617,8 +18620,156 @@ def hk_links_handle(screen, line, lw):
     screen._bg(job, f"Finding the best links for {query}...", speak=False)
     return True
 
+# ================= Opportunities: competitions, hackathons, scholarships (like NASA Space Apps) =================
+_OPP_ASK = re.compile(r"^(please\s+)?(find|show|get|give|search|any|look for|search for)?\s*(me\s+)?(new\s+|latest\s+|current\s+|open\s+)?"
+                      r"(opportunit(y|ies)|competitions?|hackathons?|scholarships?|challenges?|internships?|grants?|fellowships?|bootcamps?)"
+                      r"(\s+(for|in|about|on|like)\s+(.{2,120}))?$", re.I)
+OPP_FILE = "opportunities.json"
+_OPP_QUERIES = {
+    "hackathons": ["hackathon 2026 Uganda students apply", "online hackathon Africa 2026 youth register"],
+    "competitions": ["student competition 2026 Africa apply", "NASA Space Apps Challenge 2026 Uganda", "science innovation competition secondary school Uganda 2026"],
+    "scholarships": ["scholarship 2026 Ugandan secondary school students apply", "fully funded scholarship 2027 African students undergraduate"],
+    "internships": ["internship 2026 Uganda students apply", "remote internship Africa youth 2026"],
+    "grants": ["grant for young innovators Africa 2026 apply", "youth startup grant Uganda 2026"],
+}
+
+
+def hk_opportunities(kind="", topic="", limit=8):
+    kind = (kind or "").lower().rstrip("s")
+    if topic:
+        qs = [f"{topic} {kind or 'opportunity'} 2026 apply", f"{topic} {kind or 'competition'} Africa youth 2026"]
+    else:
+        key = next((k for k in _OPP_QUERIES if kind and k.startswith(kind[:6])), None)
+        qs = _OPP_QUERIES[key] if key else [q for v in _OPP_QUERIES.values() for q in v[:1]] + ["NASA Space Apps Challenge 2026 Uganda"]
+    found, seen, lock = [], set(), threading.Lock()
+
+    def one(q):
+        try:
+            for t, u, sn in hk_find_links(q, 4):
+                with lock:
+                    host = urllib.parse.urlparse(u).netloc.replace("www.", "")
+                    if host not in seen:
+                        seen.add(host)
+                        found.append((t, u, sn))
+        except Exception as e:
+            log(f"OPP: {type(e).__name__}")
+    ths = [threading.Thread(target=one, args=(q,), daemon=True) for q in qs]
+    for th in ths:
+        th.start()
+    for th in ths:
+        th.join(14)
+    try:
+        old = _v110_load(OPP_FILE, {"seen": [], "t": 0})
+        old["seen"] = (old.get("seen", []) + [u for _, u, _ in found if u not in old.get("seen", [])])[-300:]
+        old["t"] = time.time()
+        _v110_save(OPP_FILE, old)
+    except Exception:
+        pass
+    return found[:limit]
+
+
+def hk_opp_handle(screen, line, lw):
+    m = _OPP_ASK.match(lw.strip(" .!?"))
+    if not m:
+        return False
+    kind, topic = m.group(5), (m.group(9) or "").strip()
+    if topic.lower() in ("me", "students", "student", "uganda", "youth", "us"):
+        topic = ""
+
+    def job():
+        if not net_online():
+            return "I need internet to find opportunities. Try again when you're online."
+        res = hk_opportunities(kind, topic)
+        if not res:
+            return "I couldn't find open ones right now. Try: hackathons, scholarships, competitions or internships."
+        lines = ["[b]Opportunities to apply for" + (f": {_esc(topic)}" if topic else "") + "[/b]"]
+        for i, (t, u, sn) in enumerate(res, 1):
+            key = f"opp:{i}"
+            NEWS_LINKS[key] = u
+            host = urllib.parse.urlparse(u).netloc.replace("www.", "")
+            lines.append(f"[ref={key}][b]{i}.[/b] [u]{_esc(t)}[/u][/ref]\n   [size=12sp][color=9aa0c0]{_esc(host)} - {_esc(sn)}[/color][/size]")
+        lines.append("\n[size=13sp]Tap one to open it. Check each deadline on its page. I also check for new ones every day by myself.[/size]")
+        return "\n".join(lines)
+    screen._bg(job, "Searching for opportunities you can apply for...", speak=False)
+    return True
+
+
+# ================= Background brain: learns, reviews and improves by itself =================
+LEARN_QUEUE = "learn_queue.json"
+_TOPIC_ASK = re.compile(r"^(what|who|where)\s+(is|are|was|were)\s+(an?\s+|the\s+)?(.{3,60}?)\??$|^(tell me about|explain|define|describe|history of)\s+(.{3,60}?)\??$", re.I)
+
+
+def hk_note_topic(text):
+    """Remember what the person is curious about, so the app can study it later in the background."""
+    m = _TOPIC_ASK.match((text or "").strip())
+    if not m:
+        return
+    t = (m.group(4) or m.group(6) or "").strip(" .?")
+    if len(t) < 3 or re.search(r"\b(you|your|my|me|time|today|weather|this|that|it)\b", t.lower()):
+        return
+    try:
+        q = _v110_load(LEARN_QUEUE, {"todo": [], "done": []})
+        if t.lower() not in [x.lower() for x in q["todo"] + q["done"]]:
+            q["todo"] = (q["todo"] + [t])[-30:]
+            _v110_save(LEARN_QUEUE, q)
+    except Exception as e:
+        log(f"LEARNQ: {type(e).__name__}")
+
+
+def hk_background_brain():
+    """Runs quietly: every few hours, while online, it studies what you asked about, reviews its lessons,
+    and checks for new opportunities. It never interrupts you and stops when there's no internet."""
+    time.sleep(120)
+    while True:
+        try:
+            if net_online():
+                q = _v110_load(LEARN_QUEUE, {"todo": [], "done": []})
+                for t in list(q["todo"])[:3]:
+                    try:
+                        ga_learn(t)
+                        log(f"BRAIN: studied {t}")
+                    except Exception as e:
+                        log(f"BRAIN learn: {type(e).__name__}")
+                    q["todo"].remove(t)
+                    q["done"] = (q["done"] + [t])[-200:]
+                    _v110_save(LEARN_QUEUE, q)
+                    time.sleep(20)
+                try:
+                    brain_self_review()
+                except Exception as e:
+                    log(f"BRAIN review: {type(e).__name__}")
+                o = _v110_load(OPP_FILE, {"seen": [], "t": 0})
+                if time.time() - o.get("t", 0) > 20 * 3600:
+                    hk_opportunities()
+        except Exception as e:
+            log(f"BRAIN: {type(e).__name__}")
+        time.sleep(3 * 3600)
+
+
+def hk_brain_status():
+    q = _v110_load(LEARN_QUEUE, {"todo": [], "done": []})
+    k = know_load()
+    return ("[b]My background brain[/b]\n"
+            f"- Topics I've studied: {len(k)}\n- Waiting to study: {len(q['todo'])}"
+            + (" (" + ", ".join(q["todo"][:5]) + ")" if q["todo"] else "") +
+            f"\n- Lessons I keep from your feedback: {len(brain_load())}\n\n"
+            "I study what you ask about every few hours when there's internet, review my lessons once a day, "
+            "and look for new opportunities daily. Say [b]what I learned[/b] to see it all.")
+
 
 def hk_app_handle(screen, line, lw):
+    try:
+        hk_note_topic(line)
+    except Exception:
+        pass
+    if lw.strip(" .!?") in ("brain", "your brain", "brain status", "what are you learning", "background brain"):
+        screen.say(hk_brain_status())
+        return True
+    try:
+        if hk_opp_handle(screen, line, lw):
+            return True
+    except Exception as e:
+        log(f"OPP: {type(e).__name__}: {e}")
     try:
         if hk_links_handle(screen, line, lw):
             return True
