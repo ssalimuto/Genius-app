@@ -103,7 +103,7 @@ Window.softinput_mode = ""   # 110.3: screen never slides; the typing box lifts 
 # Kivy asks Android for a "raw" keyboard by default, which hides suggestions, autocorrect, auto-capitals,
 # emoji suggestions, glide typing and voice typing. Ask for a normal text keyboard instead, like other apps.
 KB_SIMPLE_FLAG = "keyboard_simple.flag"
-_KB_TEXT = 1 | 144 | 524288          # TEXT, no word-guessing: stops the keyboard typing letters twice
+_KB_TEXT = 1 | 16384 | 32768         # TEXT + capital sentences + autocorrect: the full Google keyboard with suggestions
 _KB_PASSWORD = 1 | 128                # TEXT + password (no suggestions, nothing learned)
 _KB_DECIMAL = 2 | 8192                # NUMBER + decimal point
 _ti_orig_init = TextInput.__init__
@@ -147,7 +147,7 @@ def _ti_smart_init(self, **kw):
             kw["input_type"] = "number"
         else:
             kw["input_type"] = "text"
-    kw.setdefault("keyboard_suggestions", False)      # suggestions made Android type some letters twice
+    kw.setdefault("keyboard_suggestions", not kw.get("password") and _kb_smart())   # Gboard suggestions on; "keyboard simple" turns them off
     _ti_orig_init(self, **kw)
     try:
         self.bind(focus=_kb_on_focus)
@@ -8667,7 +8667,7 @@ class CodeScreen(BoxLayout):
         self.first = not pin_is_set()
         card = Panel(orientation="vertical", padding=26, spacing=16,
                      size_hint=(1, None), height="470dp" if self.first else "400dp")
-        card.add_widget(Label(text="[b][color=ffc84d]Gen[/color][color=c79bff]ius[/color][/b]", markup=True,
+        card.add_widget(Label(text="[b][color=ffc84d]Ssalimuto[/color] [color=c79bff]AI[/color][/b]", markup=True,
                               font_size="40sp", size_hint_y=None, height="56dp"))
         card.add_widget(Label(text="Create your secret code (4 to 8 digits)" if self.first
                               else "Enter your secret code", font_size="16sp",
@@ -8743,7 +8743,7 @@ class LoginScreen(BoxLayout):
 
         card = Panel(orientation="vertical", padding=26, spacing=18,
                      size_hint=(1, None), height="520dp")
-        card.add_widget(Label(text="[b][color=ffc84d]Gen[/color][color=c79bff]ius[/color][/b]", markup=True,
+        card.add_widget(Label(text="[b][color=ffc84d]Ssalimuto[/color] [color=c79bff]AI[/color][/b]", markup=True,
                               font_size="40sp", size_hint_y=None, height="56dp"))
         card.add_widget(Label(text="Sign in to your own Ssalimuto AI", font_size="16sp",
                               color=HINT, size_hint_y=None, height="26dp"))
@@ -10328,7 +10328,7 @@ class ChatScreen(BoxLayout):
                        size_hint_y=None, height="60dp", padding=[18, 0, 12, 0], spacing=10)
         self.profile_chip = ProfileChip()          # not shown; Profile is inside the menu
         self.profile_chip.bind(on_press=self.profile_drawer)
-        title = Label(text="[b][color=ffc84d]Gen[/color][color=c79bff]ius[/color][/b]  [size=12sp][size=18sp][color=5ee6a0]\u2022[/color][/size] [color=9aa0c0]online[/color][/size]",
+        title = Label(text="[b][color=ffc84d]Ssalimuto[/color] [color=c79bff]AI[/color][/b]  [size=12sp][size=18sp][color=5ee6a0]\u2022[/color][/size] [color=9aa0c0]online[/color][/size]",
                       markup=True, font_size="25sp", halign="left", valign="middle")
         title.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
         title.shorten = True
@@ -10351,6 +10351,17 @@ class ChatScreen(BoxLayout):
         self.speak_btn = find_btn      # shows "Stop" while Ssalimuto AI hears you; tap to stop
         self.add_widget(header)
         self.header = header
+        tabs = BoxLayout(size_hint_y=None, height=dp(48), spacing=8, padding=[12, 6, 12, 2])
+        for key, label in (("home", "Home"), ("chat", "Chat"), ("projects", "Projects")):
+            on = key == "chat"
+            tb = RoundButton(text=label, bg=GOLD if on else GREY, fg=(0.08, 0.08, 0.09, 1) if on else TEXTCOL,
+                             font_size="15sp", bold=True)
+            if key == "home":
+                tb.bind(on_press=lambda *_: self.app.open_home())
+            elif key == "projects":
+                tb.bind(on_press=lambda *_: self.run_action("projects"))
+            tabs.add_widget(tb)
+        self.add_widget(tabs)
 
         # chat area
         body = Panel(orientation="vertical", padding=[10, 8, 10, 8], spacing=8,
@@ -13215,6 +13226,7 @@ class ChatScreen(BoxLayout):
     def _show_suggestions(self, items):
         row = self.sugg_row
         row.clear_widgets()
+        items = []                       # no word boxes: the phone's keyboard shows suggestions
         if not items:
             self.sugg_sv.height, self.sugg_sv.opacity = 0, 0
             return
@@ -15025,78 +15037,136 @@ class ChatScreen(BoxLayout):
 
 
 
+class TopNav(BoxLayout):
+    """Clean top bar: profile, a search bar, then Home / Chat / Projects tabs."""
+    def __init__(self, app, active="home", on_search=None, **kw):
+        super().__init__(orientation="vertical", size_hint_y=None, height=dp(112), padding=[12, 8, 12, 4], spacing=6, **kw)
+        self.app = app
+        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=10)
+        pbox = BoxLayout(size_hint_x=None, width=dp(44), padding=[0, 3, 0, 3])
+        chip = ProfileChip()
+        chip.bind(on_press=lambda *_: self._go("profile"))
+        pbox.add_widget(chip)
+        row.add_widget(pbox)
+        self.search = style_input(TextInput(hint_text="Search " + APP_NAME_FREE, multiline=False, font_size="15sp",
+                                            size_hint_y=None, height=dp(44), padding=[16, 12, 16, 10]))
+        self.search.bind(on_text_validate=lambda w: self._search(w.text, on_search))
+        row.add_widget(self.search)
+        self.add_widget(row)
+        tabs = BoxLayout(size_hint_y=None, height=dp(44), spacing=8)
+        for key, label in (("home", "Home"), ("chat", "Chat"), ("projects", "Projects")):
+            on = key == active
+            b = RoundButton(text=label, bg=GOLD if on else GREY, fg=(0.08, 0.08, 0.09, 1) if on else TEXTCOL,
+                            font_size="15sp", bold=True)
+            b.bind(on_press=lambda _b, k=key: self._tab(k, active))
+            tabs.add_widget(b)
+        self.add_widget(tabs)
+
+    def _go(self, action):
+        EVERYWHERE["pending"] = action
+        self.app.open_chat()
+
+    def _tab(self, key, active):
+        if key == active and key != "projects":
+            return
+        if key == "home":
+            self.app.open_home()
+        elif key == "chat":
+            self.app.open_chat()
+        else:
+            self._go("projects")
+
+    def _search(self, text, on_search):
+        text = (text or "").strip()
+        if not text:
+            return
+        self.search.text = ""
+        if on_search:
+            on_search(text)
+        else:
+            EVERYWHERE["pending"] = text
+            self.app.open_chat()
+
+
+def _card(title, body="", on_press=None, height=None):
+    """A soft rounded card with a bold title and plain text, like a message card."""
+    c = Panel(orientation="vertical", padding=[16, 12, 16, 12], spacing=4, size_hint_y=None)
+    t = Label(text=f"[b]{title}[/b]", markup=True, color=TEXTCOL, font_size="16sp", size_hint_y=None,
+              halign="left", valign="middle")
+    t.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)), texture_size=lambda w, s: setattr(w, "height", s[1]))
+    c.add_widget(t)
+    b = Label(text=body, markup=True, color=HINT, font_size="14sp", size_hint_y=None, halign="left", valign="top")
+    b.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)), texture_size=lambda w, s: setattr(w, "height", s[1]))
+    c.add_widget(b)
+    c.body = b
+
+    def fit(*_):
+        c.height = t.height + b.height + dp(30)
+    t.bind(height=fit)
+    b.bind(height=fit)
+    if on_press:
+        c.bind(on_touch_up=lambda w, touch: on_press() if w.collide_point(*touch.pos) and not touch.is_mouse_scrolling
+               and abs(touch.dy) < 4 and touch.grab_current is None else None)
+    return c
+
+
 class HomeScreen(BoxLayout):
-    """Ssalimuto AI home page: greeting, profile, and big tiles for every feature."""
+    """Home: search bar and tabs on top, then a few clear cards. No walls of buttons."""
     def __init__(self, app, **kw):
         super().__init__(orientation="vertical", padding=0, spacing=0, **kw)
         self.app = app
         add_gradient_bg(self)
-        header = Panel(bg=HEADER, radius=0, orientation="horizontal", size_hint_y=None, height="64dp",
-                       padding=[12, 0, 18, 0], spacing=10)
-        pbox = BoxLayout(size_hint_x=None, width="46dp", padding=[0, 11, 0, 11])
-        chip = ProfileChip()
-        chip.bind(on_press=lambda *_: self.go("profile"))
-        pbox.add_widget(chip)
-        header.add_widget(pbox)
+        self.add_widget(TopNav(app, "home"))
+        sv = ScrollView(bar_width=0)
+        col = BoxLayout(orientation="vertical", size_hint_y=None, padding=[14, 10, 14, 24], spacing=12)
+        col.bind(minimum_height=col.setter("height"))
         hr = time.localtime().tm_hour
         hello = "Good morning" if hr < 12 else "Good afternoon" if hr < 17 else "Good evening"
-        name = str(CURRENT.get("name") or "")
-        t = Label(text=f"[b]{hello}, {name.title()}[/b]\n[size=12sp][color=9aa0c0]What shall we do today?[/color][/size]",
-                  markup=True, color=TEXTCOL, font_size="19sp", halign="left", valign="middle")
-        t.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
-        header.add_widget(t)
-        self.add_widget(header)
-
-        sv = ScrollView()
-        col = BoxLayout(orientation="vertical", size_hint_y=None, padding=[14, 14, 14, 20], spacing=14)
-        col.bind(minimum_height=col.setter("height"))
-        self.rate_lbl = Label(text="[color=9aa0c0]Loading live prices...[/color]", markup=True, font_size="14sp",
-                              size_hint_y=None, height="44dp", halign="left", valign="middle")
-        self.rate_lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
-        col.add_widget(self.rate_lbl)
-        grid = GridLayout(cols=2, spacing=12, size_hint_y=None)
-        grid.bind(minimum_height=grid.setter("height"))
-        top = Label(text="[b]Your space[/b]", markup=True, color=TEXTCOL, font_size="15sp", size_hint_y=None,
-                    height="26dp", halign="left", valign="middle")
-        top.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
-        col.add_widget(top)
-        main = GridLayout(cols=2, spacing=12, size_hint_y=None)
-        main.bind(minimum_height=main.setter("height"))
-        for label, sub, act in [("Chat", "Ask anything", None), ("Projects", "Long work, kept together", "projects"),
-                                ("Memory", "What I remember about you", "memory"), ("Build an app", "Describe it, I make it", "app builder"),
-                                ("My apps", "Apps you built", "my apps"), ("Daily brief", "Your day at a glance", "brief"),
-                                ("Connect apps", "Messages, screen, SMS", "connect apps"), ("Help", "Everything I can do", "help")]:
-            b = RoundButton(text=f"[b]{label}[/b]\n[size=12sp]{sub}[/size]", markup=True,
-                            bg=GOLD if act is None else GREY,
-                            fg=(0.08, 0.08, 0.09, 1) if act is None else TEXTCOL,
-                            size_hint_y=None, height="84dp", font_size="16sp", halign="center")
-            b.bind(size=lambda w, *_: setattr(w, "text_size", (max(10, w.width - 16), None)))
-            b.bind(on_press=lambda _b, a=act: self.go(a))
-            main.add_widget(b)
-        col.add_widget(main)
-        more = Label(text="[b]More[/b]", markup=True, color=TEXTCOL, font_size="15sp", size_hint_y=None,
-                     height="26dp", halign="left", valign="middle")
-        more.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
-        col.add_widget(more)
-        tiles = [("Talk (voice)", "talk", BLUE),
-                 ("Ssalimuto AI Wealth", "wealth", GOLD), ("Read a trading chart", "chart", GOLD2),
-                 ("Make music", "sound", BLUE2), ("Photo studio", "fun", BLUE),
-                 ("Super zoom camera", "camera", BLUE2), ("Selfie camera", "selfie", GOLD2),
-                 ("Ssalimuto AI Eye beauty", "genius eye", GOLD),
-                 ("Ssalimuto AI Ultra photo", "ultra", BLUE),
-                 ("My storage", "storage", GREY), ("Ssalimuto AI everywhere", "everywhere", GREY),
-                 ("Share Ssalimuto AI", "share", GREY)]
-        for label, act, c in tiles:
-            b = RoundButton(text=label, bg=c, fg=(0.1, 0.08, 0.02, 1) if c in (GOLD, GOLD2) else TEXTCOL,
-                            size_hint_y=None, height="88dp", font_size="16sp", bold=True)
-            b.bind(on_press=lambda _b, a=act: self.go(a))
-            grid.add_widget(b)
-        col.add_widget(grid)
-        col.add_widget(Label(text="Ssalimuto AI \u00b7 App built by Ssali", color=HINT, font_size="12sp",
-                             size_hint_y=None, height="28dp"))
+        name = str(CURRENT.get("name") or "").split(" ")[0].title()
+        g = Label(text=f"[b]{hello}{', ' + name if name else ''}[/b]", markup=True, color=TEXTCOL, font_size="24sp",
+                  size_hint_y=None, height=dp(44), halign="left", valign="middle")
+        g.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        col.add_widget(g)
+        col.add_widget(_card("Ask anything", "Questions, homework, a CV, an app, a poster. Tap to start a chat.",
+                             on_press=lambda: app.open_chat()))
+        self.live = _card("Live", "Loading prices...")
+        col.add_widget(self.live)
+        self.opp = _card("Opportunities for you", "Looking for hackathons, scholarships and competitions...")
+        self.opp.body.bind(on_ref_press=lambda _w, ref: self._open(ref))
+        col.add_widget(self.opp)
+        col.add_widget(_card("Projects", "Keep long work together: an exam, a business, a hackathon.",
+                             on_press=lambda: self.go("projects")))
+        col.add_widget(_card("Build an app", "Describe it and I'll make it for your phone.",
+                             on_press=lambda: self.go("app builder")))
         sv.add_widget(col)
         self.add_widget(sv)
         threading.Thread(target=self._load_rates, daemon=True).start()
+        threading.Thread(target=self._load_opps, daemon=True).start()
+
+    def _open(self, ref):
+        if ref in NEWS_LINKS:
+            try:
+                open_in_genius(NEWS_LINKS[ref], "Opportunity")
+            except Exception as e:
+                log(f"HOME open: {type(e).__name__}")
+
+    def _load_opps(self):
+        txt = "Connect to the internet to see open opportunities."
+        try:
+            if net_online():
+                res = hk_opportunities(limit=3)
+                if res:
+                    parts = []
+                    for i, (t, u, sn) in enumerate(res, 1):
+                        key = f"home_opp:{i}"
+                        NEWS_LINKS[key] = u
+                        parts.append(f"[ref={key}][color=ffc84d][u]{_esc(t)}[/u][/color][/ref]")
+                    txt = "\n".join(parts) + "\n[size=12sp]Tap one to open. Say opportunities in chat for more.[/size]"
+                else:
+                    txt = "None found right now. Say opportunities in chat to search again."
+        except Exception as e:
+            log(f"HOME opp: {type(e).__name__}")
+        Clock.schedule_once(lambda *_: setattr(self.opp.body, "text", txt), 0)
 
     def _load_rates(self):
         parts = []
@@ -15112,8 +15182,8 @@ class HomeScreen(BoxLayout):
                 parts.append(f"BTC ${c['usd']:,.0f}" + (f" ({c['chg']:+.1f}%)" if c.get("chg") is not None else ""))
         except Exception:
             pass
-        txt = "   \u2022   ".join(parts) if parts else "Live prices need internet"
-        Clock.schedule_once(lambda *_: setattr(self.rate_lbl, "text", f"[b][color=ffc84d]Live:[/color][/b] {txt}"), 0)
+        txt = "   \u2022   ".join(parts) if parts else "Live prices need internet."
+        Clock.schedule_once(lambda *_: setattr(self.live.body, "text", txt), 0)
 
     def go(self, action):
         EVERYWHERE["pending"] = action
