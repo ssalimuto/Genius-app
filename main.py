@@ -10355,6 +10355,121 @@ class NewsCard(ButtonBehavior, BoxLayout):
             self.pic.color = (1, 1, 1, 1)
 
 
+class ChatBubbles(BoxLayout):
+    """The chat as message boxes: your words on the right, answers on the left, each in its own rounded box."""
+    MAX_BUBBLES = 80
+    CHUNK = 2200            # one text picture per ~2200 letters, so a long answer never turns black
+
+    def __init__(self, on_ref=None, **kw):
+        super().__init__(orientation="vertical", size_hint_y=None, spacing=dp(10), padding=[2, 6, 2, 10], **kw)
+        self.bind(minimum_height=self.setter("height"))
+        self._on_ref = on_ref
+        self.font = "16sp"
+        self.bind(width=lambda *_: Clock.schedule_once(lambda *_: self._relayout(), 0))
+
+    @staticmethod
+    def _chunks(text):
+        if len(text) <= ChatBubbles.CHUNK:
+            return [text]
+        out, cur = [], ""
+        for part in text.split("\n"):
+            if cur and len(cur) + len(part) > ChatBubbles.CHUNK:
+                out.append(cur)
+                cur = part
+            else:
+                cur = (cur + "\n" + part) if cur else part
+        if cur:
+            out.append(cur)
+        return out
+
+    def add(self, mine, text):
+        row = BoxLayout(size_hint_y=None, padding=[0, 0, 0, 0])
+        box = BoxLayout(orientation="vertical", size_hint=(None, None), padding=[dp(14), dp(10), dp(14), dp(10)], spacing=0)
+        fill = (0.36, 0.30, 0.78, 1) if mine else (1, 1, 1, 0.075)
+        with box.canvas.before:
+            Color(*fill)
+            box._bg = RoundedRectangle(radius=[dp(18), dp(18), dp(4) if mine else dp(18), dp(18) if mine else dp(4)])
+            if not mine:
+                Color(1, 1, 1, 0.08)
+                box._edge = Line(width=1)
+        def sync(w, *_):
+            w._bg.pos, w._bg.size = w.pos, w.size
+            if hasattr(w, "_edge"):
+                w._edge.rounded_rectangle = (w.x, w.y, w.width, w.height, dp(18))
+        box.bind(pos=sync, size=sync)
+        box.labels = []
+        for ch in self._chunks(text):
+            lb = Label(text=ch, markup=True, font_size=self.font, color=TEXTCOL, size_hint=(None, None),
+                       halign="left", valign="top")
+            if self._on_ref:
+                lb.bind(on_ref_press=self._on_ref)
+            box.labels.append(lb)
+            box.add_widget(lb)
+        box.mine = mine
+        if mine:
+            row.add_widget(Widget())
+        row.add_widget(box)
+        if not mine:
+            row.add_widget(Widget(size_hint_x=None, width=dp(4)))
+        row.box = box
+        self.add_widget(row)
+        self._fit(row)
+        while len(self.children) > self.MAX_BUBBLES:
+            self.remove_widget(self.children[-1])
+        return row
+
+    def _fit(self, row):
+        box = row.box
+        maxw = max(dp(120), (self.width or Window.width) * (0.80 if box.mine else 0.94)) - dp(28)
+        w = 0
+        for lb in box.labels:
+            lb.text_size = (None, None)
+            lb.texture_update()
+            lw = min(lb.texture_size[0], maxw)
+            lb.text_size = (lw if lb.texture_size[0] <= maxw else maxw, None)
+            lb.texture_update()
+            lb.size = lb.texture_size
+            w = max(w, lb.width)
+        box.width = w + dp(28)
+        box.height = sum(lb.height for lb in box.labels) + dp(20)
+        row.height = box.height
+
+    def set_text(self, row, text):
+        """Change a bubble's words in place (the answer typing itself out)."""
+        box = row.box
+        for lb in box.labels:
+            box.remove_widget(lb)
+        box.labels = []
+        for ch in self._chunks(text):
+            lb = Label(text=ch, markup=True, font_size=self.font, color=TEXTCOL, size_hint=(None, None),
+                       halign="left", valign="top")
+            if self._on_ref:
+                lb.bind(on_ref_press=self._on_ref)
+            box.labels.append(lb)
+            box.add_widget(lb)
+        self._fit(row)
+
+    def remove(self, row):
+        if row is not None and row.parent is self:
+            self.remove_widget(row)
+
+    def clear(self):
+        self.clear_widgets()
+
+    def set_font(self, fs):
+        self.font = fs
+        for row in self.children:
+            if hasattr(row, "box"):
+                for lb in row.box.labels:
+                    lb.font_size = fs
+        self._relayout()
+
+    def _relayout(self):
+        for row in list(self.children):
+            if hasattr(row, "box"):
+                self._fit(row)
+
+
 class ChatScreen(BoxLayout):
     attached = None
     busy = False                 # one slow job at a time (set before any worker starts)
@@ -10411,11 +10526,7 @@ class ChatScreen(BoxLayout):
                      bg=(1, 1, 1, 0.045), radius=26)
         outer = BoxLayout(padding=[10, 10, 10, 8])
         self.scroll = ScrollView(bar_color=(1.0, 0.78, 0.30, 0.7), bar_width="3dp")
-        self.out = Label(text="", markup=True, font_size="18sp", size_hint_y=None,
-                         halign="left", valign="top", color=TEXTCOL, padding=(8, 8))
-        self.out.bind(width=lambda *a: setattr(self.out, "text_size", (self.out.width, None)),
-                      texture_size=self._chat_size)
-        self.out.bind(on_ref_press=self._on_chat_ref)
+        self.out = ChatBubbles(on_ref=self._on_chat_ref)
         self.scroll.add_widget(self.out)
         body.add_widget(self.scroll)
         outer.add_widget(body)
@@ -10771,7 +10882,7 @@ class ChatScreen(BoxLayout):
     def clear_chat(self, *_):
         history.clear()
         save_memory()
-        self.out.text = ""
+        self.out.clear()
         log("CHAT CLEARED")
         self.say("Chat cleared. Fresh start.")
 
@@ -13121,22 +13232,24 @@ class ChatScreen(BoxLayout):
             text += "\n[ref=keywizard][b][color=ffc84d][u]\u00bb Tap here to set up a free AI key[/u][/color][/b][/ref]"
             if text.startswith(NO_AI_MSG[:40]):
                 Clock.schedule_once(self.offer_key_wizard, 0.3)
-        if who == "AI":
-            head = self._ai_head()
-        else:
-            head = f"[b]{gradient_word(who, PAL['user'], PAL['accent2']) if who == 'You' else _esc(who)}[/b]"
-            text = f"[color={_hx(PAL['text'])}]{_esc(text)}[/color]"     # your words exactly as typed, never highlighted
-        self.out.text += f"{head}\n{text}\n[size=6sp] [/size]\n"
+        mine = who != "AI"
+        if mine:
+            text = _esc(text) if who == "You" else f"[b]{_esc(who)}[/b]\n{_esc(text)}"   # your words exactly as typed
+        try:
+            row = self.out.add(mine, text)
+        except Exception as e:
+            log(f"BUBBLE: {type(e).__name__}: {e}")
+            row = None
         Clock.schedule_once(lambda *_: setattr(self.scroll, "scroll_y", 0), 0.1)
+        return row
 
     def _ai_head(self):
         return f"[b]{gradient_word('Genius', PAL['accent'], PAL['accent2'])}[/b]"
 
     # ---- streaming: the answer types itself out as it arrives ----
     def _stream_begin(self, placeholder):
-        self.show("AI", placeholder)
-        self._stream_head = self._ai_head()
-        self._stream_tail = colorize(md_to_markup(placeholder)) + "\n[size=6sp] [/size]\n"
+        self._stream_row = self.show("AI", placeholder) if threading.current_thread() is threading.main_thread() else None
+        self._stream_tail = "live"
         self._stream_buf, self._stream_shown = "", ""
         self._stream_ev = Clock.schedule_interval(self._stream_paint, 0.12)
 
@@ -13145,7 +13258,8 @@ class ChatScreen(BoxLayout):
 
     def _stream_paint(self, *_):
         buf = getattr(self, "_stream_buf", "")
-        if not buf or buf == self._stream_shown or not self.out.text.endswith(self._stream_tail):
+        row = getattr(self, "_stream_row", None)
+        if not buf or buf == self._stream_shown or row is None:
             return
         self._stream_shown = buf
         shown = re.sub(r"(?m)^\s*Ask next:.*$", "", buf).rstrip()
@@ -13153,9 +13267,10 @@ class ChatScreen(BoxLayout):
             body = colorize(md_to_markup(shown))
         except Exception:
             body = _esc(shown)
-        tail = body + "\n[size=6sp] [/size]\n"
-        self.out.text = self.out.text[:-len(self._stream_tail)] + tail
-        self._stream_tail = tail
+        try:
+            self.out.set_text(row, body)
+        except Exception as e:
+            log(f"STREAM paint: {type(e).__name__}")
         self.scroll.scroll_y = 0
 
     def _stream_end(self):
@@ -13163,9 +13278,8 @@ class ChatScreen(BoxLayout):
         if ev is not None:
             ev.cancel()
         self._stream_ev = None
-        whole = getattr(self, "_stream_head", "") + "\n" + getattr(self, "_stream_tail", "")
-        if self._stream_tail and self.out.text.endswith(whole):
-            self.out.text = self.out.text[:-len(whole)]     # the finished answer replaces the live one
+        self.out.remove(getattr(self, "_stream_row", None))     # the finished answer replaces the live one
+        self._stream_row = None
         self._stream_tail = ""
 
     CHAT_MAX_PX = 3400          # phone GPUs can't draw one text picture taller than ~4096 px: it turns black
@@ -13237,7 +13351,10 @@ class ChatScreen(BoxLayout):
             hd.height = 0 if on else dp(60)
             hd.opacity = 0 if on else 1
             hd.disabled = bool(on)
-        self.out.font_size = "14sp" if on else "18sp"
+        try:
+            self.out.set_font("14sp" if on else "16sp")
+        except Exception:
+            pass
         if getattr(self, "chat_outer", None) is not None:
             self.chat_outer.padding = [6, 4, 6, 2] if on else [10, 10, 10, 8]
         Clock.schedule_once(lambda *_: setattr(self.scroll, "scroll_y", 0), 0.1)
