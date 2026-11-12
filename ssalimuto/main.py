@@ -601,6 +601,7 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-11-12"
 CHANGELOG = """Ssalimuto AI 1.5 (2026-11-12)
+- Find links: "find links for cheap phones" or "where can I apply for a passport" gives the best pages to tap
 - Read any web page: paste a link and ask about it, then "page: <question>" for more
 - Deep research: say "research <topic>" and it reads Wikipedia and today's news, then writes a designed report with sources
 - Crash guard: if one button or answer hits a mistake, the app keeps running instead of closing
@@ -18555,8 +18556,74 @@ def hk_link_handle(screen, line, lw):
     screen._bg(job, "Reading the page:\n1. Opening it\n2. Reading the text\n3. Finding your answer", speak=False)
     return True
 
+# ================= Find links: ask for links and get the best pages, simply, in seconds =================
+_LINKS_ASK = re.compile(r"^(please\s+)?((find|get|give|send|show)\s+(me\s+)?(the\s+)?(best\s+)?(links?|websites?|sites?|pages?)"
+                        r"(\s+(for|to|about|on|of|where))?|links?\s+(for|to|about|on)|where\s+(can|do)\s+i\s+(find|get|buy|download|apply|register|watch|read))\s+(.{2,200})$", re.I)
+
+
+def hk_find_links(query, limit=5):
+    """Free web search (no key): returns [(title, url, snippet)]."""
+    import html as _h
+    req = urllib.request.Request("https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query + " Uganda" if
+                                 re.search(r"\b(buy|price|shop|apply|register|school|job|near)\b", query, re.I) else query),
+                                 headers={"User-Agent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36"})
+    raw = urllib.request.urlopen(req, timeout=12, context=ssl.create_default_context()).read().decode("utf8", "ignore")
+    out, seen = [], set()
+    for m in re.finditer(r'class="result__a" href="([^"]+)"[^>]*>(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</a>', raw, re.S):
+        href, title, snip = m.group(1), m.group(2), m.group(3)
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(_h.unescape(href)).query).get("uddg")
+        url = q[0] if q else _h.unescape(href)
+        if url.startswith("//"):
+            url = "https:" + url
+        if not url.startswith("http") or "duckduckgo.com/y.js" in url:
+            continue
+        host = urllib.parse.urlparse(url).netloc.replace("www.", "")
+        if host in seen:
+            continue
+        seen.add(host)
+        clean = lambda t: re.sub(r"\s+", " ", _h.unescape(re.sub(r"<[^>]+>", "", t))).strip()
+        out.append((clean(title)[:90], url, clean(snip)[:160]))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def hk_links_handle(screen, line, lw):
+    m = _LINKS_ASK.match(lw.strip(" .!?"))
+    if not m:
+        return False
+    query = line.strip(" .!?")[len(line.strip(" .!?")) - len(m.group(m.re.groups)):]
+    if re.search(r"\bwhere\s+(can|do)\s+i\b", lw):
+        query = line.strip(" .!?")
+
+    def job():
+        if not net_online():
+            return "I need internet to find links. Try again when you're online."
+        try:
+            res = hk_find_links(query)
+        except Exception as e:
+            log(f"LINKS: {type(e).__name__}")
+            res = []
+        if not res:
+            return "I couldn't find good links for that right now. Try other words."
+        lines = [f"[b]Best links for {_esc(query)}[/b]"]
+        for i, (t, u, sn) in enumerate(res, 1):
+            key = f"lnk:{i}"
+            NEWS_LINKS[key] = u
+            host = urllib.parse.urlparse(u).netloc.replace("www.", "")
+            lines.append(f"[ref={key}][b]{i}.[/b] [u]{_esc(t)}[/u][/ref]\n   [size=12sp][color=9aa0c0]{_esc(host)} - {_esc(sn)}[/color][/size]")
+        lines.append("\n[size=13sp]Tap one to open it. Or paste a link and I'll read it and answer from it.[/size]")
+        return "\n".join(lines)
+    screen._bg(job, f"Finding the best links for {query}...", speak=False)
+    return True
+
 
 def hk_app_handle(screen, line, lw):
+    try:
+        if hk_links_handle(screen, line, lw):
+            return True
+    except Exception as e:
+        log(f"LINKS: {type(e).__name__}: {e}")
     try:
         if hk_link_handle(screen, line, lw):
             return True
