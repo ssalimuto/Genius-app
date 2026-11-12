@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "1.3"
+VERSION = "1.4"
 NEEDS_APK = "1.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "ssalimuto_live.py")
@@ -600,7 +600,14 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-11-12"
-CHANGELOG = """Ssalimuto AI 1.3 (2026-11-12)
+CHANGELOG = """Ssalimuto AI 1.4 (2026-11-12)
+- App Builder plans your app first, then writes and checks the code before opening it
+- New apps get a clean dark modern look by default
+- Build AI apps: "build an ai tutor for S4 maths" or "build a chatbot for my shop" (uses the free AI, no key)
+- Built apps catch their own errors and tell you how to fix them: say "fix app <name>"
+- Shows each building step while it works
+
+Ssalimuto AI 1.3 (2026-11-12)
 - Pictures: say it any way, like "Black man create", "picture of a lion" or "generate cat", and it draws it
 - Never a flat no: if something can't be done here, it offers the closest thing it can do
 - Asks one short question only when a detail really matters, with the likely answer ready
@@ -18048,13 +18055,65 @@ def hk_proj_handle(screen, line, lw):
 
 # ---------- 3. App Builder: describe an app, AI builds it, it runs inside the app ----------
 _HK_APP_RULES = (
-    "You are an expert mobile web app developer. Build a COMPLETE, working single-file HTML5 app.\n"
+    "You are a senior mobile app developer and designer. Build a COMPLETE, working single-file HTML5 app.\n"
+    "Work in this order, silently: 1) work out what the person really needs and the 3 to 6 main features, "
+    "2) plan the screens and the data, 3) write the code, 4) re-read every function and button and fix any bug "
+    "before you answer.\n"
     "Rules: one file only, starting with <!DOCTYPE html>; all CSS in <style> and all JavaScript in <script>; "
-    "NO external files, CDNs, fonts or images from the internet (use emoji, CSS shapes or inline SVG); must work offline; "
-    "mobile-first, big touch-friendly buttons, looks modern and beautiful (rounded cards, gradient header, good spacing); "
+    "no external files, CDNs, web fonts or internet images (use emoji, CSS shapes or inline SVG); "
     "include <meta name=viewport content='width=device-width,initial-scale=1'>; save user data with localStorage; "
-    "no alert() for normal use; every button must work; no placeholder or TODO code. "
+    "no alert() for normal use; every button must work; no placeholder, TODO or fake data unless asked; "
+    "wrap risky code in try/catch and show a friendly message instead of breaking.\n"
+    "Design (unless they ask for another look): calm dark charcoal background #141414, cards #1E1E1E with 16px "
+    "rounded corners and soft shadows, off-white text #F2F0EB, one warm accent colour, font-family "
+    "Inter, system-ui, sans-serif; big touch-friendly buttons; generous spacing; a clear title bar; smooth small "
+    "animations; short helpful empty-state text that tells the person what to do first.\n"
+    "AI features: when the app needs AI (a chatbot, helper, tutor, writer, translator, answers), call the free AI "
+    "with fetch('https://text.pollinations.ai/' + encodeURIComponent(prompt)) which returns plain text; keep a "
+    "short chat history in the prompt; show a typing indicator; if it fails or is offline, show 'The free AI is "
+    "busy, try again in a moment' and keep the app working. Never put any API key in the code.\n"
+    "Money is in UGX unless asked otherwise.\n"
     "Reply with ONLY the HTML code, nothing before or after.")
+
+# Catches errors inside built apps and tells the person how to fix them, instead of a blank screen.
+_HK_ERR_GUARD = (
+    "<script>(function(){var shown=0;function tell(m){try{if(shown++>2)return;var d=document.createElement('div');"
+    "d.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;padding:12px 14px;border-radius:14px;"
+    "background:#2a2a2a;color:#f2f0eb;font:14px system-ui;z-index:99999;box-shadow:0 6px 24px rgba(0,0,0,.4)';"
+    "d.textContent='Something in this app broke. Go back and say: fix app '+(document.title||'')+' : '+m;"
+    "(document.body||document.documentElement).appendChild(d);setTimeout(function(){d.remove()},9000);"
+    "localStorage.setItem('__last_error',m)}catch(e){}}"
+    "window.addEventListener('error',function(e){tell((e.message||'error').slice(0,120))});"
+    "window.addEventListener('unhandledrejection',function(e){tell(String(e.reason||'error').slice(0,120))});"
+    "})();</script>")
+
+
+def hk_guard(h):
+    """Put the error catcher first inside <head> (or the start) so it sees every error."""
+    if not h or "__last_error" in h:
+        return h
+    m = re.search(r"<head[^>]*>", h, re.I)
+    if m:
+        return h[:m.end()] + _HK_ERR_GUARD + h[m.end():]
+    return _HK_ERR_GUARD + h
+
+
+def hk_check(h):
+    """Cheap checks for code that was cut off or broken. Returns a list of problems."""
+    probs = []
+    low = h.lower()
+    if low.count("<script") != low.count("</script>"):
+        probs.append("a <script> tag is not closed")
+    if low.count("<style") != low.count("</style>"):
+        probs.append("a <style> tag is not closed")
+    for sc in re.findall(r"<script[^>]*>(.*?)</script>", h, re.S | re.I):
+        code = re.sub(r"(['\"`])(?:\\.|(?!\1).)*\1", "''", sc, flags=re.S)
+        code = re.sub(r"//[^\n]*|/\*.*?\*/", "", code, flags=re.S)
+        for a, b in (("{", "}"), ("(", ")"), ("[", "]")):
+            if code.count(a) != code.count(b):
+                probs.append(f"JavaScript brackets {a}{b} don't match")
+                break
+    return probs
 
 
 def hk_apps_dir():
@@ -18136,6 +18195,12 @@ def hk_build(desc, label=None):
     if not net_online():
         return None, "I need internet to build a new app. Your saved apps still open offline: say [b]my apps[/b]."
     h = hk_ai_code("Build this app: " + desc.strip() + "\nGive it a short name shown at the top.")
+    if h and hk_check(h):
+        fixed = hk_ai_code("This app has problems: " + "; ".join(hk_check(h)) + ".\nFix them and return the full, "
+                           "complete file.\n\n" + h[:24000])
+        if fixed and len(hk_check(fixed)) < len(hk_check(h)):
+            h = fixed
+    h = hk_guard(h)
     if not h:
         return None, "The AI couldn't finish the app this time. Say the same again and I'll retry, or describe it more simply."
     name = hk_slug(re.sub(r"^(an?|the|my)\s+", "", (label or desc).strip(), flags=re.I)[:40])
@@ -18159,7 +18224,7 @@ def hk_edit(name, change):
                    "\nKeep everything else working. Return the full updated file.")
     if not h:
         return None, "The AI couldn't finish that change. Try again or describe it more simply."
-    open(p, "w", encoding="utf8").write(h)
+    open(p, "w", encoding="utf8").write(hk_guard(h))
     return n, None
 
 
@@ -18205,7 +18270,7 @@ def hk_builder_panel(screen):
                 title_color=GOLD, title_size="22sp")
     info = Label(text="[b]Describe any app[/b] and the AI builds it. It runs right here, even offline, and saves your data.\n"
                       "[size=13sp]Ideas: a quiz on S4 biology, a shop sales tracker in UGX, a timetable, a calculator for "
-                      "boda fares, a Luganda word game, a budget planner.[/size]",
+                      "boda fares, a Luganda word game, a budget planner, an AI homework tutor, an AI chatbot for your shop.[/size]",
                  markup=True, color=TEXTCOL, font_size="15sp", size_hint_y=None, height=dp(96), halign="left", valign="top")
     info.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(6), None)))
     root.add_widget(info)
@@ -18247,7 +18312,7 @@ def hk_app_handle(screen, line, lw):
               "website builder", "build a website", "page builder"):
         hk_builder_panel(screen)
         return True
-    m = re.match(r"^(build|make|create|code|design)( me)?( an?| the)? (app|application|website|web app|game|tool|page)"
+    m = re.match(r"^(build|make|create|code|design)( me)?( an?| the)? (app|application|website|web app|game|tool|page|chatbot|ai app|ai assistant|ai helper|ai tutor)"
                  r"( that| which| for| to| about| called|:)?\s+(.+)$", lw)
     if m:
         desc = line.strip()[len(line.strip()) - len(m.group(6)):]
@@ -18262,7 +18327,7 @@ def hk_app_handle(screen, line, lw):
             return (f"Your app [b]{_esc(name.replace('-', ' ').title())}[/b] is ready and opening now. Press back to close it.\n"
                     f"Say [b]open app {name}[/b] any time, [b]change app {name}: make it blue[/b] to improve it, or "
                     "[b]my apps[/b] to see all. A copy is in Download/" + HK_APP.replace(" ", "") + "/apps to share.")
-        screen._bg(job, f"Building your {kind}... (about 30-90 seconds)", speak=False)
+        screen._bg(job, f"Building your {kind}:\n1. Planning the features and screens\n2. Writing the code\n3. Checking it for errors\n4. Opening it for you\n(about 30-90 seconds)", speak=False)
         return True
     if lw in ("my apps", "apps i built", "my websites", "my games", "built apps"):
         apps = hk_apps()
@@ -18278,7 +18343,11 @@ def hk_app_handle(screen, line, lw):
         hk_show_app(p, screen)
         screen.show("AI", f"Opening {_esc(n)}. Press back to close it.")
         return True
-    m = re.match(r"^(change|edit|improve|update|fix) (app|game|website|page) ([^:]+?)\s*[:,-]\s*(.+)$", lw)
+    m = re.match(r"^(fix|repair) (app|game|website|page) ([^:,]+?)\s*$", lw)
+    if m:
+        lw = lw + " : find and fix every bug, check each button and function, and keep all features"
+        line = line + " : find and fix every bug, check each button and function, and keep all features"
+    m = re.match(r"^(change|edit|improve|update|fix|repair) (app|game|website|page) ([^:]+?)\s*[:,-]\s*(.+)$", lw)
     if m:
         name, change = m.group(3), line.strip()[len(line.strip()) - len(m.group(4)):]
 
@@ -18288,7 +18357,7 @@ def hk_app_handle(screen, line, lw):
                 return err
             Clock.schedule_once(lambda *_: hk_show_app(os.path.join(hk_apps_dir(), n + ".html"), screen), 0.3)
             return f"Updated [b]{_esc(n)}[/b]. Opening it now."
-        screen._bg(job, "Changing your app...", speak=False)
+        screen._bg(job, "Changing your app: reading it, making the change, checking it, then opening it...", speak=False)
         return True
     m = re.match(r"^(delete|remove) (app|game|website|page) (.+)$", lw)
     if m:
