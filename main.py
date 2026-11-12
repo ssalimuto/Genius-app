@@ -609,6 +609,8 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-11-12"
 CHANGELOG = """Genius 115.3 (2026-11-12)
+- Creations: CVs, letters, posters, invitations, certificates, reports, menus, timetables, business plans. Say "make a cv for me", then Print / Save as PDF
+- Deep research: say "research <topic>" for a designed report with sources from Wikipedia and today's news
 - Crash guard: if one button or answer hits a mistake, the app keeps running instead of closing
 - Full code check: no missing names or broken parts found
 - New look is now called "theme modern"
@@ -4239,6 +4241,11 @@ def wants_picture(text):
     raw = (text or "").strip()
     if not raw or len(raw) > 300 or raw.endswith("?"):
         return False
+    if re.search(r"\b(cv|resume|letter|poster|flyer|flier|invitation|invitation card|certificate|report|menu|"
+                 r"timetable|business plan|story ?book|brochure|newsletter|birthday card|wedding card|business card|"
+                 r"banner|essay|speech|proposal|invoice|receipt|price list)s?\b", raw, re.I) \
+            and not re.search(r"\b(picture|photo|image|pic|drawing|portrait)s?\b", raw, re.I):
+        return False   # 1.4: documents go to Creations, not the picture maker
     if _PIC_QUESTION.match(raw) and not re.match(r"^\s*(please\s+)?(can|could|would|will)\s+you\b", raw, re.I):
         return False
     s = _pic_core(raw)
@@ -18256,7 +18263,194 @@ def hk_builder_panel(screen):
     pop.open()
 
 
+# ================= 1.4 Creations: CVs, letters, posters, invitations... made like a designer =================
+HK_DOC_KINDS = (r"cv|resume|r[eé]sum[eé]|letter|cover letter|application letter|poster|flyer|flier|invitation|invite card|"
+                r"certificate|report|menu|timetable|time table|business plan|story ?book|storybook|brochure|newsletter|"
+                r"card|birthday card|wedding card|program|programme|agenda|receipt|invoice|price list|profile|"
+                r"business card|banner|notes|study notes|revision notes|summary|essay|speech|proposal")
+_HK_DOC_RULES = (
+    "You are a top graphic designer and writer. Make the requested document as ONE complete single-file HTML page "
+    "that looks professionally designed and is ready to print or share.\n"
+    "Work silently in this order: 1) work out who it is for and what it must say, 2) write strong, specific, "
+    "correct content (no lorem ipsum; use the person's details when given, otherwise clear [Your name] style "
+    "blanks), 3) design it, 4) re-read it and fix any mistake.\n"
+    "Rules: start with <!DOCTYPE html>; all CSS inside <style>; no external files, web fonts or internet images "
+    "(use emoji, CSS shapes, gradients or inline SVG for art and logos); include <meta name=viewport "
+    "content='width=device-width,initial-scale=1'>; font-family Inter, system-ui, sans-serif; a page that fits a "
+    "phone screen and prints well on A4 (@media print); beautiful hierarchy, spacing and colour that suits the "
+    "kind (calm and formal for CVs and letters, bold and bright for posters and invitations); add a small floating "
+    "'Print / Save as PDF' button that calls window.print() and hides when printing. Money in UGX unless asked.\n"
+    "Reply with ONLY the HTML code, nothing before or after.")
+
+
+def hk_doc_ai(prompt):
+    r = None
+    try:
+        r, _, _ = race_answer(lambda: ask_gemini(prompt, max_tokens=7000, system=_HK_DOC_RULES), prompt,
+                              hedge_after=25, deadline=110)
+    except Exception as e:
+        log(f"CREATIONS: main AI {type(e).__name__}")
+    h = hk_extract_html(r)
+    if not h:
+        try:
+            h = hk_extract_html(free_ai(prompt, system=_HK_DOC_RULES, max_tokens=6000))
+        except Exception as e:
+            log(f"CREATIONS: free AI {type(e).__name__}")
+    return h
+
+
+def hk_make_doc(kind, desc):
+    if not net_online():
+        return None, "I need internet to make a new one. Your saved creations still open: say [b]my creations[/b]."
+    h = hk_doc_ai(f"Make this {kind}: {desc.strip()}")
+    if not h:
+        return None, "The AI couldn't finish it this time. Say it again and I'll retry, or describe it more simply."
+    name = hk_slug(kind + "-" + re.sub(r"^(an?|the|my)\s+", "", desc.strip(), flags=re.I)[:30])
+    d = os.path.join(hk_apps_dir(), "creations")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, name + ".html")
+    open(path, "w", encoding="utf8").write(h)
+    try:
+        dl = genius_dl("creations")
+        os.makedirs(dl, exist_ok=True)
+        open(os.path.join(dl, name + ".html"), "w", encoding="utf8").write(h)
+    except Exception:
+        pass
+    return path, None
+
+
+def hk_doc_handle(screen, line, lw):
+    if lw in ("my creations", "my documents", "my docs", "creations"):
+        d = os.path.join(hk_apps_dir(), "creations")
+        items = sorted(os.listdir(d), key=lambda f: -os.path.getmtime(os.path.join(d, f))) if os.path.isdir(d) else []
+        screen.show("AI", ("[b]Your creations[/b]\n" + "\n".join("- " + f[:-5] for f in items[:40]) +
+                           "\n\nSay [b]open creation <name>[/b].") if items else
+                    "Nothing yet. Try: [b]make a cv for me[/b], [b]create a poster for my shop[/b] or "
+                    "[b]write an application letter for a job at MTN[/b].")
+        return True
+    m = re.match(r"^open creation (.+)$", lw)
+    if m:
+        d = os.path.join(hk_apps_dir(), "creations")
+        want = hk_slug(m.group(1))
+        for f in (os.listdir(d) if os.path.isdir(d) else []):
+            if want in f:
+                hk_show_app(os.path.join(d, f), screen)
+                screen.show("AI", "Opening it. Press back to close.")
+                return True
+        return False
+    m = re.match(r"^(please\s+)?(make|create|design|write|draft|prepare|generate|build)( me| for me| us)?( an?| the| my)?\s+"
+                 r"(" + HK_DOC_KINDS + r")\b(.*)$", lw)
+    if not m:
+        return False
+    kind = m.group(5)
+    desc = (kind + " " + line.strip()[len(line.strip()) - len(m.group(6)):]).strip() if m.group(6).strip() else kind
+
+    def job():
+        path, err = hk_make_doc(kind, desc)
+        if err:
+            return err
+        Clock.schedule_once(lambda *_: hk_show_app(path, screen), 0.3)
+        return (f"Your [b]{_esc(kind)}[/b] is ready and opening now. Tap [b]Print / Save as PDF[/b] to keep it as a PDF.\n"
+                f"Want changes? Say what to change, e.g. [b]make another {_esc(kind)} in blue[/b]. "
+                f"A copy is in Download/{HK_APP.replace(' ', '')}/creations.")
+    screen._bg(job, f"Making your {kind}:\n1. Working out what it needs to say\n2. Writing the content\n"
+                    "3. Designing it\n4. Checking it, then opening it\n(about 30-90 seconds)", speak=False)
+    return True
+
+# ================= Deep research: reads Wikipedia and today's news, then writes a designed report =================
+_HK_RESEARCH_RULES = (
+    "You are a careful researcher and report designer. Using ONLY the sources given (plus well-known basic facts), "
+    "write a clear research report as ONE complete single-file HTML page. Structure: a title, a 2-3 sentence answer "
+    "at the top, then short sections with headings, key numbers in a highlighted box, what it means for someone in "
+    "Uganda when relevant, and a Sources list with the given links. Say plainly when sources disagree or are missing; "
+    "never invent facts, numbers or links. Design: font-family Inter, system-ui, sans-serif; dark charcoal #141414 "
+    "page, cards #1E1E1E, off-white text, one accent colour, phone-friendly, prints well; add a small floating "
+    "'Print / Save as PDF' button using window.print(). No external files. Reply with ONLY the HTML code.")
+
+
+def hk_research(topic):
+    if not net_online():
+        return None, "I need internet to research. Try again when you're online."
+    parts, links = [], []
+    try:
+        title, text, url = ga_wiki(topic, full=True, timeout=8)
+        if text:
+            parts.append(f"Wikipedia - {title}:\n{text[:9000]}")
+            links.append(url)
+    except Exception as e:
+        log(f"RESEARCH wiki: {type(e).__name__}")
+    try:
+        for it in news_items(topic, 8)[:8]:
+            t, src, u = it[0], it[1], it[2]
+            parts.append(f"News ({src}): {t}")
+            links.append(u)
+    except Exception as e:
+        log(f"RESEARCH news: {type(e).__name__}")
+    if not parts:
+        return None, "I couldn't find sources on that right now. Try different words."
+    prompt = (f"Research topic: {topic}\n\nSources:\n" + "\n\n".join(parts) +
+              "\n\nLinks to list as sources:\n" + "\n".join(links[:12]))
+    h = None
+    try:
+        r, _, _ = race_answer(lambda: ask_gemini(prompt[:20000], max_tokens=6000, system=_HK_RESEARCH_RULES),
+                              prompt, hedge_after=25, deadline=110)
+        h = hk_extract_html(r)
+    except Exception as e:
+        log(f"RESEARCH main AI {type(e).__name__}")
+    if not h:
+        try:
+            h = hk_extract_html(free_ai(prompt[:12000], system=_HK_RESEARCH_RULES, max_tokens=5000))
+        except Exception as e:
+            log(f"RESEARCH free AI {type(e).__name__}")
+    if not h:
+        return None, "The AI couldn't finish the report this time. Say it again and I'll retry."
+    d = os.path.join(hk_apps_dir(), "creations")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, hk_slug("research-" + topic) + ".html")
+    open(path, "w", encoding="utf8").write(h)
+    try:
+        dl = genius_dl("creations")
+        os.makedirs(dl, exist_ok=True)
+        open(os.path.join(dl, os.path.basename(path)), "w", encoding="utf8").write(h)
+    except Exception:
+        pass
+    return path, None
+
+
+def hk_research_handle(screen, line, lw):
+    m = re.match(r"^(please\s+)?(deep research|research|do research on|do a research on|research about|"
+                 r"find out everything about|investigate)\s+(on\s+|about\s+)?(.{3,200})$", lw)
+    if not m:
+        return False
+    topic = line.strip()[len(line.strip()) - len(m.group(4)):]
+
+    def job():
+        path, err = hk_research(topic)
+        if err:
+            return err
+        Clock.schedule_once(lambda *_: hk_show_app(path, screen), 0.3)
+        return (f"Your research on [b]{_esc(topic)}[/b] is ready and opening now, with its sources at the end. "
+                "Tap [b]Print / Save as PDF[/b] to keep it. Want me to make it into a poster or a presentation?")
+    screen._bg(job, f"Researching {topic}:\n1. Reading Wikipedia\n2. Reading today's news\n3. Checking what sources agree on\n"
+                    "4. Writing and designing your report\n(about 1-2 minutes)", speak=False)
+    return True
+
+
 def hk_app_handle(screen, line, lw):
+    try:
+        if hk_research_handle(screen, line, lw):
+            return True
+    except Exception as e:
+        log(f"RESEARCH: {type(e).__name__}: {e}")
+    try:
+        if hk_doc_handle(screen, line, lw):
+            return True
+    except Exception as e:
+        log(f"CREATIONS: {type(e).__name__}: {e}")
+    return _hk_app_handle_core(screen, line, lw)
+
+
+def _hk_app_handle_core(screen, line, lw):
     if lw in ("app builder", "build app", "build an app", "make app", "make an app", "create app", "apps builder",
               "website builder", "build a website", "page builder"):
         hk_builder_panel(screen)

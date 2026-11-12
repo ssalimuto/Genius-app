@@ -601,6 +601,7 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-11-12"
 CHANGELOG = """Ssalimuto AI 1.5 (2026-11-12)
+- Deep research: say "research <topic>" and it reads Wikipedia and today's news, then writes a designed report with sources
 - Crash guard: if one button or answer hits a mistake, the app keeps running instead of closing
 - Full code check: no missing names or broken parts found
 - New look is now called "theme modern"
@@ -18413,8 +18414,91 @@ def hk_doc_handle(screen, line, lw):
                     "3. Designing it\n4. Checking it, then opening it\n(about 30-90 seconds)", speak=False)
     return True
 
+# ================= Deep research: reads Wikipedia and today's news, then writes a designed report =================
+_HK_RESEARCH_RULES = (
+    "You are a careful researcher and report designer. Using ONLY the sources given (plus well-known basic facts), "
+    "write a clear research report as ONE complete single-file HTML page. Structure: a title, a 2-3 sentence answer "
+    "at the top, then short sections with headings, key numbers in a highlighted box, what it means for someone in "
+    "Uganda when relevant, and a Sources list with the given links. Say plainly when sources disagree or are missing; "
+    "never invent facts, numbers or links. Design: font-family Inter, system-ui, sans-serif; dark charcoal #141414 "
+    "page, cards #1E1E1E, off-white text, one accent colour, phone-friendly, prints well; add a small floating "
+    "'Print / Save as PDF' button using window.print(). No external files. Reply with ONLY the HTML code.")
+
+
+def hk_research(topic):
+    if not net_online():
+        return None, "I need internet to research. Try again when you're online."
+    parts, links = [], []
+    try:
+        title, text, url = ga_wiki(topic, full=True, timeout=8)
+        if text:
+            parts.append(f"Wikipedia - {title}:\n{text[:9000]}")
+            links.append(url)
+    except Exception as e:
+        log(f"RESEARCH wiki: {type(e).__name__}")
+    try:
+        for it in news_items(topic, 8)[:8]:
+            t, src, u = it[0], it[1], it[2]
+            parts.append(f"News ({src}): {t}")
+            links.append(u)
+    except Exception as e:
+        log(f"RESEARCH news: {type(e).__name__}")
+    if not parts:
+        return None, "I couldn't find sources on that right now. Try different words."
+    prompt = (f"Research topic: {topic}\n\nSources:\n" + "\n\n".join(parts) +
+              "\n\nLinks to list as sources:\n" + "\n".join(links[:12]))
+    h = None
+    try:
+        r, _, _ = race_answer(lambda: ask_gemini(prompt[:20000], max_tokens=6000, system=_HK_RESEARCH_RULES),
+                              prompt, hedge_after=25, deadline=110)
+        h = hk_extract_html(r)
+    except Exception as e:
+        log(f"RESEARCH main AI {type(e).__name__}")
+    if not h:
+        try:
+            h = hk_extract_html(free_ai(prompt[:12000], system=_HK_RESEARCH_RULES, max_tokens=5000))
+        except Exception as e:
+            log(f"RESEARCH free AI {type(e).__name__}")
+    if not h:
+        return None, "The AI couldn't finish the report this time. Say it again and I'll retry."
+    d = os.path.join(hk_apps_dir(), "creations")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, hk_slug("research-" + topic) + ".html")
+    open(path, "w", encoding="utf8").write(h)
+    try:
+        dl = genius_dl("creations")
+        os.makedirs(dl, exist_ok=True)
+        open(os.path.join(dl, os.path.basename(path)), "w", encoding="utf8").write(h)
+    except Exception:
+        pass
+    return path, None
+
+
+def hk_research_handle(screen, line, lw):
+    m = re.match(r"^(please\s+)?(deep research|research|do research on|do a research on|research about|"
+                 r"find out everything about|investigate)\s+(on\s+|about\s+)?(.{3,200})$", lw)
+    if not m:
+        return False
+    topic = line.strip()[len(line.strip()) - len(m.group(4)):]
+
+    def job():
+        path, err = hk_research(topic)
+        if err:
+            return err
+        Clock.schedule_once(lambda *_: hk_show_app(path, screen), 0.3)
+        return (f"Your research on [b]{_esc(topic)}[/b] is ready and opening now, with its sources at the end. "
+                "Tap [b]Print / Save as PDF[/b] to keep it. Want me to make it into a poster or a presentation?")
+    screen._bg(job, f"Researching {topic}:\n1. Reading Wikipedia\n2. Reading today's news\n3. Checking what sources agree on\n"
+                    "4. Writing and designing your report\n(about 1-2 minutes)", speak=False)
+    return True
+
 
 def hk_app_handle(screen, line, lw):
+    try:
+        if hk_research_handle(screen, line, lw):
+            return True
+    except Exception as e:
+        log(f"RESEARCH: {type(e).__name__}: {e}")
     try:
         if hk_doc_handle(screen, line, lw):
             return True
