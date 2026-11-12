@@ -601,6 +601,7 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-11-12"
 CHANGELOG = """Ssalimuto AI 1.5 (2026-11-12)
+- Read any web page: paste a link and ask about it, then "page: <question>" for more
 - Deep research: say "research <topic>" and it reads Wikipedia and today's news, then writes a designed report with sources
 - Crash guard: if one button or answer hits a mistake, the app keeps running instead of closing
 - Full code check: no missing names or broken parts found
@@ -18492,8 +18493,75 @@ def hk_research_handle(screen, line, lw):
                     "4. Writing and designing your report\n(about 1-2 minutes)", speak=False)
     return True
 
+# ================= Read any web page: paste a link, ask about it =================
+HK_LINK = {"url": None, "text": "", "title": ""}
+_URL_RE = re.compile(r"(https?://[^\s<>\"']+|www\.[^\s<>\"']+|\b[a-z0-9-]+\.(?:com|org|net|ug|co\.ug|go\.ug|ac\.ug|io|info|edu|gov|news|africa)(?:/[^\s<>\"']*)?)", re.I)
+_LINK_SYS = ("You read web pages for the user. Answer ONLY from the page text given; if the page doesn't say, say so "
+             "plainly and suggest where to look. Start with the direct answer in one sentence, then up to 5 short "
+             "bullet points with the key facts, numbers and dates exactly as the page has them. Keep it short. "
+             "End with one helpful next step, like a question they could ask about the page.")
+
+
+def hk_read_link(url, question=None):
+    url = url.strip().rstrip(".,;)")
+    if not url.lower().startswith("http"):
+        url = "https://" + url
+    raw = _ga_get(url, timeout=15)
+    m = re.search(r"(?is)<title[^>]*>(.*?)</title>", raw or "")
+    title = re.sub(r"\s+", " ", m.group(1)).strip()[:120] if m else url
+    txt = re.sub(r"(?is)<(script|style|noscript|svg|nav|footer)[^>]*>.*?</\1>", " ", raw or "")
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    txt = re.sub(r"&nbsp;|&amp;|&#\d+;|&[a-z]+;", " ", txt)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    if len(txt) < 80:
+        return None, "That page didn't give me readable text. It may need a sign-in or only work in a browser."
+    HK_LINK.update(url=url, text=txt[:14000], title=title)
+    ask = question or "Summarise this page: what it is, the main points, and anything important like prices, dates or deadlines."
+    prompt = f"Page title: {title}\nPage URL: {url}\n\nPage text:\n{txt[:12000]}\n\nQuestion: {ask}"
+    ans = None
+    try:
+        ans, _, _ = race_answer(lambda: ask_gemini(prompt, max_tokens=900, system=_LINK_SYS), prompt,
+                                hedge_after=8, deadline=60)
+    except Exception as e:
+        log(f"LINK main AI {type(e).__name__}")
+    if not ans:
+        try:
+            ans = free_ai(prompt[:9000], system=_LINK_SYS, max_tokens=800)
+        except Exception as e:
+            log(f"LINK free AI {type(e).__name__}")
+    if not ans:
+        return None, "I read the page, but the AI is busy. Ask me about it again in a moment."
+    return f"[b]{_esc(title)}[/b]\n{ans}\n\n[size=13sp]Ask more about this page, e.g. \"page: what are the prices?\"[/size]", None
+
+
+def hk_link_handle(screen, line, lw):
+    raw = line.strip()
+    m = re.match(r"^(page|link|on the page|from the page)\s*[:,-]\s*(.+)$", lw)
+    if m and HK_LINK["url"]:
+        q = raw[len(raw) - len(m.group(2)):]
+        url = HK_LINK["url"]
+    else:
+        u = _URL_RE.search(raw)
+        if not u or "@" in raw[max(0, u.start() - 1):u.start() + 1]:
+            return False
+        url = u.group(0)
+        rest = (raw[:u.start()] + " " + raw[u.end():]).strip(" :,-")
+        rest = re.sub(r"^(please\s+)?(read|open|check|summari[sz]e|look at|visit|go to|what does|what is on)\s*(this|the)?\s*(link|page|site|website)?\s*", "", rest, flags=re.I).strip(" :,-?")
+        q = rest if len(rest) > 6 else None
+
+    def job():
+        out, err = hk_read_link(url, q)
+        return err or out
+    screen._bg(job, "Reading the page:\n1. Opening it\n2. Reading the text\n3. Finding your answer", speak=False)
+    return True
+
 
 def hk_app_handle(screen, line, lw):
+    try:
+        if hk_link_handle(screen, line, lw):
+            return True
+    except Exception as e:
+        log(f"LINK: {type(e).__name__}: {e}")
     try:
         if hk_research_handle(screen, line, lw):
             return True
