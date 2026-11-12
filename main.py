@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "115.1"
+VERSION = "115.2"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -607,8 +607,15 @@ What this means
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
-VERSION_DATE = "2026-11-11"
-CHANGELOG = """Genius 114.1 (2026-10-27)
+VERSION_DATE = "2026-11-12"
+CHANGELOG = """Genius 115.2 (2026-11-12)
+- Pictures: say it any way, like "Black man create", "picture of a lion" or "generate cat", and it draws it
+- Never a flat no: if something can't be done here, it offers the closest thing it can do
+- Asks one short question only when a detail really matters, with the likely answer ready
+- Ends answers with a smart next step, and offers new versions after each picture
+- Clearer message when the free AIs are busy
+
+Genius 114.1 (2026-10-27)
 - Smart keyboard: Genius now uses your phone's full keyboard, like other apps, with word suggestions, autocorrect, capital letters, emoji, glide typing and voice typing. Number boxes open the number pad. Password boxes never show suggestions.
 - Say keyboard simple to switch back to the old plain keyboard, or keyboard smart to turn it on again.
 
@@ -2288,7 +2295,7 @@ EDIT_START = re.compile(
     r"at (night|sunset|sunrise|dawn|dusk)|in (the )?(night|rain|snow|evening|morning)|blur|zoom|closer|"
     r"wider|near |next to |in front of|behind |wearing |holding |without |more |less |brighter|darker|"
     r"let (me|him|her|it) |show (me|him|her) (near|in|at|with|holding|wearing))", re.I)
-IMAGE_TIPS = ("Want changes? Just tell me, e.g.\n"
+IMAGE_TIPS = ("Want another version? I can change the outfit, the background, the age or the style. Just tell me, e.g.\n"
               "- make me near a modern skyscraper\n"
               "- change it to night with city lights\n"
               "- blur the background so I stand out\n"
@@ -2513,7 +2520,16 @@ THINK_STYLE = (" How to think: first work out exactly what they are asking and w
                "prices in UGX, and steps they can do today. Keep it short; cut anything that does not help. "
                "Never make up facts, links or numbers; for local prices or profits you do not know for sure, say they are a rough guess and tell them how to check. Say plainly when you are not sure. Match their mood: warm "
                "when they are happy, calm and kind when things are hard. End with one useful next step or offer "
-               "when there is one.")
+               "when there is one. "
+               "You have real tools in this app: draw real-looking pictures, read screenshots, photos and PDFs, "
+               "build small apps, remember facts (memory), keep projects, search the internet for news, notes, "
+               "weather, daily brief and quizzes. Use them; never say you can't do something these tools can do. "
+               "If something is truly impossible here (controlling other apps, phone calls, payments), say so in one "
+               "short line and do the closest helpful thing instead, never a flat no. Ask one short question only "
+               "when a missing detail would change the result, and offer the likely choice so they can just say yes "
+               "(e.g. 'A real photo or a cartoon? I'd go with a real photo.'). For clear requests and simple facts, "
+               "just answer. Finish with one smart next step you can do for them, like drawing it, saving it to "
+               "memory or making it a project. Do more than they expect: add the one extra detail that really helps.")
 
 ANSWER_STYLE = (" For questions about knowledge, people, places, history, science, school work or how something "
                 "works, answer like Google's AI Mode: start with one clear sentence that directly answers, then "
@@ -3925,8 +3941,8 @@ def other_ai(name, text, system=None, convo=None, max_tokens=700):
 NO_AI_MSG = ("I need an AI key to answer that. Type key and I'll walk you through getting a free one "
              "in about 2 minutes (or type setgroq / setkey if you already have one). "
              "Offline I can still do notes, calc, money, quiz, music, effects and more: type help.")
-NET_AI_MSG = ("I couldn't reach a free AI this second because many people share them. I'll answer "
-              "by myself in a moment, no need to ask again. For instant answers, type key and add a free Gemini key.")
+NET_AI_MSG = ("The free AIs are busy this second because many people share them. I'll keep trying and answer "
+              "in a moment, no need to ask again. For faster answers, add your own free AI key in Settings.")
 
 
 # ================= Key wizard: anyone can get and save a free AI key by themselves =================
@@ -4177,6 +4193,90 @@ def fast_answer(question):
 
 PIC_ASK = re.compile(r"\b(draw|paint|sketch)\b|\b(create|make|generate|give|show|design)\b.{0,40}"
                      r"\b(picture|pictures|photo|photos|image|images|pic|pics|portrait|selfie|drawing)\b", re.I)
+
+
+# 115.2: a picture ask in ANY word order goes to the picture maker ("Black man create", "picture of a lion",
+# "generate cat"), while normal questions ("how do I create an account", "what is a man") stay questions.
+_PIC_NOUN = (r"(picture|pictures|photo|photos|image|images|pic|pics|portrait|portraits|selfie|drawing|drawings|"
+             r"painting|paintings|sketch|artwork|wallpaper|illustration)")
+_PIC_POLITE = re.compile(r"^\s*((hey|hi|ok|okay|yo)\s+)?((genius|ssalimuto( ai)?)\s*[,:]?\s+)?(please\s+|pls\s+|plz\s+)?"
+                         r"((can|could|would|will)\s+you\s+(please\s+)?|i\s+(want|need|would like)\s+(you\s+to\s+)?"
+                         r"(a\s+)?|help\s+me\s+|let'?s\s+|kindly\s+)?(please\s+)?", re.I)
+_PIC_TAIL = re.compile(r"[\s.!?,]*(\b(now|please|pls|for me|quickly|fast|again|for us)\b[\s.!?,]*)*$", re.I)
+_PIC_QUESTION = re.compile(r"^\s*(how|why|what|whats|what's|when|where|who|whom|whose|which|can|could|would|should|"
+                           r"is|are|am|was|were|do|does|did|will|explain|tell|define|meaning|teach|describe|"
+                           r"read|summari[sz]e|translate)\b", re.I)
+_PIC_VERB = r"(create|generate|draw|paint|sketch|render|imagine|design)"
+_NOT_PIC = re.compile(
+    r"\b(accounts?|apps?|application|websites?|site|web ?page|pages?|projects?|notes?|lists?|plans?|stor(y|ies)|"
+    r"poems?|songs?|music|beats?|e-?mails?|letters?|essays?|files?|folders?|documents?|docs?|pdfs?|reminders?|"
+    r"passwords?|games?|codes?|programs?|scripts?|quiz(zes)?|tests?|exams?|tables?|budgets?|businesses|company|"
+    r"companies|cv|resume|summar(y|ies)|reports?|groups?|channels?|playlists?|videos?|presentations?|slides?|"
+    r"spreadsheets?|sheets?|database|ai|bots?|chatbot|keys?|backups?|goals?|habits?|schedules?|timetables?|"
+    r"questions?|answers?|sentences?|paragraphs?|words?|names?|usernames?|links?|qr|money|profits?|income|"
+    r"skills?|recipes?|courses?|lessons?|proposals?|invoices?|receipts?|contracts?|forms?|surveys?|calendars?|"
+    r"events?|alarms?|timers?|memory|voice|ringtones?|shortcuts?|ideas?|titles?|captions?|hashtags?|texts?|"
+    r"content|prompts?|numbers?|tools?|conclusions?|attention|line|graph|chart|map|outline|strategy|"
+    r"profile|post|caption|bio|message|messages|tweet|ad|advert|speech|joke|jokes|riddle|summary)\b", re.I)
+_PIC_FILLER = {"i", "want", "to", "you", "me", "us", "can", "please", "help", "it", "this", "that", "something",
+               "now", "let's", "lets", "we", "a", "an", "the", "one", "some", "my", "your", "just", "and", "so"}
+
+
+def _pic_core(text):
+    s = (text or "").strip()
+    s = _PIC_POLITE.sub("", s, count=1)
+    s = _PIC_TAIL.sub("", s).strip()
+    return s
+
+
+def wants_picture(text):
+    """True when the message asks for a new picture, whatever the word order."""
+    raw = (text or "").strip()
+    if not raw or len(raw) > 300 or raw.endswith("?"):
+        return False
+    if _PIC_QUESTION.match(raw) and not re.match(r"^\s*(please\s+)?(can|could|would|will)\s+you\b", raw, re.I):
+        return False
+    s = _pic_core(raw)
+    if not s or _PIC_QUESTION.match(s):
+        return False
+    low = s.lower()
+    # 1) verb ... picture word: "make a picture of a car", "create for me an image of a house"
+    m = re.search(r"\b(create|make|generate|give|show|design|draw|paint|send|produce)\b(.{0,40}?)\b" + _PIC_NOUN + r"\b", low)
+    if m and not _NOT_PIC.search(m.group(2)):
+        return True
+    # 2) starts with the picture word: "picture of a lion", "a photo of a girl in a dress"
+    if re.match(r"^((a|an|one|some|another|new|nice|real|beautiful)\s+)*" + _PIC_NOUN + r"\s+(of|showing|with)\s+\S", low):
+        return True
+    # 3) verb first, any object that can be seen: "create a man now", "generate cat", "draw a lion"
+    m = re.match(r"^" + _PIC_VERB + r"\s+((for\s+)?(me|us)\s+)?(.+)$", low)
+    if m:
+        obj = m.group(5).strip()
+        words = re.findall(r"[a-z']+", obj)
+        if words and len(words) <= 14 and not _NOT_PIC.search(obj) and any(w not in _PIC_FILLER for w in words):
+            return True
+    # 4) verb last: "Black man create", "man create", "a lion draw"
+    m = re.match(r"^(.{2,80}?)\s+" + _PIC_VERB + r"(d|s)?$", low)
+    if m:
+        obj = m.group(1).strip()
+        words = re.findall(r"[a-z']+", obj)
+        if words and len(words) <= 10 and not _NOT_PIC.search(obj) and not _PIC_QUESTION.match(obj) \
+                and any(w not in _PIC_FILLER for w in words):
+            return True
+    return False
+
+
+def picture_subject(text):
+    """'Black man create' -> 'Black man'; 'make a picture of a car' -> 'a car'. Keeps the person's own words."""
+    if re.search(r"\b(me|my|myself|us|our)\b", text or "", re.I) and not re.search(r"\bfor (me|us)\b", text or "", re.I):
+        return (text or "").strip()   # "draw me in a suit" keeps "me" so the user's own face is used
+    s = _pic_core(text)
+    s = re.sub(r"^" + _PIC_VERB + r"\s+((for\s+)?(me|us)\s+)?", "", s, flags=re.I)
+    s = re.sub(r"^(make|give|show|send|produce)\s+((me|us)\s+)?", "", s, flags=re.I)
+    s = re.sub(r"^((a|an|one|some|another|new|nice|real|beautiful)\s+)*" + _PIC_NOUN + r"\s+(of|showing)\s+", "", s, flags=re.I)
+    s = re.sub(r"\s+" + _PIC_VERB + r"(d|s)?$", "", s, flags=re.I)
+    s = s.strip(" .,!?")
+    return s or (text or "").strip()
+
 
 
 def _ok(t):
@@ -8772,7 +8872,8 @@ HELPFUL_RULES = (
     "without it. For health, give clear information and say when to see a health worker. "
     "Decline only clearly harmful requests: making weapons or explosives, instructions for hurting yourself or "
     "others, any sexual content involving children, or helping scam, steal or hack people. When you decline, do "
-    "it in one kind sentence and offer a safe, useful alternative (for example how to stay safe or report it). ")
+    "it in one kind sentence and offer a safe, useful alternative (for example how to stay safe or report it). "
+    "When a request needs something this app cannot do, never just say no: offer the closest thing you can do. ")
 
 _HARMFUL_PATTERNS = (
     (r"\b(make|build|assemble|create)\b.{0,25}\b(bomb|explosive|grenade|ied|molotov|gun|pistol|firearm)s?\b",
@@ -11021,7 +11122,7 @@ class ChatScreen(BoxLayout):
             return
         opts = [("Tell me the right answer", lambda: setattr(self.inp, "text", "better: "), GOLD),
                 ("Ask Genius Mind (every AI checks)", lambda: self.handle("mind " + rt["q"]) if rt.get("q") else None, BLUE)]
-        if PIC_ASK.search(rt.get("q") or ""):    # a bad picture: offer a fresh one, not a written answer
+        if wants_picture(rt.get("q") or "") or PIC_ASK.search(rt.get("q") or ""):    # a bad picture: offer a fresh one, not a written answer
             opts = [("Make a new picture", lambda: self.handle(rt["q"]), GOLD),
                     ("Tell me what to change", lambda: setattr(self.inp, "text", "change it to "), BLUE)]
         if reports_opt().get("on"):
@@ -13307,7 +13408,7 @@ class ChatScreen(BoxLayout):
             return
         if lw.startswith(("mind ", "think ", "genius mind ")):
             q = line.split(" ", 2)[2] if lw.startswith("genius mind ") else line.split(" ", 1)[1]
-            if PIC_ASK.search(q):           # 111.6: Mind can't draw, so a picture ask goes to the picture maker
+            if wants_picture(q) or PIC_ASK.search(q):           # 111.6: Mind can't draw, so a picture ask goes to the picture maker
                 self._quiet_echo = True
                 self.handle(q)
                 return
@@ -13559,9 +13660,10 @@ class ChatScreen(BoxLayout):
             return
         # 111.7: a clear picture ask goes straight to the picture maker, so no AI can answer it with only words
         if (action not in ALLOWED and action not in NEW_ACTIONS and action not in LIFE_ACTIONS
-                and not (att and att.get("kind") == "image") and PIC_ASK.search(low)
-                and not re.match(r"^\s*(how|why|what|when|where|who|which|can|could|is|are|do|does|explain|tell)\b", low)):
-            self.run(line, "draw", line)
+                and not (att and att.get("kind") == "image")
+                and (wants_picture(line) or (PIC_ASK.search(low)
+                and not re.match(r"^\s*(how|why|what|when|where|who|which|can|could|is|are|do|does|explain|tell)\b", low)))):
+            self.run(line, "draw", picture_subject(line) if wants_picture(line) else line)
             return
         if getattr(self, "pending_quiz", None) and action.strip(".)") in ("a", "b", "c", "d"):
             self.check_quiz(action.strip(".)").upper())
@@ -13780,7 +13882,7 @@ class ChatScreen(BoxLayout):
                     if path:
                         remember_image(path, arg)
                         self.show_image(path, arg)
-                        self.say("Here is your picture.")
+                        self.say("Here is your picture. Want a new version, like a different outfit, background or age?")
                         self.show("AI", IMAGE_TIPS)
                     else:
                         self.say(err)
@@ -18214,6 +18316,12 @@ _hk_prev_ga_handle = ga_handle
 
 def ga_handle(screen, line, action, arg, low):
     lw = low.strip(" .!?")
+    try:
+        if wants_picture(line) and hasattr(screen, "run"):   # 115.2: "Black man create" -> picture maker
+            screen.run(line, "draw", picture_subject(line))
+            return True
+    except Exception as e:
+        log(f"PIC: {type(e).__name__}: {e}")
     try:
         if hk_proj_handle(screen, line, lw) or hk_app_handle(screen, line, lw):
             return True
