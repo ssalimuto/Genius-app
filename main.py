@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "115.2"
+VERSION = "115.3"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -494,7 +494,7 @@ ALLOWED = MappingProxyType({
     "intruders": "See who tried to break in",
     "tripwire": "Add a fake secret that traps hackers, e.g. tripwire momo_pin",
     "deep": "Turn deep thinking + web search on or off",
-    "theme": "Change the look: theme hark, theme gold, theme diamond, or theme classic",
+    "theme": "Change the look: theme modern, theme gold, theme diamond, or theme classic",
     "news": "World news: Uganda, Africa, world, sports, tech (news brief for a summary)",
     "uneb": "UNEB-style question, e.g. uneb s4 biology, then mark <your answer>",
     "mark": "Mark your answer to the last UNEB question",
@@ -608,7 +608,12 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-11-12"
-CHANGELOG = """Genius 115.2 (2026-11-12)
+CHANGELOG = """Genius 115.3 (2026-11-12)
+- Crash guard: if one button or answer hits a mistake, the app keeps running instead of closing
+- Full code check: no missing names or broken parts found
+- New look is now called "theme modern"
+
+Genius 115.2 (2026-11-12)
 - Pictures: say it any way, like "Black man create", "picture of a lion" or "generate cat", and it draws it
 - Never a flat no: if something can't be done here, it offers the closest thing it can do
 - Asks one short question only when a detail really matters, with the likely answer ready
@@ -7463,7 +7468,7 @@ def colorize(text, pal=None):
 
 # ---- word / command suggestions while typing ----
 _SUGGEST_EXTRA = (
-    "play song", "stop music", "pause music", "lyrics", "music", "theme hark", "theme gold", "theme diamond", "theme classic",
+    "play song", "stop music", "pause music", "lyrics", "music", "theme modern", "theme hark", "theme gold", "theme diamond", "theme classic",
     "mic test", "help", "make song amapiano about ", "make song afrobeat about ", "make song gospel about ",
     "make song kadongo kamu about ", "make song dancehall about ", "make song hip hop about ",
     "make song rnb about ", "make song love ballad about ", "make song kids song about ",
@@ -13811,8 +13816,9 @@ class ChatScreen(BoxLayout):
             return
         if action == "theme":
             pick = arg.lower().strip()
+            pick = "hark" if pick in ("modern", "dark", "new") else pick
             if pick not in ("hark", "gold", "diamond", "classic"):
-                self.say(f"Your look is {THEME}. Type theme hark, theme gold, theme diamond, or theme classic.")
+                self.say(f"Your look is {'modern' if THEME == 'hark' else THEME}. Type theme modern, theme gold, theme diamond, or theme classic.")
                 return
             try:
                 open(THEME_FILE, "w").write(pick)
@@ -18355,6 +18361,31 @@ GA_ABOUT = GA_ABOUT + (
     "- [b]App Builder[/b]: [b]build app a quiz about Uganda[/b]. The AI codes it and it runs right here. [b]my apps[/b], "
     "[b]change app <name>: ...[/b]")
 # =================== end Hark ideas ===================
+
+
+# Crash guard: a mistake inside one button or answer is logged and the app keeps running instead of closing.
+try:
+    from kivy.base import ExceptionHandler, ExceptionManager
+
+    class _KeepRunning(ExceptionHandler):
+        _count = [0, 0.0]
+
+        def handle_exception(self, inst):
+            try:
+                now = time.time()
+                if now - self._count[1] > 60:
+                    self._count[0], self._count[1] = 0, now
+                self._count[0] += 1
+                log(f"CRASH GUARD: {type(inst).__name__}: {inst}")
+                if self._count[0] > 25:          # the same error looping: let Android restart the app
+                    return ExceptionManager.RAISE
+            except Exception:
+                pass
+            return ExceptionManager.PASS
+
+    ExceptionManager.add_handler(_KeepRunning())
+except Exception:
+    pass
 
 
 if __name__ == "__main__":
