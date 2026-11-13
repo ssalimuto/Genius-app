@@ -2307,7 +2307,7 @@ def gemini_image(prompt):
                       "Turn on billing for your key at aistudio.google.com, then try again.")
     try:
         live_step("Writing a detailed photo description")
-        real = realistic_prompt(prompt) if connected_ais() else _short_prompt(prompt)
+        real = realistic_prompt(prompt)   # 119: free AI writes the photo brief when no key
     except Exception as e:
         log(f"DRAW prompt: {type(e).__name__}")
         real = prompt
@@ -19968,6 +19968,194 @@ def hk_extract_html(r):
     """Every page made anywhere in the app (apps, documents, research) gets the shared design."""
     return studio_wrap(_studio_prev_extract(r))
 
+
+# ---------- 119: Photo quality: richer photographer prompt, realistic SDXL race, camera-like finish ----------
+PHOTO_BRIEF = (
+    "You are a documentary photographer. Turn the request into ONE photo description of 70 to 110 words, "
+    "written as plain comma-separated details, in this order (most important first, photo models read the "
+    "start best): (1) the main subject: age, build, skin with natural pores and slight shine, hair, "
+    "expression, pose; (2) exact clothes with colours and fabric; (3) the real place behind them with three "
+    "concrete things (for Uganda: red brick or plastered houses, iron sheet roofs, banana plants, red soil, "
+    "boda bodas, market stalls, classrooms); (4) time of day and light direction (soft afternoon daylight "
+    "from the left, overcast, golden hour); (5) framing: 'candid smartphone photo, eye level, waist-up' or "
+    "'wide shot'; (6) 'sharp focus on the eyes, true natural colours, slight "
+    "phone camera grain'. People are Black Ugandans with dark brown skin unless the request says otherwise. "
+    "Keep everything the request asked for, add nothing it forbids. No art or cartoon words, no names of "
+    "cameras brands, no text. Reply with the description only.\n\nRequest: ")
+
+
+def realistic_prompt(prompt):
+    """119: a full photographer's description (subject, clothes, place, light), like a pro image prompt."""
+    p = prompt
+    for w in NOT_REAL_WORDS:
+        p = re.sub(r"\b" + re.escape(w) + r"s?\b", "", p, flags=re.I)
+    p = re.sub(r"\s+", " ", p).strip(" ,.") or "a person"
+    better = None
+    for fn in (lambda q: ask_gemini(q, max_tokens=260), lambda q: free_ai(q, system="You write photo descriptions.", max_tokens=260)):
+        try:
+            b = (fn(PHOTO_BRIEF + p) or "").strip().strip('"')
+            low = b.lower()
+            if 40 < len(b) < 1200 and not any(x in low for x in ("couldn", "no ai", "sorry", "i can't", "i cannot")):
+                better = b
+                break
+        except Exception:
+            continue
+    if better:
+        for w in NOT_REAL_WORDS:
+            better = re.sub(r"\b" + re.escape(w) + r"s?\b", "", better, flags=re.I)
+        p = better
+    return ugandan_people(p, prompt) + ". " + PHOTO_STYLE
+
+
+def _short_prompt(prompt, limit=700):
+    """119: keep more of the photographer's detail for the free makers (they read about 700 characters well)."""
+    p = (prompt or "").replace(PHOTO_STYLE, "").strip(" .,")
+    p = ugandan_people(p, prompt)
+    p = re.sub(r"\s+", " ", p)[:limit].strip(" .,") or "a real photograph"
+    return p + (", candid real photo, natural daylight, true-to-life skin texture with pores, sharp focus on the "
+                "eyes, true colours, slight phone camera grain, unedited")
+
+
+def polish_picture(data, crop_logo=False):
+    """119: camera-like finish: clean upscale, local contrast ('clarity'), fine sharpening and a light grain
+    so skin doesn't look plastic. Never changes the content; returns the original bytes if PIL is missing."""
+    try:
+        import io
+        from PIL import Image, ImageEnhance, ImageFilter, ImageChops
+        im = Image.open(io.BytesIO(data)).convert("RGB")
+        if crop_logo:                       # the free maker stamps its name in the bottom corner
+            W, H = im.size
+            im = im.crop((0, 0, W, int(H * 0.955)))
+        if max(im.size) < 1200:
+            scale = 1440.0 / max(im.size)
+            im = im.resize((int(im.size[0] * scale), int(im.size[1] * scale)), Image.LANCZOS)
+        im = im.filter(ImageFilter.UnsharpMask(radius=8, percent=22, threshold=2))     # clarity
+        im = im.filter(ImageFilter.UnsharpMask(radius=1.2, percent=85, threshold=2))   # fine detail
+        im = ImageEnhance.Contrast(im).enhance(1.04)
+        im = ImageEnhance.Color(im).enhance(1.03)
+        try:                                # light luminance grain, like a real phone sensor
+            noise = Image.effect_noise(im.size, 9).convert("RGB")
+            im = ImageChops.add(im, noise, 1.0, -128)
+        except Exception:
+            pass
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=93, subsampling=0)
+        return buf.getvalue()
+    except Exception as e:
+        log(f"PICTURE polish skipped: {e}")
+        return data
+
+
+HORDE_PHOTO_MODELS = ["ICBINP - I Can't Believe It's Not Photography", "Realistic Vision", "ZavyChromaXL",
+                      "Juggernaut XL"]
+
+
+def _horde_image(prompt, budget=150):
+    """119: AI Horde with the fastest true-photo models first (ICBINP, Realistic Vision), hires-fixed;
+    the small default job only if those are refused."""
+    hdr = {"apikey": "0000000000", "Client-Agent": "Genius:" + VERSION + ":ssalimuto",
+           "Content-Type": "application/json"}
+    w, h = picture_size(prompt)
+    w, h = (w // 64) * 64, (h // 64) * 64
+    jobs = [
+        {"prompt": prompt + " ### " + NEG_PROMPT,
+         "params": {"width": w, "height": h, "steps": 30, "cfg_scale": 5.0, "sampler_name": "k_dpmpp_2m",
+                    "karras": True, "hires_fix": True, "clip_skip": 1, "n": 1},
+         "models": HORDE_PHOTO_MODELS},
+        {"prompt": prompt + " ### cartoon, drawing, anime, painting, text, watermark, blurry, deformed",
+         "params": {"width": 512, "height": 704, "steps": 22, "n": 1}},
+    ]
+    jid = None
+    for job in jobs:
+        job.update({"nsfw": False, "censor_nsfw": True, "r2": True, "slow_workers": True})
+        try:
+            _, _, raw = _fetch(HORDE_URL + "/generate/async", timeout=30, data=json.dumps(job).encode(), headers=hdr)
+            jid = json.loads(raw)["id"]
+            break
+        except urllib.error.HTTPError as e:
+            log(f"HORDE submit {e.code}: trying the smaller job")
+            continue
+        except Exception as e:
+            log(f"HORDE submit failed: {e}")
+            return None, "net"
+    if not jid:
+        return None, "busy"
+    t_end = time.time() + budget
+    done = False
+    while time.time() < t_end:
+        time.sleep(4)
+        try:
+            _, _, raw = _fetch(f"{HORDE_URL}/generate/check/{jid}", timeout=20, headers=hdr)
+            st = json.loads(raw)
+        except Exception:
+            continue
+        if st.get("faulted") or st.get("is_possible") is False:
+            break
+        if st.get("done"):
+            done = True
+            break
+    try:
+        if not done:
+            _fetch(f"{HORDE_URL}/generate/status/{jid}", timeout=15, headers=hdr, method="DELETE")
+            return None, "busy"
+        _, _, raw = _fetch(f"{HORDE_URL}/generate/status/{jid}", timeout=30, headers=hdr)
+        gen = (json.loads(raw).get("generations") or [{}])[0]
+        if gen.get("censored"):
+            return None, "refused"
+        img = gen.get("img", "")
+        if img.startswith("http"):
+            _, _, data = _fetch(img, timeout=60)
+        else:
+            data = base64.b64decode(img)
+        if len(data) > 2000:
+            return save_picture(polish_picture(data)), None
+    except Exception as e:
+        log(f"HORDE result failed: {e}")
+    return None, "busy"
+
+
+def free_image(prompt, tries=2):
+    """119: race the realistic SDXL photo models (volunteer computers) against the quick maker.
+    The quick picture is kept as a safety net; the realistic one wins if it arrives in time."""
+    import threading
+    short = _short_prompt(prompt)
+    res = {}
+
+    def horde():
+        try:
+            res["horde"] = _horde_image(short, budget=110)
+        except Exception as e:
+            res["horde"] = (None, "net")
+            log(f"HORDE race: {type(e).__name__}")
+
+    live_step("Sending your picture to two picture makers at once")
+    th = threading.Thread(target=horde, daemon=True)
+    th.start()
+    try:
+        quick = _pollinations(short)
+    except Exception:
+        quick = (None, "net")
+    if polli_key() and quick[0]:            # the owner's free key gives the sharp Flux/Z-Image models: use it
+        return quick[0], None
+    live_step("Finishing the most realistic version" if quick[0] else "Waiting for the realistic picture maker")
+    th.join(115 if not quick[0] else 75)
+    best = res.get("horde") or (None, "busy")
+    if best[0]:
+        if quick[0]:
+            try:
+                os.remove(quick[0])
+            except Exception:
+                pass
+        return best[0], None
+    if quick[0]:
+        return quick[0], None
+    reasons = [quick[1], best[1]]
+    if "refused" in reasons:
+        return None, "The picture maker won't draw that description. Try different, gentler words."
+    if all(r == "net" for r in reasons):
+        return None, "I couldn't reach the picture makers. Check your internet (or move to better signal) and try again."
+    return None, FREE_DRAW_FAIL
+# =================== end 119 ===================
 
 # =================== end 116 ===================
 
