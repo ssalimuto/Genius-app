@@ -13944,9 +13944,49 @@ class ChatScreen(BoxLayout):
             self.say(f"ElevenLabs key saved, ending in {k[-4:]}. Now say clone my voice to record your voice sample.")
             return
         if action == "setpolli":
-            if not arg:
-                self.say("For sharper, more real pictures for free: open enter.pollinations.ai, sign in, "
-                         "create a key, then type setpolli, a space, and the key.")
+            if not arg:                       # 119.2: one-tap connect (device flow), no copying keys
+                self.say("Opening Pollinations so you can approve sharp pictures. Sign in (GitHub or Google), "
+                         "tap Approve, then come back here. I'll finish by myself.")
+
+                def connect():
+                    def tell(t):
+                        Clock.schedule_once(lambda *_: self.say(t), 0)
+                    try:
+                        _, _, raw = _fetch("https://enter.pollinations.ai/api/device/code", timeout=30,
+                                           data=json.dumps({"scope": "profile", "models": "image,text",
+                                                            "budget": "10", "expiry": "365"}).encode(),
+                                           headers={"Content-Type": "application/json"})
+                        dc = json.loads(raw)
+                        open_url(dc["verification_uri_complete"])
+                        tell("If the page asks for a code, type: " + dc["user_code"])
+                        end = time.time() + min(int(dc.get("expires_in", 900)), 900)
+                        while time.time() < end:
+                            time.sleep(max(int(dc.get("interval", 5)), 5))
+                            try:
+                                _, _, raw = _fetch("https://enter.pollinations.ai/api/device/token", timeout=30,
+                                                   data=json.dumps({"device_code": dc["device_code"]}).encode(),
+                                                   headers={"Content-Type": "application/json"})
+                                tok = json.loads(raw)
+                            except urllib.error.HTTPError as e:
+                                tok = {}
+                                try:
+                                    tok = json.loads(e.read().decode("utf8", "ignore"))
+                                except Exception:
+                                    pass
+                            except Exception:
+                                continue
+                            if tok.get("access_token"):
+                                open(POLLI_KEY_FILE, "w").write(clean_key(tok["access_token"]))
+                                tell("Connected. Your pictures now use the sharp Z-Image and Flux makers. "
+                                     "Say: make a picture of a man")
+                                return
+                            if tok.get("error") in ("access_denied", "expired_token"):
+                                break
+                        tell("The approval didn't finish. Type setpolli to try again.")
+                    except Exception as e:
+                        log(f"POLLI connect: {type(e).__name__}")
+                        tell("I couldn't reach Pollinations. Check your internet and type setpolli again.")
+                threading.Thread(target=connect, daemon=True).start()
                 return
             k = clean_key(arg)
             open(POLLI_KEY_FILE, "w").write(k)
