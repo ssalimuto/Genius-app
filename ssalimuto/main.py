@@ -20227,8 +20227,8 @@ def free_image(prompt, tries=2):
         quick = (None, "net")
     if polli_key() and quick[0]:            # the owner's free key gives the sharp Flux/Z-Image models: use it
         return quick[0], None
-    live_step("Finishing the most realistic version" if quick[0] else "Waiting for the realistic picture maker")
-    th.join(115 if not quick[0] else 75)
+    live_step("Making the realistic photo version (up to 2 minutes)")
+    th.join(150)                            # 119.1: the realistic photo models are worth the wait; quick is only a safety net
     best = res.get("horde") or (None, "busy")
     if best[0]:
         if quick[0]:
