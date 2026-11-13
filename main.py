@@ -20209,6 +20209,49 @@ def free_image(prompt, tries=2):
     if all(r == "net" for r in reasons):
         return None, "I couldn't reach the picture makers. Check your internet (or move to better signal) and try again."
     return None, FREE_DRAW_FAIL
+def _polli_keyed(prompt, key):
+    """119.4: sharp Z-Image / Flux with the user's own key. Never gives up on the first hiccup:
+    each model gets two tries (second without the long negative list), and the reason is shown under the picture."""
+    w, h = picture_size(prompt, big=True)
+    q = urllib.parse.quote(prompt[:900])
+    why = []
+    for model in ("zimage", "flux"):
+        for attempt in range(2):
+            url = (f"{POLLI_GEN}{q}?model={model}&width={w}&height={h}&seed={random.randint(1, 999999)}"
+                   f"&enhance=false&nologo=true&private=true")
+            if attempt == 0:
+                url += "&negative_prompt=" + urllib.parse.quote(NEG_PROMPT)
+            try:
+                code, ctype, data = _fetch(url, timeout=120, headers={"Authorization": "Bearer " + key.strip()})
+                if ctype.startswith("image") and len(data) > 2000:
+                    PICTURE_MAKER["name"] = "Z-Image (sharp)" if model == "zimage" else "Flux (sharp)"
+                    return save_picture(polish_picture(data)), None
+                why.append(f"{model}: {ctype or 'no picture'}")
+            except urllib.error.HTTPError as e:
+                body = ""
+                try:
+                    body = e.read().decode("utf8", "ignore")
+                except Exception:
+                    pass
+                log(f"POLLI {model} {e.code} {body[:200]}")
+                why.append(f"{model}: {e.code}")
+                if e.code == 400 and "safe" in body.lower():
+                    return None, "refused"
+                if e.code == 401:
+                    PICTURE_MAKER["note"] = "Your picture key stopped working. Type setpolli to connect again."
+                    return None, "badkey"
+                if e.code == 402:
+                    PICTURE_MAKER["note"] = ("Your free Pollinations credit is used up or the key's budget is reached. "
+                                             "Type setpolli to reconnect, or earn more at enter.pollinations.ai/quests.")
+                    return None, "busy"
+                if e.code in (429, 503):
+                    time.sleep(min(_retry_after(body, 5), 15))
+            except Exception as e:
+                log(f"POLLI {model} failed: {type(e).__name__}: {e}")
+                why.append(f"{model}: {type(e).__name__}")
+                time.sleep(2)
+    PICTURE_MAKER["note"] = "Sharp maker didn't answer (" + ", ".join(why[-3:]) + "), so the free maker drew this."
+    return None, "busy"
 # =================== end 119 ===================
 
 # =================== end 116 ===================
