@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+# built in CI from shellapp/ (see build.yml / ssalimuto.yml)
+apk_template.bin

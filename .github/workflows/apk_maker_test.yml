@@ -1,0 +1,44 @@
+name: Test App Maker (apk_maker.py + shell template)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build the template exactly as the app builds do
+        run: |
+          bash shellapp/build_template.sh apk_template.bin
+          (cd ssalimuto && bash ../shellapp/build_template.sh apk_template.bin)
+      - name: Make APKs with apk_maker (both copies), verify them
+        run: |
+          set -e
+          BT="$(ls -d $ANDROID_HOME/build-tools/34.0.0 2>/dev/null || ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)"
+          echo "build-tools: $BT"
+          cmp apk_maker.py ssalimuto/apk_maker.py
+          mkdir -p out
+          printf '%s' '<!DOCTYPE html><html><body><h1>Hello</h1><script>localStorage.a=1</script></body></html>' > out/app.html
+          python apk_maker.py apk_template.bin out/app.html "Mama's Shop" out/MamasShop.apk out/keys
+          python apk_maker.py apk_template.bin out/app.html "Mama's Shop" out/MamasShop2.apk out/keys
+          (cd ssalimuto && python apk_maker.py apk_template.bin ../out/app.html "Ebyokulya bya Kampala — Mukwano" ../out/Ebyokulya.apk ../out/keys)
+          for a in out/*.apk; do
+            echo "================ $a"
+            "$BT/apksigner" verify --verbose --print-certs --min-sdk-version 21 "$a"
+            "$BT/aapt2" dump badging "$a" | grep -E "^package|label|sdkVersion|targetSdk|launchable"
+            "$BT/zipalign" -c -v 4 "$a" | tail -2
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-maker-test
+          path: |
+            apk_template.bin
+            out/*.apk

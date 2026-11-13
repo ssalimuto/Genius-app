@@ -3,8 +3,8 @@ title = Genius
 package.name = genius
 package.domain = org.ssalimuto
 source.dir = .
-source.include_exts = py,png,jpg,json,txt,ttf
-source.exclude_dirs = .github,bin,.buildozer,p4a-src,android_extra,ssalimuto
+source.include_exts = py,png,jpg,json,txt,ttf,bin
+source.exclude_dirs = .github,bin,.buildozer,p4a-src,android_extra,ssalimuto,shellapp
 version = 115.4
 requirements = python3,kivy==2.3.0,plyer,pyjnius,certifi,android,pillow
 icon.filename = %(source.dir)s/icon.png

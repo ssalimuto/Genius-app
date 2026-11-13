@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Template for apps made by the App Builder in Genius / Ssalimuto AI.
+  Two placeholders are patched in the compiled binary by apk_maker.py:
+    package  org.ssalimuto.mkapp.zzzzzzzzzzzz   (12 'z', replaced by a same-length id)
+    label    ##############################      (30 '#', replaced by the app name)
+  Do not change their length. The activity is named with its full class name,
+  so it does not depend on the package placeholder.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.ssalimuto.mkapp.zzzzzzzzzzzz"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="29" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:label="##############################"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="true"
+        android:hardwareAccelerated="true"
+        android:usesCleartextTraffic="true">
+        <activity
+            android:name="org.ssalimuto.mkapp.MainActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

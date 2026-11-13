@@ -46,6 +46,10 @@ jobs:
           NV="$V.$GITHUB_RUN_NUMBER"
           sed -i "0,/^VERSION = \"$V\"/s//VERSION = \"$NV\"/" main.py
           grep -m1 '^VERSION = ' main.py
+      - name: Build the App Maker template (WebView shell -> apk_template.bin)
+        run: |
+          bash ../shellapp/build_template.sh apk_template.bin
+          ls -l apk_template.bin
       - name: Build APK
         run: yes | buildozer android debug
       - name: Prepare quiet update files
