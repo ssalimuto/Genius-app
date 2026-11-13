@@ -2113,7 +2113,7 @@ _ME_ASKER = re.compile(r"\b(for|to|give|show|make|create|draw|generate|send|help
                        r"(?!\s+(look|looking|as|in|wearing|holding|smil\w*|stand\w*|sit\w*|near|at|with|like|happy|sad|old|young|tall|fat|thin|beautiful|handsome)\b)", re.I)
 
 
-def about_me(prompt):
+def picture_about_me(prompt):
     """True only when the picture should show the user's own face."""
     p = _ME_ASKER.sub(" ", prompt or "")
     return bool(ME_WORDS.search(p))
@@ -2279,7 +2279,7 @@ def remove_profile_photo():
 def gemini_image(prompt):
     """Draw a REAL-looking picture: Gemini first, then the free picture maker. Never cartoons.
     If the request is about the user ("draw me...") and me.jpg exists, the SAME face is kept."""
-    ref = my_photo() if about_me(prompt) else None
+    ref = my_photo() if picture_about_me(prompt) else None
     if ref:
         path, err = _gemini_image(prompt, ref)
         if path:
@@ -19121,6 +19121,509 @@ GA_ABOUT = GA_ABOUT + (
     "- [b]App Builder[/b]: [b]build app a quiz about Uganda[/b]. The AI codes it and it runs right here. [b]my apps[/b], "
     "[b]change app <name>: ...[/b]")
 # =================== end Hark ideas ===================
+
+
+# ===================== 116: Hand-off (quiet web crawler), real pictures and videos in answers, installable apps =====================
+HO_UA = {"User-Agent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36"}
+HO_FRESH = re.compile(r"\b(latest|news|today|tonight|yesterday|this (week|month|year)|current(ly)?|right now|now\b|recent(ly)?|"
+                      r"update[sd]?|price of|cost of|how much (is|are|does)|who won|score|results?|fixtures?|weather|"
+                      r"20(2[5-9]|3\d)|new(est)? (version|phone|law|president|minister)|exchange rate|trending)\b", re.I)
+HO_VISUAL = re.compile(r"^(what|who|where|how|why|explain|describe|tell me about|show me|teach me|define|what's|whats)\b|"
+                       r"\b(look like|picture of|photo of|images? of|video|how to|how do|steps to|tutorial|works?)\b", re.I)
+HO_SKIP = re.compile(r"\b(draw|make (me )?a picture|my |remind|password|secret|bank|pin\b|build app|change app|note|memory|forget|"
+                     r"translate|calculate|joke|poem|story|essay|letter|cv\b|resume)\b", re.I)
+_HO_DIR = None
+
+
+def ho_dir():
+    global _HO_DIR
+    if _HO_DIR is None:
+        _HO_DIR = private_dir("media_cache")
+        try:
+            os.makedirs(_HO_DIR, exist_ok=True)
+        except Exception:
+            pass
+    return _HO_DIR
+
+
+def _ho_get(url, timeout=12, binary=False):
+    _c, ctype, data = _fetch(url, timeout=timeout, headers=HO_UA)
+    return (data, ctype) if binary else data.decode("utf8", "ignore")
+
+
+def _ho_topic(q):
+    """The subject of a question, for picture and video search."""
+    t = re.sub(r"^(please\s+)?(can you\s+|could you\s+)?(tell me|show me|explain|describe|teach me|what is|what are|who is|who was|"
+               r"who are|where is|where are|how does|how do|how to|why does|why do|why is|define|what's|whats)\s+", "", q.strip(), flags=re.I)
+    t = re.sub(r"\b(a |an |the |about |for me|please|in detail|simply|look like)\b", " ", t, flags=re.I)
+    return re.sub(r"\s+", " ", t).strip(" ?.!,")[:80] or q[:80]
+
+
+def ho_images(topic, n=3):
+    """Real photos from Wikipedia / Wikimedia Commons (free, no key). Returns [(url, caption)]."""
+    out, seen = [], set()
+    try:
+        api = ("https://en.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrlimit=4&prop=pageimages"
+               "&piprop=thumbnail&pithumbsize=640&gsrsearch=" + urllib.parse.quote(topic))
+        pages = (json.loads(_ho_get(api)).get("query") or {}).get("pages") or {}
+        for p in sorted(pages.values(), key=lambda x: x.get("index", 99)):
+            u = (p.get("thumbnail") or {}).get("source")
+            if u and u not in seen and not u.lower().endswith((".svg.png",)):
+                seen.add(u)
+                out.append((u, p.get("title", topic)))
+    except Exception as e:
+        log(f"HO images wiki: {type(e).__name__}")
+    if len(out) < n:
+        try:
+            api = ("https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search&gsrnamespace=6"
+                   "&gsrlimit=8&prop=imageinfo&iiprop=url|mime&iiurlwidth=640&gsrsearch=" + urllib.parse.quote(topic + " photo"))
+            pages = (json.loads(_ho_get(api)).get("query") or {}).get("pages") or {}
+            for p in sorted(pages.values(), key=lambda x: x.get("index", 99)):
+                ii = (p.get("imageinfo") or [{}])[0]
+                u = ii.get("thumburl")
+                if u and u not in seen and ii.get("mime", "").startswith("image/") and "svg" not in ii.get("mime", ""):
+                    seen.add(u)
+                    out.append((u, re.sub(r"^File:|\.\w+$", "", p.get("title", topic))[:60]))
+                if len(out) >= n:
+                    break
+        except Exception as e:
+            log(f"HO images commons: {type(e).__name__}")
+    return out[:n]
+
+
+def ho_video(topic):
+    """The top YouTube video for a topic (free search page). Returns (video_id, title) or None."""
+    try:
+        raw = _ho_get("https://www.youtube.com/results?hl=en&search_query=" + urllib.parse.quote(topic), timeout=12)
+        raw = re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), raw)    # the phone page escapes its data
+        m = re.search(r'\{"videoWithContextRenderer":\{"headline":\{"runs":\[\{"text":"(.*?)"\}.{0,900}?/vi\\?/([\w-]{11})\\?/', raw, re.S)
+        if m:
+            try:
+                return m.group(2), json.loads('"' + m.group(1) + '"')[:90]
+            except Exception:
+                return m.group(2), m.group(1)[:90]
+        for m in re.finditer(r'"videoRenderer":\{"videoId":"([\w-]{11})".{0,4000}?"title":\{"runs":\[\{"text":"(.*?)"\}', raw, re.S):
+            vid, title = m.group(1), m.group(2)
+            try:
+                title = json.loads('"' + title + '"')
+            except Exception:
+                pass
+            return vid, title[:90]
+        m = re.search(r'"videoId":"([\w-]{11})"', raw)
+        if m:
+            return m.group(1), topic
+    except Exception as e:
+        log(f"HO video: {type(e).__name__}")
+    return None
+
+
+def ho_cache(url):
+    """Download a picture once and keep it on the phone, so the chat can show it offline and fast."""
+    name = hashlib.md5(url.encode()).hexdigest() + ".jpg"
+    path = os.path.join(ho_dir(), name)
+    if os.path.exists(path) and os.path.getsize(path) > 1000:
+        return path
+    try:
+        data, ctype = _ho_get(url, timeout=15, binary=True)
+        if len(data) < 1000 or not (ctype or "").startswith("image"):
+            return None
+        if not (data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n"):
+            import io
+            from PIL import Image
+            im = Image.open(io.BytesIO(data)).convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=88)
+            data = buf.getvalue()
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+    except Exception as e:
+        log(f"HO cache: {type(e).__name__}")
+        return None
+
+
+def ho_media(question):
+    """Pictures and one video that help explain the answer. Returns {'images': [(path, cap)], 'video': (id, title, thumb)}."""
+    topic = _ho_topic(question)
+    res = {"images": [], "video": None}
+    box = {}
+
+    def imgs():
+        box["i"] = ho_images(topic, 3)
+
+    def vid():
+        q = topic if re.search(r"\b(how|make|cook|fix|install|learn|tutorial|steps)\b", question, re.I) else topic + " explained"
+        box["v"] = ho_video(q)
+    ts = [threading.Thread(target=imgs, daemon=True), threading.Thread(target=vid, daemon=True)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(16)
+    for u, cap in box.get("i") or []:
+        p = ho_cache(u)
+        if p:
+            res["images"].append((p, cap))
+    v = box.get("v")
+    if v:
+        thumb = ho_cache(f"https://i.ytimg.com/vi/{v[0]}/hqdefault.jpg")
+        res["video"] = (v[0], v[1], thumb)
+    return res
+
+
+# ---------- the quiet crawler: search, open the best pages at the same time, read them, answer with sources ----------
+def _ho_page_text(url, limit=6000):
+    import html as _h
+    raw = _ho_get(url, timeout=10)
+    raw = re.sub(r"(?is)<(script|style|noscript|svg|header|footer|nav|form|aside)[^>]*>.*?</\1>", " ", raw)
+    m = re.search(r"(?is)<(article|main)[^>]*>(.*?)</\1>", raw)
+    body = m.group(2) if m and len(m.group(2)) > 1500 else raw
+    paras = re.findall(r"(?is)<(?:p|li|h[1-3])[^>]*>(.*?)</(?:p|li|h[1-3])>", body)
+    text = "\n".join(re.sub(r"\s+", " ", _h.unescape(re.sub(r"<[^>]+>", "", x))).strip() for x in paras)
+    text = "\n".join(l for l in text.split("\n") if len(l) > 40)
+    return text[:limit]
+
+
+HO_RULES = ("Answer the question using the web pages given. Write like a friendly expert explaining to a smart student: "
+            "the direct answer in the first sentence, then the key facts in short paragraphs or a few bullet points, with "
+            "real numbers, names and dates from the pages. If pages disagree or look old, say so. Never invent facts. "
+            "End with one line 'Sources:' listing the site names you used. Keep it under 220 words.")
+
+
+def ho_crawl(question, pages=4):
+    """Hand-off: what a person would do in a browser, done quietly in seconds. Returns (answer, links) or (None, [])."""
+    try:
+        results = hk_find_links(question, limit=7)
+    except Exception as e:
+        log(f"HO search: {type(e).__name__}")
+        results = []
+    got = {}
+
+    def read(i, url):
+        try:
+            t = _ho_page_text(url)
+            if len(t) > 300:
+                got[i] = t
+        except Exception:
+            pass
+    ts = []
+    for i, (_t, url, _s) in enumerate(results[:pages + 2]):
+        if re.search(r"(youtube\.com|facebook\.com|instagram\.com|tiktok\.com|x\.com|twitter\.com)", url):
+            continue
+        th = threading.Thread(target=read, args=(i, url), daemon=True)
+        th.start()
+        ts.append(th)
+    end = time.time() + 14
+    for th in ts:
+        th.join(max(0.1, end - time.time()))
+    parts, links = [], []
+    for i, (title, url, snip) in enumerate(results):
+        host = urllib.parse.urlparse(url).netloc.replace("www.", "")
+        if i in got and len(parts) < pages:
+            parts.append(f"[{host}] {title}\n{got[i][:3500]}")
+            links.append((title, url))
+        elif snip and len(parts) < pages + 3:
+            parts.append(f"[{host}] {title}: {snip}")
+    if not parts:
+        try:
+            title, text, url = ga_wiki(_ho_topic(question), full=True, timeout=8)
+            if text:
+                parts.append(f"[wikipedia.org] {title}\n{text[:6000]}")
+                links.append((title, url))
+        except Exception:
+            pass
+    if not parts:
+        return None, []
+    prompt = f"Today is {time.strftime('%d %B %Y')}.\nQuestion: {question}\n\nWeb pages:\n" + "\n\n".join(parts)
+    ans = None
+    try:
+        if os.path.exists(KEY_FILE):
+            ans = ask_gemini(prompt[:16000], max_tokens=700, system=HO_RULES)
+    except Exception as e:
+        log(f"HO main AI: {type(e).__name__}")
+    if not ans or is_fail_reply(ans):
+        try:
+            ans = free_ai(prompt[:9000], system=HO_RULES, max_tokens=700)
+        except Exception as e:
+            log(f"HO free AI: {type(e).__name__}")
+            ans = None
+    if not ans or is_fail_reply(ans):
+        return None, links
+    return ans.strip(), links
+
+
+# ---------- chat: a row of real pictures plus a video card under an answer ----------
+def _ho_media_row(self, media, on_video):
+    """ChatBubbles.add_media: horizontal pictures (tap to open big) and a video card (tap to play inside the app)."""
+    from kivy.uix.scrollview import ScrollView
+    from kivy.uix.behaviors import ButtonBehavior
+    imgs, video = media.get("images") or [], media.get("video")
+    if not imgs and not video:
+        return None
+
+    class Tap(ButtonBehavior, BoxLayout):
+        pass
+    h = dp(176)
+    row = BoxLayout(size_hint_y=None, height=h + dp(30), orientation="vertical")
+    row.media = True
+    sv = ScrollView(do_scroll_y=False, size_hint_y=None, height=h, bar_width=0)
+    strip = BoxLayout(size_hint=(None, 1), spacing=dp(8), padding=[dp(2), 0, dp(2), 0])
+    strip.bind(minimum_width=strip.setter("width"))
+    tiles = []
+    if video:
+        vid, title, thumb = video
+        t = Tap(orientation="vertical", size_hint=(None, 1), width=dp(250))
+        t.add_widget(KivyImage(source=thumb or "", allow_stretch=True, keep_ratio=True, nocache=True))
+        t.add_widget(Label(text=f"[b][color=ff6b6b]\u25b6[/color] {_esc(title)}[/b]", markup=True, font_size="13sp",
+                           color=TEXTCOL, size_hint_y=None, height=dp(40), halign="left", valign="middle",
+                           text_size=(dp(244), dp(40)), shorten=True, shorten_from="right"))
+        t.bind(on_release=lambda *_: on_video("https://m.youtube.com/watch?v=" + vid, title))
+        tiles.append(t)
+    for path, cap in imgs:
+        t = Tap(orientation="vertical", size_hint=(None, 1), width=dp(150))
+        t.add_widget(KivyImage(source=path, allow_stretch=True, keep_ratio=True, nocache=True))
+        t.add_widget(Label(text=_esc(cap), font_size="12sp", color=TEXTCOL, size_hint_y=None, height=dp(30),
+                           halign="center", valign="middle", text_size=(dp(146), dp(30)), shorten=True))
+        t.bind(on_release=lambda _w, p=path, c=cap: on_video(None, c, p))
+        tiles.append(t)
+    for t in tiles:
+        strip.add_widget(t)
+    sv.add_widget(strip)
+    row.add_widget(sv)
+    row.add_widget(Label(text="[size=11sp][color=9aa0c0]Pictures: Wikipedia / Wikimedia Commons. Video: YouTube.[/color][/size]",
+                         markup=True, size_hint_y=None, height=dp(24), halign="left", valign="middle",
+                         text_size=(Window.width * 0.9, dp(24))))
+    self.add_widget(row)
+    while len(self.children) > self.MAX_BUBBLES:
+        self.remove_widget(self.children[-1])
+    return row
+
+
+ChatBubbles.add_media = _ho_media_row
+
+
+def _ho_open(self, url, title, path=None):
+    if path:
+        self.show_image(path, title)
+    elif url:
+        try:
+            open_in_genius(url, title)
+        except Exception:
+            open_url(url)
+
+
+def _ho_attach(self, question):
+    """Fetch pictures and a video for this question in the background, then put them under the answer."""
+    def work():
+        try:
+            media = ho_media(question)
+        except Exception as e:
+            log(f"HO media: {type(e).__name__}")
+            return
+
+        def put(*_):
+            try:
+                if self.out.add_media(media, lambda u, t, p=None: _ho_open(self, u, t, p)) is not None:
+                    Clock.schedule_once(lambda *_: setattr(self.scroll, "scroll_y", 0), 0.15)
+            except Exception as e:
+                log(f"HO media row: {type(e).__name__}: {e}")
+        Clock.schedule_once(put, 0)
+    threading.Thread(target=work, daemon=True).start()
+
+
+def ho_wants_media(q):
+    q = (q or "").strip()
+    return 8 <= len(q) <= 220 and bool(HO_VISUAL.search(q)) and not HO_SKIP.search(q) and HO_MEDIA.get("on", True)
+
+
+HO_MEDIA = {"on": True}
+_ho_prev_say = ChatScreen.say
+
+
+def _ho_say(self, text, plain=False):
+    _ho_prev_say(self, text, plain)
+    try:
+        q = getattr(self, "_ho_q", "")
+        if q and isinstance(text, str) and len(text) > 120 and threading.current_thread() is threading.main_thread():
+            self._ho_q = ""
+            _ho_attach(self, q)
+    except Exception as e:
+        log(f"HO say: {type(e).__name__}")
+
+
+ChatScreen.say = _ho_say
+_ho_prev_chat = ChatScreen.chat
+
+
+def _ho_chat(self, text):
+    said = text
+    try:
+        self._ho_q = said if ho_wants_media(said) else ""
+        if HO_FRESH.search(said) and not HO_SKIP.search(said) and net_online() and not getattr(self, "busy", False):
+            def job():
+                ans, links = ho_crawl(said)
+                if ans:
+                    try:
+                        history.append({"role": "user", "parts": [{"text": said}]})
+                        history.append({"role": "model", "parts": [{"text": ans}]})
+                        save_memory()
+                    except Exception:
+                        pass
+                    if links:
+                        ans += "\n" + "  ".join(f"[ref=url:{u}][color=8ab4ff][u]{_esc(t[:38])}[/u][/color][/ref]" for t, u in links[:3])
+                    return ans
+                return None
+
+            def run():
+                self.busy = True
+                self._busy_since = time.time()
+                row = self.show("AI", "[i]Looking it up on the web...[/i]")
+                r = None
+                try:
+                    r = job()
+                except Exception as e:
+                    log(f"HO crawl: {type(e).__name__}: {e}")
+
+                def done(*_):
+                    self.busy = False
+                    try:
+                        self.out.remove(row)
+                    except Exception:
+                        pass
+                    if r:
+                        self.say(r)
+                    else:
+                        _ho_prev_chat(self, said)      # the web was slow: answer the normal way
+                Clock.schedule_once(done, 0)
+            threading.Thread(target=run, daemon=True).start()
+            return
+    except Exception as e:
+        log(f"HO chat: {type(e).__name__}: {e}")
+    return _ho_prev_chat(self, text)
+
+
+ChatScreen.chat = _ho_chat
+_ho_prev_ref = ChatScreen._on_chat_ref
+
+
+def _ho_ref(self, w, ref):
+    if isinstance(ref, str) and ref.startswith("url:"):
+        try:
+            open_in_genius(ref[4:], "Page")
+        except Exception:
+            open_url(ref[4:])
+        return
+    return _ho_prev_ref(self, w, ref)
+
+
+ChatScreen._on_chat_ref = _ho_ref
+
+
+# ---------- App Builder: turn a built app into a real Android app that installs on the phone ----------
+def ho_install_apk(path):
+    """Open Android's installer for an APK file we made (via the Downloads folder, so the installer can read it)."""
+    try:
+        from jnius import autoclass, cast
+        act = autoclass("org.kivy.android.PythonActivity").mActivity
+        Intent = autoclass("android.content.Intent")
+        Uri = autoclass("android.net.Uri")
+        Build = autoclass("android.os.Build$VERSION")
+        if Build.SDK_INT >= 26 and not act.getPackageManager().canRequestPackageInstalls():
+            Settings = autoclass("android.provider.Settings")
+            act.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + act.getPackageName())))
+            return "First switch on 'Allow from this source' for this app, come back, and say [b]install app[/b] again. Only once."
+        name = os.path.basename(path)
+        if Build.SDK_INT >= 29:
+            MS = autoclass("android.provider.MediaStore$Downloads")
+            CV = autoclass("android.content.ContentValues")
+            cr = act.getContentResolver()
+            cv = CV()
+            cv.put("_display_name", name)
+            cv.put("mime_type", "application/vnd.android.package-archive")
+            cv.put("relative_path", "Download/" + HK_APP.replace(" ", "") + "/apps")
+            uri = cr.insert(MS.EXTERNAL_CONTENT_URI, cv)
+            out = cr.openOutputStream(uri)
+            data = open(path, "rb").read()
+            for i in range(0, len(data), 65536):
+                out.write(data[i:i + 65536])
+            out.close()
+        else:
+            File = autoclass("java.io.File")
+            uri = Uri.fromFile(File(path))
+            autoclass("android.os.StrictMode").setVmPolicy(autoclass("android.os.StrictMode$VmPolicy$Builder")().build())
+        i = Intent(Intent.ACTION_VIEW)
+        i.setDataAndType(uri, "application/vnd.android.package-archive")
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK)
+        act.startActivity(i)
+        return None
+    except Exception as e:
+        log(f"HO install: {type(e).__name__}: {e}")
+        return "Android didn't open the installer. Open Files > Download > " + HK_APP.replace(" ", "") + " > apps and tap the app there."
+
+
+def ho_make_apk(name):
+    """Wrap a built HTML app as a real Android app (.apk), made and signed on this phone, free and offline."""
+    src = os.path.join(hk_apps_dir(), name + ".html")
+    if not os.path.exists(src):
+        return None, f"I can't find an app called {name}. Say [b]my apps[/b] to see them."
+    tpl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apk_template.bin")
+    if not os.path.exists(tpl):
+        return None, "This version can't make installable apps yet. Say [b]update[/b] to get the newest one."
+    try:
+        import apk_maker
+    except Exception as e:
+        log(f"HO apk_maker import: {e}")
+        return None, "The app maker part is missing. Say [b]update[/b] to get the newest version."
+    out_dir = genius_dl("apps")
+    out = os.path.join(out_dir, hk_slug(name) + ".apk")
+    try:
+        apk_maker.make_apk(tpl, open(src, encoding="utf8").read(), name, out, private_dir("apk_keys"))
+    except Exception as e:
+        log(f"HO make_apk: {type(e).__name__}: {e}")
+        out = os.path.join(private_dir("apps_apk"), hk_slug(name) + ".apk")
+        try:
+            apk_maker.make_apk(tpl, open(src, encoding="utf8").read(), name, out, private_dir("apk_keys"))
+        except Exception as e2:
+            log(f"HO make_apk retry: {type(e2).__name__}: {e2}")
+            return None, "I couldn't package that app this time. Say it again and I'll retry."
+    return out, None
+
+
+_ho_prev_ga = ga_handle
+_HO_APK_ASK = re.compile(r"^(please\s+)?(install|make (it )?(an? )?(real )?(apk|installable)|turn (it )?into an? (real )?app|"
+                         r"make (it )?a real app|download (it )?as (an? )?app|apk)\s*(app\s+)?(called\s+|named\s+)?(.*)$", re.I)
+
+
+def ga_handle(screen, line, action, arg, low):
+    lw = (line or "").strip().lower().strip(" .!?")
+    if lw in ("media off", "no pictures", "pictures off"):
+        HO_MEDIA["on"] = False
+        screen.say("Okay, answers will come without pictures and videos. Say [b]media on[/b] to bring them back.")
+        return True
+    if lw in ("media on", "pictures on"):
+        HO_MEDIA["on"] = True
+        screen.say("Pictures and videos are back in answers.")
+        return True
+    m = _HO_APK_ASK.match(lw)
+    if m and ("app" in lw or "apk" in lw):
+        want = (m.group(m.re.groups) or "").strip()
+        names = sorted((f[:-5] for f in os.listdir(hk_apps_dir()) if f.endswith(".html")),
+                       key=lambda n: -os.path.getmtime(os.path.join(hk_apps_dir(), n + ".html"))) if os.path.isdir(hk_apps_dir()) else []
+        pick = next((n for n in names if want and want.replace(" ", "-") in n), names[0] if names else None)
+        if not pick:
+            screen.say("Build an app first, e.g. [b]build app a quiz about Uganda[/b], then say [b]install app[/b].")
+            return True
+
+        def job():
+            out, err = ho_make_apk(pick)
+            if err:
+                return err
+            msg = ho_install_apk(out)
+            return msg or (f"[b]{_esc(pick)}[/b] is now a real Android app. Tap [b]Install[/b] on the screen that opened, "
+                           f"then find it on your home screen. A copy is in {nice_where(out)}, so you can send it to friends.")
+        screen._bg(job, f"[i]Making {pick} into a real app you can install...[/i]", speak=False)
+        return True
+    return _ho_prev_ga(screen, line, action, arg, low)
+# =================== end 116 ===================
 
 
 # Crash guard: a mistake inside one button or answer is logged and the app keeps running instead of closing.
