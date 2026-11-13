@@ -1801,6 +1801,19 @@ def image_models():
     return IMAGE_MODELS
 
 
+LIVE = {"fn": None}          # 117: the live "what I'm doing now" card in the chat
+
+
+def live_step(text):
+    """Show the next step on the live progress card (safe to call from any thread; does nothing if no card)."""
+    fn = LIVE.get("fn")
+    if fn:
+        try:
+            fn(text)
+        except Exception:
+            pass
+
+
 HORDE_URL = "https://aihorde.net/api/v2"      # free community picture maker, works with the anonymous key
 POLLI_URL = "https://image.pollinations.ai/prompt/"
 FREE_DRAW_FAIL = ("The free picture makers are very busy right now. Wait a minute and say it again, "
@@ -2039,11 +2052,13 @@ def free_image(prompt, tries=2):
     """Free picture makers (no key): Pollinations first, then AI Horde. Returns (path, friendly_error)."""
     short = _short_prompt(prompt)
     reasons = []
+    live_step("Sending your picture to the free picture maker")
     path, why = _pollinations(short)
     if path:
         return path, None
     reasons.append(why)
     if why != "refused":
+        live_step("First maker was busy: trying a second picture maker (volunteer computers)")
         path, why = _horde_image(short)
         if path:
             return path, None
@@ -2291,6 +2306,7 @@ def gemini_image(prompt):
                       "The free maker can't copy a real face, only invent new people. "
                       "Turn on billing for your key at aistudio.google.com, then try again.")
     try:
+        live_step("Writing a detailed photo description")
         real = realistic_prompt(prompt) if connected_ais() else _short_prompt(prompt)
     except Exception as e:
         log(f"DRAW prompt: {type(e).__name__}")
@@ -2315,6 +2331,7 @@ def gemini_image(prompt):
         except Exception as e:
             log(f"DRAW free {attempt}: {type(e).__name__}")
         if attempt < 2:
+            live_step(f"Picture makers are busy: waiting {46 if attempt == 0 else 20} s, then trying again (try {attempt + 2} of 3)")
             time.sleep(46 if attempt == 0 else 20)      # the free maker allows one picture per 45 s per phone
             if not net_online():
                 return None, "There's no internet right now. Say it again when you're back online."
@@ -14058,7 +14075,7 @@ class ChatScreen(BoxLayout):
                 self.say("One moment, I'm still finishing the last job.")
                 return
             self.busy = True
-            self.say("Drawing your picture... usually under a minute.")
+            self.live_begin("Drawing your picture", "Reading what you asked for")
 
             def d(*_):
                 try:
@@ -14069,6 +14086,7 @@ class ChatScreen(BoxLayout):
 
                 def done(*_):
                     self.busy = False
+                    self.live_end(bool(path))
                     if path:
                         remember_image(path, arg)
                         self.show_image(path, arg)
@@ -19291,6 +19309,7 @@ HO_RULES = ("Answer the question using the web pages given. Write like a friendl
 
 def ho_crawl(question, pages=4):
     """Hand-off: what a person would do in a browser, done quietly in seconds. Returns (answer, links) or (None, [])."""
+    live_step("Searching the web for \u201c" + question[:60] + "\u201d")
     try:
         results = hk_find_links(question, limit=7)
     except Exception as e:
@@ -19299,6 +19318,7 @@ def ho_crawl(question, pages=4):
     got = {}
 
     def read(i, url):
+        live_step("Reading " + urllib.parse.urlparse(url).netloc.replace("www.", ""))
         try:
             t = _ho_page_text(url)
             if len(t) > 300:
@@ -19333,6 +19353,7 @@ def ho_crawl(question, pages=4):
             pass
     if not parts:
         return None, []
+    live_step(f"Comparing {len(parts)} sources and writing the answer")
     prompt = f"Today is {time.strftime('%d %B %Y')}.\nQuestion: {question}\n\nWeb pages:\n" + "\n\n".join(parts)
     ans = None
     try:
@@ -19422,6 +19443,8 @@ def _ho_attach(self, question):
 
         def put(*_):
             try:
+                if media.get("images") or media.get("video"):
+                    log(f"HO media: {len(media.get('images') or [])} pictures, video={bool(media.get('video'))}")
                 if self.out.add_media(media, lambda u, t, p=None: _ho_open(self, u, t, p)) is not None:
                     Clock.schedule_once(lambda *_: setattr(self.scroll, "scroll_y", 0), 0.15)
             except Exception as e:
@@ -19476,7 +19499,8 @@ def _ho_chat(self, text):
             def run():
                 self.busy = True
                 self._busy_since = time.time()
-                row = self.show("AI", "[i]Looking it up on the web...[/i]")
+                self.live_begin("Researching on the web", "Getting ready")
+                row = None
                 r = None
                 try:
                     r = job()
@@ -19485,10 +19509,7 @@ def _ho_chat(self, text):
 
                 def done(*_):
                     self.busy = False
-                    try:
-                        self.out.remove(row)
-                    except Exception:
-                        pass
+                    self.live_end(bool(r))
                     if r:
                         self.say(r)
                     else:
@@ -19617,12 +19638,148 @@ def ga_handle(screen, line, action, arg, low):
             out, err = ho_make_apk(pick)
             if err:
                 return err
+            live_step("Opening Android's installer")
             msg = ho_install_apk(out)
             return msg or (f"[b]{_esc(pick)}[/b] is now a real Android app. Tap [b]Install[/b] on the screen that opened, "
                            f"then find it on your home screen. A copy is in {nice_where(out)}, so you can send it to friends.")
         screen._bg(job, f"[i]Making {pick} into a real app you can install...[/i]", speak=False)
         return True
     return _ho_prev_ga(screen, line, action, arg, low)
+# ---------- 117: live progress card: shows each step while the app works (searching, reading, drawing, building) ----------
+def _live_render(st):
+    secs = int(time.time() - st["t0"])
+    lines = [f"[b][color=ffc84d]\u25cf[/color] {_esc(st['title'])}[/b]  [size=12sp][color=9aa0c0]{secs}s[/color][/size]"]
+    for s in st["done"][-6:]:
+        lines.append(f"[size=14sp][color=5ee6a0]\u2713[/color] [color=c9cbd8]{_esc(s)}[/color][/size]")
+    if st.get("now"):
+        dots = "." * (1 + secs % 3)
+        lines.append(f"[size=14sp][color=c79bff]\u25b8[/color] {_esc(st['now'])}{dots}[/size]")
+    return "\n".join(lines)
+
+
+def _live_begin(self, title, first="Getting ready"):
+    """Start a live card. Thread-safe: steps sent before the card is drawn are kept."""
+    st = {"title": title, "done": [], "now": first, "t0": time.time(), "row": None, "ev": None}
+    self._live = st
+
+    def step(text):
+        text = (text or "").strip()
+        if not text or text == st.get("now"):
+            return
+        if st.get("now"):
+            st["done"].append(st["now"])
+        st["now"] = text
+    LIVE["fn"] = step
+
+    def draw(*_):
+        if self._live is not st:
+            return
+        try:
+            if st["row"] is None:
+                st["row"] = self.show("AI", _live_render(st), plain=True)
+            else:
+                self.out.set_text(st["row"], _live_render(st))
+        except Exception as e:
+            log(f"LIVE draw: {type(e).__name__}")
+    if threading.current_thread() is threading.main_thread():
+        draw()
+    else:
+        Clock.schedule_once(draw, 0)
+    st["ev"] = Clock.schedule_interval(draw, 0.5)
+    return step
+
+
+def _live_end(self, ok=True):
+    st = getattr(self, "_live", None)
+    LIVE["fn"] = None
+    if not st:
+        return
+    self._live = None
+
+    def fin(*_):
+        if st.get("ev") is not None:
+            st["ev"].cancel()
+        if st.get("now") and ok:
+            st["done"].append(st["now"])
+        st["now"] = ""
+        secs = int(time.time() - st["t0"])
+        head = (f"[b][color=5ee6a0]\u2713[/color] Done[/b] [size=12sp][color=9aa0c0]in {secs}s[/color][/size]" if ok else
+                f"[b][color=ff8a8a]\u25cf[/color] Stopped[/b] [size=12sp][color=9aa0c0]after {secs}s[/color][/size]")
+        body = "\n".join(f"[size=13sp][color=9aa0c0]\u2713 {_esc(s)}[/color][/size]" for s in st["done"][-6:])
+        try:
+            if st.get("row") is not None:
+                self.out.set_text(st["row"], head + ("\n" + body if body else ""))
+        except Exception:
+            pass
+    if threading.current_thread() is threading.main_thread():
+        fin()
+    else:
+        Clock.schedule_once(fin, 0)
+
+
+ChatScreen.live_begin = _live_begin
+ChatScreen.live_end = _live_end
+ChatScreen._live = None
+
+
+def _live_bg(self, job, wait_msg=None, speak=None):
+    """Every slow job (apps, documents, research, installs) shows its steps live instead of a still message."""
+    if speak is None:
+        speak = wait_msg is not None
+    if getattr(self, "busy", False):
+        self.say("Still working on the last thing. One moment.")
+        return
+    raw = re.sub(r"\[/?[a-z]+[^\]]*\]", "", wait_msg or "Working on it").strip()
+    lines = [l.strip() for l in raw.split("\n") if l.strip()]
+    title = lines[0].rstrip(":.") if lines else "Working on it"
+    plan = [re.sub(r"^\d+[.)]\s*", "", l) for l in lines[1:] if not l.startswith("(")]
+    eta = next((l.strip("()") for l in lines if l.startswith("(")), "")
+    self.busy = True
+    step = self.live_begin(title + (f" ({eta})" if eta else ""), plan[0] if plan else "Working")
+    state = {"i": 0, "end": False}
+
+    def walk():
+        # move through the planned steps while the job runs; real steps from the job replace them
+        gap = 9 if len(plan) <= 3 else 7
+        while not state["end"] and state["i"] < len(plan) - 1:
+            time.sleep(gap)
+            if state["end"]:
+                break
+            state["i"] += 1
+            step(plan[state["i"]])
+    if len(plan) > 1:
+        threading.Thread(target=walk, daemon=True).start()
+
+    def work():
+        try:
+            r = job()
+        except Exception as e:
+            log(f"LIFE error: {e}")
+            r = "Something went wrong. Check your internet and try again."
+        state["end"] = True
+        ok = bool(r) and not re.match(r"^(something went wrong|i couldn't|i can't|the ai couldn't)", str(r), re.I)
+
+        def done(*_):
+            self.busy = False
+            self.live_end(ok)
+            if speak:
+                self.say(r)
+            else:
+                self.show("AI", r)
+        Clock.schedule_once(done, 0)
+    threading.Thread(target=work, daemon=True).start()
+
+
+ChatScreen._bg = _live_bg
+_live_prev_make_apk = ho_make_apk
+
+
+def ho_make_apk(name):
+    live_step(f"Packing {name} into an Android app")
+    out, err = _live_prev_make_apk(name)
+    if out:
+        live_step("Signed it on this phone so Android trusts the install")
+    return out, err
 # =================== end 116 ===================
 
 
