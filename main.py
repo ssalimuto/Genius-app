@@ -1879,6 +1879,7 @@ def _fetch(url, timeout=45, data=None, headers=None, method=None):
 
 
 POLLI_KEY_FILE = os.path.join(ROOT, "pollinations_key.txt")
+PICTURE_MAKER = {"name": "", "note": ""}       # 119.3: which maker drew the last picture
 POLLI_GEN = "https://gen.pollinations.ai/image/"
 NEG_PROMPT = ("cartoon, anime, drawing, painting, illustration, 3d render, cgi, plastic skin, waxy skin, "
               "airbrushed, oversaturated, deformed hands, extra fingers, missing fingers, bad anatomy, "
@@ -1916,9 +1917,12 @@ def _polli_keyed(prompt, key):
         try:
             code, ctype, data = _fetch(url, timeout=90, headers={"Authorization": "Bearer " + key})
             if ctype.startswith("image") and len(data) > 2000:
+                PICTURE_MAKER["name"] = "Z-Image (sharp)" if model == "zimage" else "Flux (sharp)"
                 return save_picture(polish_picture(data)), None
         except urllib.error.HTTPError as e:
             log(f"POLLI {model} {e.code}")
+            if e.code in (402,):
+                PICTURE_MAKER["note"] = "Your free Pollinations credit is used up; earn more at enter.pollinations.ai/quests."
             if e.code == 400 and "safe" in e.read().decode("utf8", "ignore").lower():
                 return None, "refused"
             if e.code in (401, 403):
@@ -1944,6 +1948,7 @@ def _pollinations(prompt):
         try:
             code, ctype, data = _fetch(url, timeout=60)
             if ctype.startswith("image") and len(data) > 2000:
+                PICTURE_MAKER["name"] = "quick free maker"
                 return save_picture(polish_picture(data, crop_logo=True)), None
             return None, "busy"
         except urllib.error.HTTPError as e:
@@ -13206,8 +13211,15 @@ class ChatScreen(BoxLayout):
             self.say("I made it, but couldn't find the picture file. Please try once more.")
             return
         box.add_widget(KivyImage(source=path, allow_stretch=True, keep_ratio=True, nocache=True))
-        box.add_widget(Label(text=f"{caption}\nSaved in {nice_where(path)}",
-                             size_hint_y=None, height="72dp", font_size="15sp", color=TEXTCOL,
+        mk = PICTURE_MAKER.get("name") or ""
+        extra = ("\nMade with: " + mk) if mk else ""
+        if PICTURE_MAKER.get("note"):
+            extra += "\n" + PICTURE_MAKER["note"]
+        elif mk in ("quick free maker", "realistic photo model") and not polli_key():
+            extra += "\nFor sharp pictures type: setpolli"
+        PICTURE_MAKER.update(name="", note="")
+        box.add_widget(Label(text=f"{caption}\nSaved in {nice_where(path)}{extra}",
+                             size_hint_y=None, height="110dp" if extra else "72dp", font_size="15sp", color=TEXTCOL,
                              halign="center", valign="middle", text_size=(Window.width * 0.85, None)))
         acts = BoxLayout(size_hint_y=None, height="52dp", spacing=6)
         for label, where, col in (("Save to gallery", "gallery", GOLD), ("Save to files", "files", BLUE),
@@ -20148,6 +20160,7 @@ def _horde_image(prompt, budget=150):
         else:
             data = base64.b64decode(img)
         if len(data) > 2000:
+            PICTURE_MAKER["name"] = "realistic photo model"
             return save_picture(polish_picture(data)), None
     except Exception as e:
         log(f"HORDE result failed: {e}")
@@ -20160,6 +20173,7 @@ def free_image(prompt, tries=2):
     import threading
     short = _short_prompt(prompt)
     res = {}
+    PICTURE_MAKER.update(name="", note="")
 
     def horde():
         try:
