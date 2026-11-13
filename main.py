@@ -19780,6 +19780,195 @@ def ho_make_apk(name):
     if out:
         live_step("Signed it on this phone so Android trusts the install")
     return out, err
+# ---------- 118: Studio quality: every creation shares one polished design, is planned first, checked, and repaired ----------
+STUDIO_CSS = """
+:root{--bg:#141414;--card:#1E1E1E;--card2:#262626;--line:rgba(255,255,255,.09);--text:#F2EFEA;--muted:#A7A29A;
+--accent:#F2A65A;--accent2:#C79BFF;--good:#5EE6A0;--bad:#FF8A8A;--r:18px}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+-webkit-font-smoothing:antialiased}
+.wrap,main{max-width:760px;margin:0 auto;padding:18px 16px 90px}
+h1,h2,h3{line-height:1.2;margin:.2em 0 .5em;letter-spacing:-.01em}h1{font-size:30px;font-weight:800}
+h2{font-size:21px;font-weight:700;margin-top:1.4em}h3{font-size:17px}p{margin:.4em 0 .9em}
+a{color:var(--accent)}small,.muted{color:var(--muted)}
+.hero{border-radius:24px;padding:28px 20px;margin:4px 0 18px;background:radial-gradient(120% 140% at 0% 0%,#3a2a1c 0%,#1c1a22 55%,#141414 100%);
+border:1px solid var(--line)}.hero h1{font-size:32px}.hero p{color:#d9d3ca;font-size:17px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin:12px 0}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px}
+.stat b,.stat .n{display:block;font-size:26px;font-weight:800;color:var(--accent)}
+.btn,button{appearance:none;border:0;border-radius:14px;padding:13px 18px;font:600 16px Inter,system-ui,sans-serif;
+background:var(--accent);color:#1b1206;min-height:46px;cursor:pointer;transition:transform .08s,opacity .2s}
+button:active,.btn:active{transform:scale(.97)}button.ghost,.btn.ghost{background:var(--card2);color:var(--text);border:1px solid var(--line)}
+input,textarea,select{width:100%;background:#101010;color:var(--text);border:1px solid var(--line);border-radius:12px;
+padding:12px 14px;font:16px Inter,system-ui,sans-serif;margin:6px 0 12px}input:focus,textarea:focus{outline:2px solid var(--accent);border-color:transparent}
+.chip{display:inline-block;padding:5px 11px;border-radius:999px;background:var(--card2);border:1px solid var(--line);font-size:13px;margin:2px}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:15px}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600}ol.steps{counter-reset:s;list-style:none;padding:0}
+ol.steps li{counter-increment:s;position:relative;padding:4px 0 12px 42px}ol.steps li:before{content:counter(s);position:absolute;left:0;top:2px;
+width:30px;height:30px;border-radius:50%;background:var(--accent);color:#1b1206;font-weight:800;display:grid;place-items:center}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.right{margin-left:auto}
+.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:#2b2b2b;color:var(--text);padding:10px 16px;
+border-radius:12px;border:1px solid var(--line);font-size:14px;z-index:99}
+@media print{body{background:#fff;color:#111}.card,.stat,.hero{background:#fff;border-color:#ddd}.noprint,.toast{display:none!important}}
+"""
+STUDIO_JS = ("window.addEventListener('error',function(e){try{var t=document.createElement('div');t.className='toast';"
+             "t.textContent='Fixed a small problem, keep going';document.body.appendChild(t);setTimeout(function(){t.remove()},2500)}"
+             "catch(_){}});")
+STUDIO_RULES = (
+    "\nDESIGN SYSTEM (already loaded in the page, do not redefine it): dark charcoal page, cards, warm orange accent. "
+    "Use these classes: <main> or .wrap for the page, .hero (title + one-line promise at the top), .card, .grid of .stat "
+    "(big numbers), .btn / button (button.ghost for secondary), .chip, table, ol.steps, .row, .muted. Add only small "
+    "extra CSS for things specific to this creation. Keep the look calm and premium: generous spacing, clear headings, "
+    "one accent colour. Write real, specific content (names, numbers, examples), never lorem ipsum or TODO.")
+
+
+def studio_wrap(h):
+    """Put the shared design and the safety net into any created page (replacing an older copy)."""
+    if not h:
+        return h
+    h = re.sub(r"<style id=\"studio\">.*?</style>", "", h, flags=re.S)
+    h = re.sub(r"<script id=\"studio-js\">.*?</script>", "", h, flags=re.S)
+    tag = f'<style id="studio">{STUDIO_CSS}</style><script id="studio-js">{STUDIO_JS}</script>'
+    m = re.search(r"<head[^>]*>", h, re.I)
+    if m:
+        h = h[:m.end()] + tag + h[m.end():]
+    else:
+        h = re.sub(r"(<html[^>]*>)", r"\1<head>" + tag.replace("\\", "\\\\") + "</head>", h, count=1, flags=re.I)
+    if "viewport" not in h:
+        h = h.replace(tag, '<meta name="viewport" content="width=device-width,initial-scale=1">' + tag, 1)
+    return h
+
+
+def studio_problems(h, kind="app"):
+    """Quick checks a careful developer does before handing anything over."""
+    p = []
+    h = re.sub(r"<style id=\"studio\">.*?</style>|<script id=\"studio-js\">.*?</script>", "", h or "", flags=re.S)
+    low = h.lower()
+    if not h or len(h) < 1200:
+        return ["the file is too short or empty"]
+    if "</html>" not in low:
+        p.append("the file is cut off (no closing </html>)")
+    if low.count("<script") > low.count("</script>"):
+        p.append("a <script> tag is not closed")
+    if re.search(r"lorem ipsum|todo|your code here|placeholder text|\.\.\. ?rest of", low):
+        p.append("it contains placeholder or unfinished text")
+    if kind == "app":
+        if "<button" in low and not re.search(r"onclick|addeventlistener", low):
+            p.append("buttons have no click handlers")
+        if "<script" not in low:
+            p.append("the app has no JavaScript, so nothing works")
+        ids = set(re.findall(r"getElementById\(['\"]([\w-]+)['\"]\)", h))
+        missing = [i for i in ids if not re.search(r"id=['\"]?" + re.escape(i) + r"['\"\s>]", h)]
+        if missing:
+            p.append("JavaScript uses ids that are not in the page: " + ", ".join(missing[:6]))
+        if re.search(r"https?://(cdn|fonts|unpkg|ajax)\.", low):
+            p.append("it loads files from the internet; it must work offline")
+    return p
+
+
+def _studio_ask(prompt, rules, tokens):
+    """Strongest AI first, then the free ones; returns the first complete page."""
+    tries = []
+    if os.path.exists(KEY_FILE):
+        tries.append(("main", lambda: race_answer(lambda: ask_gemini(prompt, max_tokens=tokens, system=rules), prompt,
+                                                  hedge_after=25, deadline=110)[0]))
+    tries.append(("free", lambda: free_ai(prompt, system=rules, max_tokens=min(tokens, 6000))))
+    tries.append(("free2", lambda: free_ai(prompt[:9000], system=rules, max_tokens=5000)))
+    for who, fn in tries:
+        try:
+            h = hk_extract_html(fn())
+            if h:
+                return h
+        except Exception as e:
+            log(f"STUDIO {who}: {type(e).__name__}")
+        live_step("That AI was slow, switching to another one")
+    return None
+
+
+def _studio_plan(desc, kind):
+    """A short plan first (features, screens, data, content), which makes the build much better."""
+    try:
+        live_step("Planning what it needs")
+        q = (f"Plan a {kind}: {desc}\nIn under 110 words list: who it's for, the main parts/screens, every feature or "
+             "section with real example content, and the data it keeps. Plain list, no code.")
+        r = free_ai(q, max_tokens=300)
+        if r and not is_fail_reply(r) and 40 < len(r) < 1800:
+            return r.strip()
+    except Exception as e:
+        log(f"STUDIO plan: {type(e).__name__}")
+    return ""
+
+
+def studio_generate(prompt, rules, kind="app", desc=""):
+    plan = _studio_plan(desc or prompt[:300], kind) if kind in ("app", "document") else ""
+    full = prompt + ("\n\nPlan to follow:\n" + plan if plan else "")
+    live_step("Writing the code" if kind == "app" else "Writing and designing it")
+    h = _studio_ask(full, rules + STUDIO_RULES, 7000)
+    for rnd in range(2):
+        if not h:
+            break
+        live_step("Checking every part works" if kind == "app" else "Checking it for mistakes")
+        probs = studio_problems(h, "app" if kind == "app" else "doc")
+        if not probs:
+            break
+        live_step(f"Fixing {len(probs)} problem{'s' if len(probs) != 1 else ''} it found")
+        fixed = _studio_ask("Fix these problems in this file and return the FULL corrected file:\n- " + "\n- ".join(probs) +
+                            "\n\nFile:\n" + h[:22000], rules + STUDIO_RULES, 7000)
+        if fixed and len(studio_problems(fixed, "app" if kind == "app" else "doc")) < len(probs):
+            h = fixed
+        else:
+            break
+    if h:
+        live_step("Applying the design")
+        return studio_wrap(h)
+    return None
+
+
+def _studio_fallback_app(desc):
+    """Never leave the person with nothing: a working, good-looking tracker app built from their words."""
+    import html as _h
+    title = _h.escape(re.sub(r"\s+", " ", desc).strip()[:48] or "My App")
+    return studio_wrap(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>{title}</title></head><body><main>
+<div class="hero"><h1>{title}</h1><p>Add items, tick them off, and everything is saved on this phone.</p></div>
+<div class="card"><div class="row"><input id="t" placeholder="Add something..." style="flex:1;margin:0">
+<button onclick="add()">Add</button></div></div>
+<div class="grid"><div class="stat"><span class="n" id="c1">0</span><small>To do</small></div>
+<div class="stat"><span class="n" id="c2">0</span><small>Done</small></div></div><div id="list"></div></main>
+<script>var K='app_'+document.title,L=JSON.parse(localStorage.getItem(K)||'[]');
+function save(){{localStorage.setItem(K,JSON.stringify(L));draw()}}
+function add(){{var v=document.getElementById('t').value.trim();if(!v)return;L.unshift({{t:v,d:false}});document.getElementById('t').value='';save()}}
+function draw(){{var h='';L.forEach(function(x,i){{h+='<div class="card row"><input type="checkbox" style="width:auto;margin:0" '+(x.d?'checked':'')+
+' onchange="L['+i+'].d=!L['+i+'].d;save()"><span style="flex:1;'+(x.d?'text-decoration:line-through;opacity:.6':'')+'">'+
+x.t.replace(/</g,'&lt;')+'</span><button class="ghost" onclick="L.splice('+i+',1);save()">Delete</button></div>'}});
+document.getElementById('list').innerHTML=h||'<p class="muted">Nothing yet. Add your first one above.</p>';
+document.getElementById('c1').textContent=L.filter(function(x){{return!x.d}}).length;
+document.getElementById('c2').textContent=L.filter(function(x){{return x.d}}).length}}
+document.getElementById('t').addEventListener('keydown',function(e){{if(e.key==='Enter')add()}});draw();</script></body></html>""")
+
+
+def hk_ai_code(prompt):
+    desc = re.sub(r"^Build this app:\s*", "", prompt).split("\n")[0]
+    h = studio_generate(prompt, _HK_APP_RULES, "app", desc)
+    if not h and prompt.startswith("Build this app:"):
+        log("STUDIO: using the built-in app so the person still gets one")
+        live_step("Building a simpler version that works offline")
+        h = _studio_fallback_app(desc)
+    return h
+
+
+def hk_doc_ai(prompt):
+    return studio_generate(prompt, _HK_DOC_RULES, "document", prompt)
+
+
+_studio_prev_extract = hk_extract_html
+
+
+def hk_extract_html(r):
+    """Every page made anywhere in the app (apps, documents, research) gets the shared design."""
+    return studio_wrap(_studio_prev_extract(r))
+
+
 # =================== end 116 ===================
 
 
