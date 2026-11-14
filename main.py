@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "115.4"
+VERSION = "115.5"
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "genius_live.py")
@@ -99,18 +99,24 @@ from kivy.metrics import dp
 Window.softinput_mode = ""   # 110.3: screen never slides; the typing box lifts itself above the keyboard
 
 
-# ---------------- 114.1 Smart keyboard: use the phone's full keyboard (Gboard / phone keyboard) ----------------
-# Kivy asks Android for a "raw" keyboard by default, which hides suggestions, autocorrect, auto-capitals,
-# emoji suggestions, glide typing and voice typing. Ask for a normal text keyboard instead, like other apps.
-KB_SIMPLE_FLAG = "keyboard_simple.flag"
-_KB_TEXT = 1 | 16384 | 32768         # TEXT + capital sentences + autocorrect: the full Google keyboard with suggestions
-_KB_PASSWORD = 1 | 128                # TEXT + password (no suggestions, nothing learned)
-_KB_DECIMAL = 2 | 8192                # NUMBER + decimal point
+# ---------------- 120 Safe keyboard: typed letters never repeat ----------------
+# Why letters doubled: 114.1 asked Android for a keyboard with suggestions and autocorrect. Gboard, the
+# Infinix keyboard and others then "compose" each word and send it again when they commit it, and Kivy
+# (SDL2) types both copies. Kivy's own fix is keyboard_suggestions=False, which asks Android for a plain
+# keyboard with NO_SUGGESTIONS + VISIBLE_PASSWORD (no composing at all). Every TextInput in the app now
+# gets that by default, and a small guard below drops a repeated insert if a keyboard still sends one.
+KB_SIMPLE_FLAG = "keyboard_simple.flag"           # old switch, no longer needed (safe is the default)
+KB_SMART_FLAG = "keyboard_smart_v2.flag"          # opt-in: capitals on, but still no suggestions or autocorrect
+_KB_SAFE = 1 | 144 | 524288                       # TEXT + VISIBLE_PASSWORD + NO_SUGGESTIONS: nothing to compose
+_KB_TEXT = 1 | 16384 | 524288                     # opt-in: TEXT + capital sentences + NO_SUGGESTIONS
+_KB_PASSWORD = 1 | 128                            # TEXT + password (no suggestions, nothing learned)
+_KB_DECIMAL = 2 | 8192                            # NUMBER + decimal point
 _ti_orig_init = TextInput.__init__
+_ti_orig_insert = TextInput.insert_text
 
 
 def _kb_smart():
-    return not os.path.exists(KB_SIMPLE_FLAG)
+    return os.path.exists(KB_SMART_FLAG)
 
 
 def _kb_android_type(ti):
@@ -118,13 +124,13 @@ def _kb_android_type(ti):
         return _KB_PASSWORD
     if ti.input_filter == "float":
         return _KB_DECIMAL
-    if ti.input_type == "text" and not ti.input_filter:
-        return _KB_TEXT
-    return None
+    if ti.input_filter == "int" or ti.input_type == "number":
+        return None
+    return _KB_TEXT if _kb_smart() else _KB_SAFE
 
 
 def _kb_on_focus(ti, focused):
-    if not focused or not _kb_smart():
+    if not focused:
         return
     v = _kb_android_type(ti)
     if v is None:
@@ -140,22 +146,41 @@ def _kb_on_focus(ti, focused):
 
 
 def _ti_smart_init(self, **kw):
-    if _kb_smart() and "input_type" not in kw:
-        if kw.get("password"):
-            kw["input_type"], kw["keyboard_suggestions"] = "text", False
-        elif kw.get("input_filter") in ("int", "float"):
-            kw["input_type"] = "number"
-        else:
-            kw["input_type"] = "text"
-    kw.setdefault("keyboard_suggestions", not kw.get("password") and _kb_smart())   # Gboard suggestions on; "keyboard simple" turns them off
+    if "input_type" not in kw:
+        kw["input_type"] = "number" if kw.get("input_filter") in ("int", "float") else "text"
+    kw["keyboard_suggestions"] = False                 # never composing text: the cause of repeated letters
     _ti_orig_init(self, **kw)
+    self._kb_last = ("", 0.0, -1)
     try:
         self.bind(focus=_kb_on_focus)
     except Exception:
         pass
 
 
+def _ti_guard_insert(self, substring, from_undo=False):
+    """Drop the second copy of what a keyboard sends twice (same text, same place, within a blink)."""
+    try:
+        if not from_undo and substring and "\n" not in substring:
+            now = time.time()
+            last, t, pos = getattr(self, "_kb_last", ("", 0.0, -1))
+            ci = self.cursor_index()
+            if substring == last and now - t < 0.035 and ci == pos:
+                return None
+            if len(substring) >= 2 and now - t < 1.5 and not substring[0].isspace():
+                before = self.text[:ci]
+                word = re.split(r"\s", before)[-1] if before else ""
+                if word and substring.startswith(word) and len(substring) > len(word):
+                    self.select_text(ci - len(word), ci)
+                    self.delete_selection()
+                    ci = self.cursor_index()
+            self._kb_last = (substring, now, ci + len(substring))
+    except Exception:
+        pass
+    return _ti_orig_insert(self, substring, from_undo=from_undo)
+
+
 TextInput.__init__ = _ti_smart_init
+TextInput.insert_text = _ti_guard_insert
 
 
 _KB_VIEWS = {}
@@ -628,7 +653,7 @@ Genius 115.2 (2026-11-12)
 
 Genius 114.1 (2026-10-27)
 - Smart keyboard: Genius now uses your phone's full keyboard, like other apps, with word suggestions, autocorrect, capital letters, emoji, glide typing and voice typing. Number boxes open the number pad. Password boxes never show suggestions.
-- Say keyboard simple to switch back to the old plain keyboard, or keyboard smart to turn it on again.
+- Typing is now safe on every keyboard: letters never repeat. Say keyboard smart for capital letters.
 
 Genius 114.0 (2026-10-27)
 - New Genius AI, a smarter personal assistant like the AI on new iPhones. Say genius ai.
@@ -17511,20 +17536,21 @@ def ga_handle(screen, line, action, arg, low):
         ga_watch_loop(screen)
     except Exception:
         pass
-    if lw in ("keyboard simple", "simple keyboard", "old keyboard"):
-        open(KB_SIMPLE_FLAG, "w").write("1")
-        screen.show("AI", "Simple keyboard is on: no suggestions or autocorrect. Close and reopen Genius to apply. "
-                          "Say keyboard smart to go back.")
+    if lw in ("keyboard simple", "simple keyboard", "old keyboard", "safe keyboard", "keyboard safe"):
+        try:
+            os.remove(KB_SMART_FLAG)
+        except Exception:
+            pass
+        screen.show("AI", "Safe keyboard is on: plain typing with no suggestions, so letters never repeat. "
+                          "It works right away in the next box you tap.")
         return True
     if lw in ("keyboard smart", "smart keyboard", "keyboard", "normal keyboard", "google keyboard", "gboard"):
         try:
-            os.remove(KB_SIMPLE_FLAG)
+            open(KB_SMART_FLAG, "w").write("1")
         except Exception:
             pass
-        screen.show("AI", "Smart keyboard is on. Genius uses your phone's full keyboard, with suggestions, autocorrect, "
-                          "capital letters, emoji, glide typing and voice typing. If Genius still opened with the simple "
-                          "one, close and reopen it. To use Google's keyboard everywhere, install Gboard from the Play "
-                          "Store, then pick it in Settings > System > Keyboard.")
+        screen.show("AI", "Capital letters are on. Suggestions and autocorrect stay off, because on many phones they "
+                          "make typed letters repeat. If letters ever repeat, say [b]keyboard simple[/b].")
         return True
     if lw in ("genius ai", "siri", "siri ai", "apple ai", "iphone ai", "ai like iphone", "genius intelligence"):
         ga_panel(screen)
@@ -20280,6 +20306,53 @@ try:
     ExceptionManager.add_handler(_KeepRunning())
 except Exception:
     pass
+
+
+# ===================== 120: no repeated text: typed letters (see Safe keyboard at the top) and streamed answers =====================
+def qa_dedupe_text(t):
+    """Remove text a stream or an AI repeated: a whole answer twice, the same paragraph or line twice in a row."""
+    if not t or not isinstance(t, str):
+        return t
+    s = t.strip()
+    n = len(s)
+    if n > 40 and n % 2 == 0 and s[:n // 2] == s[n // 2:]:
+        s = s[:n // 2]
+    for sep in ("\n\n", "\n"):
+        parts, out = s.split(sep), []
+        for p in parts:
+            if out and p.strip() and p.strip() == out[-1].strip() and len(p.strip()) > 3:
+                continue
+            out.append(p)
+        s = sep.join(out)
+    s = re.sub(r"(?s)\b([^.!?\n]{12,}[.!?])\s+\1", r"\1", s)
+    return s
+
+
+_qa_prev_stream_feed = ChatScreen._stream_feed
+
+
+def _qa_stream_feed(self, txt):
+    try:
+        txt = qa_dedupe_text(txt)
+    except Exception:
+        pass
+    return _qa_prev_stream_feed(self, txt)
+
+
+ChatScreen._stream_feed = _qa_stream_feed
+_qa_prev_say_dedupe = ChatScreen.say
+
+
+def _qa_say_dedupe(self, text, plain=False):
+    try:
+        if isinstance(text, str) and not plain:
+            text = qa_dedupe_text(text)
+    except Exception:
+        pass
+    return _qa_prev_say_dedupe(self, text, plain)
+
+
+ChatScreen.say = _qa_say_dedupe
 
 
 if __name__ == "__main__":
