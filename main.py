@@ -7570,14 +7570,14 @@ def colorize(text, pal=None):
 
 # ---- word / command suggestions while typing ----
 _SUGGEST_EXTRA = (
-    "play song", "stop music", "pause music", "lyrics", "music", "theme modern", "theme hark", "theme gold", "theme diamond", "theme classic",
+    "play song", "stop music", "pause music", "lyrics", "music", "theme modern", "theme gold", "theme diamond", "theme classic",
     "mic test", "help", "make song amapiano about ", "make song afrobeat about ", "make song gospel about ",
     "make song kadongo kamu about ", "make song dancehall about ", "make song hip hop about ",
     "make song rnb about ", "make song love ballad about ", "make song kids song about ",
     "make song luganda praise about ", "make song pop about ", "draw ", "edit ", "studio", "camera", "home",
     "premium", "everywhere", "share", "quick ", "mind ", "better: ", "teach skill ", "wealth", "market ",
 )
-_NO_SUGGEST = ("save ", "seteleven", "setkey", "setgroq", "setrouter", "setpolli", "setvoice", "setsunbird", "open ", "tereka ", "ggulawo ")
+_NO_SUGGEST = ("save ", "setcloud", "cloudpass", "seteleven", "setkey", "setgroq", "setrouter", "setpolli", "setvoice", "setsunbird", "open ", "tereka ", "ggulawo ")
 _POOL = []
 
 
@@ -11116,6 +11116,8 @@ class ChatScreen(BoxLayout):
                 ("Fun studio (collage, effects, video)", self.fun_studio, GOLD),
                 ("My creations (pictures)", self.creations, BLUE),
                 ("My storage", self.storage_box, BLUE),
+                ("Storage: where everything is kept", lambda: self.handle("storage"), BLUE),
+                ("Smart answers (what's new)", lambda: self.handle("smart answers"), GOLD),
                 ("New in Genius 110", lambda: self.show("AI", V110_HELP), GOLD),
                 ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
                 ("Help (all commands)", lambda: self.handle("help"), GREY),
@@ -13472,13 +13474,13 @@ class ChatScreen(BoxLayout):
     # brain
     def handle(self, line):
         low = line.lower()
-        if not low.startswith(("setkey", "save ", "setvoice", "setgroq", "setrouter", "setpolli", "seteleven", "setsunbird", "better:",
+        if not low.startswith(("setkey", "setcloud", "cloudpass", "save ", "setvoice", "setgroq", "setrouter", "setpolli", "seteleven", "setsunbird", "better:",
                                "correct:", "actually:", "wrong:", "teach")):
             self._pending_q = line
         if low.strip(" .!?") in ("mic test", "test mic", "test microphone", "microphone test"):
             self.mic_test()
             return
-        if (low.startswith(("setkey", "setvoice", "setgroq", "setrouter", "setpolli", "seteleven"))
+        if (low.startswith(("setkey", "setcloud", "cloudpass", "setvoice", "setgroq", "setrouter", "setpolli", "seteleven"))
                 or (low.startswith("save ") and low.strip(" .!?") not in SAVE_PHRASES)):
             head = line.split()[0]
             self.show("You", f"{head} ********")
@@ -20304,6 +20306,2575 @@ try:
             return ExceptionManager.PASS
 
     ExceptionManager.add_handler(_KeepRunning())
+except Exception:
+    pass
+
+
+# ===================== 120: Shared online brain (prompts, guides, recipes, library live online; tiny cache) =====================
+# The big knowledge is not inside the app. It lives in a public repository and is read on demand:
+#   version.json  -> {"version": N}            checked at most every few hours (a few bytes)
+#   manifest.json -> stores + items             re-read only when the version changes
+# Each item names a store (a base address) and a path. Adding a new store later (another free host) only
+# needs a new entry in the manifest, never a new app. Only a small, size-capped cache stays on the phone.
+BRAIN_BASE = "https://raw.githubusercontent.com/ssalimuto/genius-brain/main/"
+BRAIN_REPO_PAGE = "https://github.com/ssalimuto/genius-brain"
+BRAIN_CACHE_MB = 3.0                 # the most the brain may keep on the phone
+BRAIN_CHECK_EVERY = 6 * 3600         # seconds between version checks
+_BRAIN = {"manifest": None, "version": None, "checked": 0.0, "lock": threading.Lock(), "mem": {}}
+
+# Minimal built-in brain, so answers stay good with no internet. The full versions live online.
+BRAIN_FALLBACK = {
+    "prompts/core": {
+        "core": ("Answer first: the first sentence gives the direct answer. Then add only what helps, in short "
+                 "paragraphs or a few bullet points with bold labels. Use exact names, numbers and dates. Never "
+                 "invent facts, links or quotes; if you are not sure, say so in one short line and say how to check. "
+                 "Match the user's language: if they write in Luganda, answer in simple Luganda. Use Ugandan "
+                 "examples and UGX when it helps. Be warm and direct, with no filler and no lectures. Do not use "
+                 "tables: the screen is small, so use bullet points. Keep most answers under 200 words unless the "
+                 "user asks for more. For knowledge questions, end with one line: "
+                 "'Ask next: <short follow-up> | <another short follow-up>'."),
+        "modes": {
+            "math": ("Maths: show the working one short step per line, do every calculation exactly, check the "
+                     "result a second way (estimate or reverse it), then give the final answer in bold on its own "
+                     "line, like '**Answer: 9,000 UGX**'. Trust the calculator results given to you."),
+            "code": ("Code: give complete, runnable code in one fenced block with the language name, with no "
+                     "placeholders or '...'. Then explain in 2 to 4 short bullet points and show one example of "
+                     "use. For a bug, name the exact error and line first, then the fixed code."),
+            "homework": ("Homework: teach, don't just tell. Give the key idea in one or two sentences, then a "
+                         "worked example or the standard equation, then 2 or 3 points a teacher would want in an "
+                         "exam answer, then one quick question to check understanding. Match the Ugandan "
+                         "curriculum level the student names (P7, S1-S6)."),
+            "fresh": ("Current facts: use only the web results given, and cite them with [1], [2] right after the "
+                      "fact they support. Give dates for anything that changes. If the results are old or "
+                      "disagree, say so. Never cite a number that is not in the results."),
+            "luganda": ("The user wrote in Luganda. Reply in simple, natural Luganda. If a technical word has no "
+                        "common Luganda word, use the English word."),
+            "steps": ("Step-by-step mode: number each reasoning step, keep each step to one line, check each step, "
+                      "then give the final answer in bold on its own line."),
+            "fact": ("Facts: if reference text is given, trust it over your memory and cite it as [1]. If your "
+                     "knowledge may be out of date, say 'as far as I know' and suggest checking."),
+            "chat": "",
+            "feel": ("Feelings: listen first, reflect what they feel, be kind and calm, ask one gentle question. "
+                     "No lists and no lectures."),
+        },
+        "research": ("You write a research brief from numbered web sources. Start with a 2-3 sentence answer. Then "
+                     "short sections with '## ' headings and bullet points. Cite every fact with [n] using the "
+                     "source numbers given. Say where sources disagree or are missing. End with 'Bottom line:' in "
+                     "one sentence. Never invent facts, numbers or sources. No tables."),
+        "web": ("Answer the question from the numbered web sources given. First sentence: the direct answer. Then "
+                "the key facts in short bullet points with real numbers, names and dates. Put [n] after each fact "
+                "with the number of the source it came from. Only use the sources given. If they are old, thin or "
+                "disagree, say so in one line. Keep it under 220 words. Do not write a sources list; the app adds it."),
+        "link": ("You read web pages for the user. Answer only from the page text given; if the page doesn't say, "
+                 "say so plainly. Start with the direct answer or a one-sentence summary, then up to 6 short bullet "
+                 "points with the key facts, numbers and dates exactly as the page has them. End with one helpful "
+                 "follow-up question they could ask about the page."),
+    },
+}
+
+
+def brain_dir():
+    return private_dir("brain_cache")
+
+
+def _brain_http(url, timeout=12):
+    _c, _t, data = _fetch(url, timeout=timeout, headers={"Cache-Control": "no-cache"})
+    return data
+
+
+def _brain_url(item, manifest=None):
+    """The download addresses of an item, first choice first (its store, then any mirrors)."""
+    man = manifest or _BRAIN.get("manifest") or {}
+    it = (man.get("items") or {}).get(item) or {}
+    stores = man.get("stores") or {"repo": {"base": BRAIN_BASE}}
+    urls = []
+    if it.get("url"):
+        urls.append(it["url"])
+    st = stores.get(it.get("store") or "repo") or {}
+    if st.get("base") and it.get("path"):
+        urls.append(st["base"] + it["path"])
+    for mir in it.get("mirrors") or []:
+        if isinstance(mir, dict):
+            b = (stores.get(mir.get("store")) or {}).get("base")
+            if b and mir.get("path"):
+                urls.append(b + mir["path"])
+        elif isinstance(mir, str):
+            urls.append(mir)
+    if not urls:
+        urls.append(BRAIN_BASE + item + ".json")
+    return urls
+
+
+def _brain_cache_path(item):
+    return os.path.join(brain_dir(), re.sub(r"[^a-zA-Z0-9_.-]+", "_", item))
+
+
+def brain_cache_trim(limit_mb=None, folder=None):
+    """Keep a folder under its size cap; the files used longest ago go first."""
+    limit = int((limit_mb or BRAIN_CACHE_MB) * 1024 * 1024)
+    folder = folder or brain_dir()
+    try:
+        files = []
+        for n in os.listdir(folder):
+            p = os.path.join(folder, n)
+            if os.path.isfile(p):
+                st = os.stat(p)
+                files.append((st.st_atime if st.st_atime > st.st_mtime else st.st_mtime, st.st_size, p))
+        total = sum(f[1] for f in files)
+        for _t, size, p in sorted(files):
+            if total <= limit:
+                break
+            if p.endswith("manifest.json"):
+                continue
+            try:
+                os.remove(p)
+                total -= size
+            except Exception:
+                pass
+        return total
+    except Exception:
+        return 0
+
+
+def folder_size(folder):
+    total = 0
+    try:
+        for base, _d, files in os.walk(folder):
+            for n in files:
+                try:
+                    total += os.path.getsize(os.path.join(base, n))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return total
+
+
+def brain_manifest(force=False):
+    """The brain's manifest. Downloads only when the tiny version file says something changed."""
+    with _BRAIN["lock"]:
+        man = _BRAIN.get("manifest")
+        mpath = os.path.join(brain_dir(), "manifest.json")
+        if man is None:
+            try:
+                man = json.load(open(mpath, encoding="utf8"))
+                _BRAIN.update(manifest=man, version=man.get("version"))
+            except Exception:
+                man = None
+        try:
+            stamp = os.path.getmtime(mpath)
+        except Exception:
+            stamp = 0
+        due = force or man is None or time.time() - max(_BRAIN["checked"], stamp) > BRAIN_CHECK_EVERY
+        if not due or not net_online():
+            return man or {}
+        _BRAIN["checked"] = time.time()
+        try:
+            ver = json.loads(_brain_http(BRAIN_BASE + "version.json", 8).decode("utf8")).get("version")
+            if man is not None and ver == man.get("version"):
+                os.utime(mpath, None)
+                return man
+            new = json.loads(_brain_http(BRAIN_BASE + "manifest.json", 12).decode("utf8"))
+            if isinstance(new, dict) and new.get("items"):
+                old_items = (man or {}).get("items") or {}
+                for name, it in new["items"].items():          # drop cached copies that changed
+                    if (old_items.get(name) or {}).get("sha256") != it.get("sha256"):
+                        try:
+                            os.remove(_brain_cache_path(name))
+                        except Exception:
+                            pass
+                tmp = mpath + ".tmp"
+                with open(tmp, "w", encoding="utf8") as f:
+                    json.dump(new, f)
+                os.replace(tmp, mpath)
+                _BRAIN.update(manifest=new, version=new.get("version"))
+                _BRAIN["mem"].clear()
+                log(f"BRAIN: now version {new.get('version')}")
+                return new
+        except Exception as e:
+            log(f"BRAIN manifest: {type(e).__name__}")
+        return man or {}
+
+
+def brain_get(item, default=None, fetch=True):
+    """One piece of the brain (parsed JSON or text). Order: memory, small cache, online, built-in."""
+    if item in _BRAIN["mem"]:
+        return _BRAIN["mem"][item]
+    man = brain_manifest() if fetch else (_BRAIN.get("manifest") or {})
+    it = (man.get("items") or {}).get(item) or {}
+    path = _brain_cache_path(item)
+    raw = None
+    try:
+        if os.path.exists(path):
+            raw = open(path, "rb").read()
+            if it.get("sha256") and hashlib.sha256(raw).hexdigest() != it["sha256"]:
+                raw = None
+            else:
+                os.utime(path, None)
+    except Exception:
+        raw = None
+    if raw is None and fetch and it and net_online() and int(it.get("size") or 0) <= 2 * 1024 * 1024:
+        for url in _brain_url(item, man):
+            try:
+                data = _brain_http(url, 12)
+                if it.get("sha256") and hashlib.sha256(data).hexdigest() != it["sha256"]:
+                    continue
+                raw = data
+                if it.get("cache", True):
+                    with open(path, "wb") as f:
+                        f.write(data)
+                    brain_cache_trim()
+                break
+            except Exception as e:
+                log(f"BRAIN get {item}: {type(e).__name__}")
+    if raw is None:
+        val = BRAIN_FALLBACK.get(item, default)
+        return val
+    try:
+        val = json.loads(raw.decode("utf8")) if (it.get("type", "json") == "json") else raw.decode("utf8")
+    except Exception:
+        val = raw.decode("utf8", "ignore")
+    if len(_BRAIN["mem"]) > 40:
+        _BRAIN["mem"].clear()
+    _BRAIN["mem"][item] = val
+    return val
+
+
+def brain_prompt(key, sub=None):
+    """A prompt from the online brain, with the built-in one as a safety net."""
+    core = brain_get("prompts/core", fetch=False) or {}
+    if not isinstance(core, dict):
+        core = {}
+    base = BRAIN_FALLBACK["prompts/core"]
+    if sub is not None:
+        return ((core.get(key) or {}).get(sub) if isinstance(core.get(key), dict) else None) or \
+            (base.get(key) or {}).get(sub, "")
+    return core.get(key) or base.get(key, "")
+
+
+def brain_warm():
+    """Once, quietly after start: read the version and the core prompts (a few KB)."""
+    def go():
+        try:
+            time.sleep(8)
+            if net_online():
+                brain_manifest()
+                brain_get("prompts/core")
+        except Exception as e:
+            log(f"BRAIN warm: {type(e).__name__}")
+    threading.Thread(target=go, daemon=True).start()
+
+
+_LIB_STOP = set("the a an is are was were to of in on for and or what how why who when which do does did i you me my "
+                "it this that with be can please tell about explain give get need want should".split())
+
+
+def brain_library(q, limit=2):
+    """Matching entries from the online fact and how-to library (fetched one by one, only when needed)."""
+    idx = brain_get("library/index")
+    if not isinstance(idx, dict):
+        return []
+    words = set(w for w in re.findall(r"[a-z0-9']+", (q or "").lower()) if w not in _LIB_STOP and len(w) > 2)
+    if not words:
+        return []
+    scored = []
+    for e in idx.get("entries") or []:
+        keys = set(str(k).lower() for k in e.get("keys") or [])
+        hit = len(words & keys)
+        for k in keys:
+            if " " in k and k in (q or "").lower():
+                hit += 2
+        if hit >= int(e.get("min", 2)):
+            scored.append((hit, e))
+    scored.sort(key=lambda x: -x[0])
+    out = []
+    for _h, e in scored[:limit]:
+        doc = brain_get(e.get("item") or "")
+        if isinstance(doc, dict) and doc.get("text"):
+            out.append(doc)
+    return out
+
+
+def brain_packs():
+    """Large optional packs (they live in Releases or other stores; downloaded only when asked)."""
+    man = brain_manifest()
+    out = []
+    for name, it in (man.get("items") or {}).items():
+        if it.get("kind") == "pack":
+            urls = _brain_url(name, man)
+            out.append({"name": name, "title": it.get("title") or name, "size": int(it.get("size") or 0),
+                        "url": urls[0] if urls else "", "store": it.get("store", "")})
+    return out
+
+
+def brain_status():
+    man = brain_manifest()
+    items = man.get("items") or {}
+    return {"version": man.get("version"), "updated": man.get("updated", ""),
+            "size": sum(int(i.get("size") or 0) for i in items.values() if i.get("kind") != "pack"),
+            "items": len(items), "cache": folder_size(brain_dir()), "repo": BRAIN_REPO_PAGE}
+
+
+if os.environ.get("QA_TEST") != "1":
+    brain_warm()
+
+
+# ===================== 120: Answer quality: smarter routing, web answers with numbered sources, memory, self-checks =====================
+QA_SET_FILE = "qa_settings.json"
+QA_SUMMARY_FILE = "chat_summary.json"
+QA_ASK = {}                    # "ask:N" -> follow-up question, for tapping
+QA_SRC = {}                    # "src:N" -> source link
+_QA_N = {"n": 0}
+_QA_PREFIXES = []              # hidden instructions added before a question (kept out of chat memory)
+
+
+def qa_settings():
+    d = _v110_load(QA_SET_FILE, {})
+    d.setdefault("voice", True)
+    d.setdefault("steps", False)
+    d.setdefault("instructions", "")
+    d.setdefault("followups", True)
+    return d
+
+
+def qa_set(key, value):
+    d = qa_settings()
+    d[key] = value
+    _v110_save(QA_SET_FILE, d)
+    return d
+
+
+def _qa_key(prefix, value, store):
+    _QA_N["n"] += 1
+    k = f"{prefix}:{_QA_N['n']}"
+    store[k] = value
+    if len(store) > 300:
+        for old in list(store)[:100]:
+            store.pop(old, None)
+    return k
+
+
+# ---------- 1. routing: what kind of question is this? ----------
+_QA_FRESH = re.compile(
+    r"\b(latest|news|headlines?|today|tonight|yesterday|this (week|month|year)|currently|current (president|price|rate|leader|news|situation|minister|champion|weather|events?|affairs)|right now|recent(ly)?|"
+    r"updates?|who won|score[sd]?|results? (of|for)|fixtures?|weather|forecast|exchange rate|rate of the|dollar rate|"
+    r"price of|prices? (in|of|today)|stock price|share price|bitcoin|trending|election|elected|appointed|resign(ed)?|"
+    r"died|dead|still alive|breaking|announced|released|launch(ed)?|new law|budget 20\d\d|"
+    r"20(2[4-9]|3\d))\b", re.I)
+_QA_OFFICE = re.compile(r"\b(who('s| is| are)?)\b.{0,25}\b(president|prime minister|vice president|ceo|chairman|chairperson|"
+                        r"governor|minister|speaker|king|queen|kabaka|katikkiro|pope|leader|head coach|coach|captain|"
+                        r"champion|mayor|chief justice|ig(p)?|inspector general|secretary general)\b", re.I)
+_QA_SOURCES = re.compile(r"\b(sources?|cite|citations?|references?|according to|statistics|stats|population of|"
+                         r"how many people|gdp|inflation)\b", re.I)
+_QA_MATH = re.compile(r"(\d\s*[-+*/x×÷^%]\s*\d|\d\s*%|\bpercent|\bsolve\b|\bequation|\bcalculate|\bsimplify|\bfactori[sz]e|"
+                      r"\bderivative|\bintegra(l|te)|\bprobability|\baverage of|\bmean of|\bratio\b|\barea of|\bperimeter|"
+                      r"\bvolume of|\bspeed\b|\bprofit\b|\binterest\b|\bhow (much|many|long|far)\b.{0,80}\d|\bkm\b|"
+                      r"\bsquare root|\bsqrt|\bfraction)", re.I)
+_QA_CODE = re.compile(r"(```|\bdef |\bimport |\bprint\(|\bconsole\.log|\bfunction\b|\bpython\b|\bjavascript\b|\bjava\b|"
+                      r"\bkotlin\b|\bhtml\b|\bcss\b|\bsql\b|\bphp\b|\bc\+\+|\bregex\b|\bcode\b|\bbug\b|\bdebug|"
+                      r"\bcompile|\btraceback|\bexception\b|\berror:|\bscript\b|\bprogram\b|\bkivy\b|\bapi\b)", re.I)
+_QA_HW = re.compile(r"\b(homework|assignment|exam|uneb|uce|uace|ple|s[1-6]\b|senior [1-6]|p[4-7]\b|primary [4-7]|"
+                    r"explain|define|describe|what is meant by|differentiate|distinguish|outline|state (the|two|three)|"
+                    r"biology|chemistry|physics|geography|history|literature|economics|agriculture|"
+                    r"photosynthesis|respiration|osmosis|equation)\b", re.I)
+_QA_LIVE = re.compile(r"\b(exchange rate|dollar rate|rate (of|for) the|price of|prices? (today|now|in uganda)|"
+                      r"stock price|share price|bitcoin|btc|today|right now|latest)\b", re.I)
+_QA_FEEL = re.compile(r"\b(i feel|i'?m (sad|tired|stressed|lonely|depressed|worried|scared|angry)|nobody|heartbroken|"
+                      r"broke up|i miss|anxious|hopeless)\b", re.I)
+_QA_LG = set("oli otya gyendi bulungi webale nnyo ssebo nnyabo kale nedda yee nkwagala mukwano ggwe nze nnyinza ntya "
+             "okwekuuma omusujja ensiri kiki ani wa ddi lwaki bwe nga kye kino ekyo naye era nnyo mmwe ffe bo "
+             "tuli muli bali ndi ki kino olina mbuulira njagala sirina simanyi buli olwaleero enkya jjo omwana "
+             "abaana amaka ekibuga ensimbi omulimu essomero okusoma kwata genda jangu tusaba okuyamba "
+             "nsaba ssaawa mpola olunaku omwaka emmere amazzi".split())
+
+
+def qa_is_luganda(text):
+    ws = re.findall(r"[a-z']+", (text or "").lower())
+    if len(ws) < 2:
+        return False
+    hits = sum(1 for w in ws if w in _QA_LG or w.startswith(("okw", "okuy", "okus", "nny", "ngu", "eky", "omu", "aba")))
+    return hits >= max(2, len(ws) // 3)
+
+
+def qa_route(text):
+    """chat | feel | fresh | fact | math | code | homework | luganda (one main kind for the answer)."""
+    t = (text or "").strip()
+    if not t:
+        return "chat"
+    if _QA_FEEL.search(t):
+        return "feel"
+    if _QA_CODE.search(t) and not re.search(r"\b(zip|postal|area|country|dial(l?ing)?|phone) code\b", t, re.I):
+        return "code"
+    if _QA_LIVE.search(t) and not HO_SKIP.search(t):
+        return "fresh"
+    if _QA_MATH.search(t) and re.search(r"\d", t):
+        return "math"
+    if qa_is_luganda(t):
+        return "luganda"
+    if (_QA_FRESH.search(t) or _QA_OFFICE.search(t)) and not HO_SKIP.search(t):
+        return "fresh"
+    if _QA_SOURCES.search(t) and not HO_SKIP.search(t):
+        return "fresh"
+    if _QA_HW.search(t):
+        return "homework"
+    if re.match(r"^\s*(who|what|when|where|which|how|why|is|are|does|did|can|tell me|define)\b", t, re.I):
+        return "fact"
+    return "chat"
+
+
+def qa_wants_web(text, route=None):
+    route = route or qa_route(text)
+    return route == "fresh"
+
+
+# ---------- 2. the system prompt (most of it lives in the online brain) ----------
+def qa_persona(route="chat", extra=""):
+    name = str(CURRENT.get("name") or "").strip()
+    who = (f" You are talking with {name}" + (", the owner of this app" if CURRENT.get("owner") else "") + ", in Uganda.") \
+        if name else " You are talking with someone in Uganda."
+    s = qa_settings()
+    rules = (f"You are {APP_NAME_FREE}, a helpful AI assistant made in Uganda by Ssali Muto." + who +
+             f" Today is {time.strftime('%A %d %B %Y')} (Uganda time, EAT). " + brain_prompt("core"))
+    mode = brain_prompt("modes", route)
+    if mode:
+        rules += " " + mode
+    if s.get("steps") and route in ("math", "homework", "fact", "chat", "code"):
+        rules += " " + brain_prompt("modes", "steps")
+    if s.get("instructions"):
+        rules += ("\nThe user's own standing instructions (follow them unless they are unsafe): " +
+                  str(s["instructions"])[:600])
+    try:
+        summ = qa_summary_text()
+        if summ:
+            rules += "\nEarlier in this conversation (short summary): " + summ
+    except Exception:
+        pass
+    return rules + (("\n" + extra) if extra else "")
+
+
+def qa_refresh_rules():
+    """Give every AI path the same up-to-date rules (the user's name and today's date included)."""
+    try:
+        g = globals()
+        name = str(CURRENT.get("name") or "the user")
+        style = " " + brain_prompt("core") + " " + brain_prompt("modes", "fact")
+        g["ANSWER_STYLE"] = style
+        g["THINK_STYLE"] = " " + brain_prompt("modes", "math")
+        base = g.get("_QA_AGENT_BASE")
+        if base is None:
+            base = g["_QA_AGENT_BASE"] = AGENT_RULES
+        body = base.replace("the private assistant of ssalimuto,", f"the assistant of {name},")
+        cut = body.find(" For questions about knowledge")
+        if cut > 0:
+            body = body[:cut]
+        g["AGENT_RULES"] = (body + f" Today is {time.strftime('%A %d %B %Y')}." + style + qa_persona_extras())
+    except Exception as e:
+        log(f"QA rules: {type(e).__name__}")
+
+
+def qa_persona_extras():
+    s = qa_settings()
+    out = ""
+    if s.get("instructions"):
+        out += " The user's own standing instructions: " + str(s["instructions"])[:600]
+    if s.get("steps"):
+        out += " " + brain_prompt("modes", "steps")
+    return out
+
+
+# ---------- 3. chat memory hygiene + a short rolling summary for long chats ----------
+_qa_prev_prefix = v110_prompt_prefix
+
+
+def v110_prompt_prefix(text):
+    pre = _qa_prev_prefix(text)
+    try:
+        if qa_settings().get("steps") and qa_route(text) in ("math", "homework", "fact", "code"):
+            pre += "[Step-by-step mode: number the steps, check each one, final answer in bold.]\n"
+        if pre:
+            _QA_PREFIXES.append(pre)
+            del _QA_PREFIXES[:-12]
+    except Exception:
+        pass
+    return pre
+
+
+_QA_HIDDEN = re.compile(r"^\s*\[(Support mode|Care mode|Reply only in|Data saver|Context for this answer|Step-by-step mode|"
+                        r"Deep research|Context:)[^\]]*\]\s*", re.I)
+
+
+def qa_clean_user(t):
+    """The words the person really typed, without hidden instructions added for the AI."""
+    t = str(t or "")
+    for _ in range(6):
+        before = t
+        for p in sorted(set(_QA_PREFIXES), key=len, reverse=True):
+            if p and t.startswith(p):
+                t = t[len(p):].lstrip("\n ")
+        t = re.sub(r"^\s*\[Context for this answer.*?\[End context\]\s*", "", t, flags=re.S)
+        t = _QA_HIDDEN.sub("", t)
+        try:
+            for fixed in (CARE_RULES, LUGANDA_REPLY):
+                if t.startswith(fixed):
+                    t = t[len(fixed):].lstrip()
+        except Exception:
+            pass
+        if t == before:
+            break
+    return t.strip()
+
+
+_qa_prev_save_memory = save_memory
+
+
+def save_memory():
+    try:
+        for m in history:
+            if m.get("role") == "user":
+                for p in m.get("parts") or []:
+                    if isinstance(p, dict) and isinstance(p.get("text"), str) and len(p["text"]) > 0:
+                        c = qa_clean_user(p["text"])
+                        if c and c != p["text"]:
+                            p["text"] = c
+        threading.Thread(target=qa_summary_update, daemon=True).start()
+    except Exception as e:
+        log(f"QA memory: {type(e).__name__}")
+    return _qa_prev_save_memory()
+
+
+def _qa_msg_text(m):
+    return " ".join(p.get("text", "") for p in (m.get("parts") or []) if isinstance(p, dict)).strip()
+
+
+def qa_summary_text():
+    d = _v110_load(QA_SUMMARY_FILE, {})
+    return str(d.get("text") or "")[:900]
+
+
+def qa_summary_update(force=False):
+    """Long chats: the older turns are squeezed into a short summary, so the AI still knows what was said."""
+    try:
+        hist = list(history)
+        if len(hist) < 14 and not force:
+            return
+        old = hist[:-8]
+        d = _v110_load(QA_SUMMARY_FILE, {})
+        if d.get("upto") == len(old) and not force:
+            return
+        lines = []
+        for i in range(0, len(old) - 1, 2):
+            q, a = _qa_msg_text(old[i]), _qa_msg_text(old[i + 1]) if i + 1 < len(old) else ""
+            q = re.sub(r"\s+", " ", qa_clean_user(q))[:110]
+            a = re.sub(r"\[/?[a-z]+[^\]]*\]|\*+|#+", "", a)
+            a = re.sub(r"\s+", " ", a).strip()
+            first = re.split(r"(?<=[.!?])\s", a, maxsplit=1)[0][:150]
+            if q:
+                lines.append(f"Asked: {q} -> {first}")
+        text = " | ".join(lines[-10:])
+        if connected_ais() and len(text) > 600:          # a keyed AI writes a tighter summary (free AIs are saved for answers)
+            try:
+                s = _ask_gemini_only("Summarise this chat history in under 80 words: the topics, facts about the user, "
+                                     "and anything still open. Plain text.\n\n" + text[:5000], 200) if os.path.exists(KEY_FILE) else None
+                if not s:
+                    for prov in ranked_providers()[:1]:
+                        s = other_ai(prov, "Summarise in under 80 words (topics, user facts, open items):\n" + text[:5000],
+                                     system="You write short, accurate chat summaries.", max_tokens=200)
+                if s and not is_fail_reply(s):
+                    text = s.strip()
+            except Exception:
+                pass
+        _v110_save(QA_SUMMARY_FILE, {"text": text[:1200], "upto": len(old), "t": time.time()})
+    except Exception as e:
+        log(f"QA summary: {type(e).__name__}")
+
+
+# ---------- 4. calculator facts and self-checks ----------
+import ast as _qa_ast
+_QA_OPS = {_qa_ast.Add: lambda a, b: a + b, _qa_ast.Sub: lambda a, b: a - b, _qa_ast.Mult: lambda a, b: a * b,
+           _qa_ast.Div: lambda a, b: a / b, _qa_ast.Pow: lambda a, b: a ** b if abs(b) <= 12 else None,
+           _qa_ast.Mod: lambda a, b: a % b}
+
+
+def qa_eval(expr):
+    """Exact, safe arithmetic (numbers and + - * / ** % only). Returns a number or None."""
+    try:
+        e = expr.replace(",", "").replace("×", "*").replace("÷", "/").replace("^", "**").replace("−", "-")
+        e = re.sub(r"(?<=\d)\s*[xX]\s*(?=\d)", "*", e)
+        node = _qa_ast.parse(e.strip(), mode="eval").body
+
+        def ev(n):
+            if isinstance(n, _qa_ast.Constant) and isinstance(n.value, (int, float)):
+                return n.value
+            if isinstance(n, _qa_ast.UnaryOp) and isinstance(n.op, (_qa_ast.USub, _qa_ast.UAdd)):
+                v = ev(n.operand)
+                return -v if isinstance(n.op, _qa_ast.USub) else v
+            if isinstance(n, _qa_ast.BinOp) and type(n.op) in _QA_OPS:
+                return _QA_OPS[type(n.op)](ev(n.left), ev(n.right))
+            raise ValueError("not arithmetic")
+        v = ev(node)
+        return None if v is None or isinstance(v, complex) else v
+    except Exception:
+        return None
+
+
+def qa_num(v):
+    if v is None:
+        return ""
+    if abs(v - round(v)) < 1e-9:
+        return f"{int(round(v)):,}"
+    return f"{v:,.4f}".rstrip("0").rstrip(".")
+
+
+_QA_EXPR = re.compile(r"(?<![\w.])(\(?\s*-?\d[\d,]*(?:\.\d+)?(?:\s*[-+*/x×÷^]\s*\(?\s*-?\d[\d,]*(?:\.\d+)?\s*\)?)+)")
+_QA_PCT = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(?:%|percent)\s*of\s*(?:ugx|shs?\.?|\$|usd)?\s*(\d[\d,]*(?:\.\d+)?)", re.I)
+
+
+def qa_calc_facts(text):
+    """Exact results for the sums in a question, given to the AI so it doesn't slip."""
+    out = []
+    for m in _QA_PCT.finditer(text or ""):
+        a, b = qa_eval(m.group(1)), qa_eval(m.group(2))
+        if a is not None and b is not None:
+            out.append(f"{m.group(1)}% of {m.group(2)} = {qa_num(a * b / 100)}")
+    for m in _QA_EXPR.finditer(text or ""):
+        ex = m.group(1).strip()
+        if re.fullmatch(r"\d{1,2}[-/]\d{1,2}([-/]\d{2,4})?", ex) or re.fullmatch(r"\+?\d{9,13}", ex.replace(" ", "")):
+            continue
+        v = qa_eval(ex)
+        if v is not None:
+            out.append(f"{ex} = {qa_num(v)}")
+    return out[:6]
+
+
+_QA_CHECK_LINE = re.compile(r"(-?\d[\d,]*(?:\.\d+)?(?:\s*[-+*/×x÷]\s*-?\d[\d,]*(?:\.\d+)?)+)\s*=\s*(-?\d[\d,]*(?:\.\d+)?)")
+
+
+def qa_check_math(answer):
+    """Re-do every 'a op b = c' line in an answer. Returns a list of (written, correct) mistakes."""
+    bad = []
+    for m in _QA_CHECK_LINE.finditer(answer or ""):
+        left, right = m.group(1), m.group(2)
+        v, r = qa_eval(left), qa_eval(right)
+        if v is None or r is None:
+            continue
+        if abs(v - r) > max(0.011, abs(v) * 0.0005):
+            bad.append((f"{left.strip()} = {right}", f"{left.strip()} = {qa_num(v)}"))
+    return bad[:4]
+
+
+def qa_check_code(answer):
+    """Syntax-check the Python blocks in an answer. Returns a list of problems."""
+    probs = []
+    for m in re.finditer(r"```(python|py)?\s*\n(.*?)```", answer or "", re.S | re.I):
+        lang, code = (m.group(1) or "").lower(), m.group(2)
+        if not lang and not re.search(r"^\s*(def |import |from |print\(|class |for |if )", code, re.M):
+            continue
+        try:
+            compile(code, "answer", "exec")
+        except SyntaxError as e:
+            probs.append(f"line {e.lineno}: {e.msg}")
+    return probs
+
+
+def qa_clean_output(t):
+    """Remove hidden thinking or self-talk that some free models leak into the answer."""
+    if not t:
+        return t
+    t = re.sub(r"(?is)<think>.*?</think>\s*", "", t)
+    t = re.sub(r"(?is)^\s*(analysis|thinking|reasoning)\s*:.*?\n\s*(final|answer)\s*:\s*", "", t)
+    m = re.match(r"^\s*([^\n]{0,40}?)\?\?\s*wait,?[^\n]*", t, re.I)
+    if m:
+        t = t[m.end():].lstrip()
+    return t.strip()
+
+
+# ---------- 5. search: several free engines, query rewriting, reading and fusing pages ----------
+_QA_UA = {"User-Agent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36",
+          "Accept-Language": "en-UG,en;q=0.9"}
+_QA_FILLER = re.compile(r"^(please\s+|hey\s+|ok(ay)?\s+|can you\s+|could you\s+|tell me\s+|i want to know\s+|"
+                        r"do you know\s+|search( the web)?( for)?\s+|google\s+|find out\s+|look up\s+)+", re.I)
+_QA_PRON = re.compile(r"\b(he|she|it|they|him|her|his|hers|its|their|them|that|this|those|these|there)\b", re.I)
+
+
+def qa_topic_from(convo):
+    """The subject of the last question, to make sense of 'how old is he?'."""
+    for m in reversed(convo or []):
+        if m.get("role") == "user":
+            q = qa_clean_user(_qa_msg_text(m))
+            if q and len(q) > 6:
+                return _ho_topic(q)
+    return ""
+
+
+def qa_rewrite_query(q, convo=None, route=None):
+    """Turn a chat question into a good search query (follow-ups get the earlier subject; fresh ones get the date)."""
+    s = qa_clean_user(q).strip().rstrip("?!. ")
+    s = _QA_FILLER.sub("", s)
+    s = re.sub(r"\b(give (me )?(your )?sources|with sources|and cite.*|show the steps)\b", "", s, flags=re.I).strip(" ,.")
+    words = s.split()
+    if convo and (len(words) <= 9 and (_QA_PRON.search(s) or re.match(r"^(and|what about|how about|also)\b", s, re.I))):
+        topic = qa_topic_from(convo)
+        if topic and topic.lower() not in s.lower():
+            s = s + " " + topic
+    route = route or qa_route(q)
+    if route == "fresh" and not re.search(r"\b20\d\d\b", s):
+        if re.search(r"\b(latest|news|today|now|current|this week|recent)\b", s, re.I):
+            s += " " + time.strftime("%B %Y")
+        elif _QA_OFFICE.search(s):
+            s += " " + time.strftime("%Y")
+    if re.search(r"\b(ugx|shillings?|boda|kampala|nira|ura|uneb|mtn|airtel|mobile money|ndaga muntu|lc1|district)\b", s, re.I) \
+            and "uganda" not in s.lower():
+        s += " Uganda"
+    return re.sub(r"\s+", " ", s).strip()[:180]
+
+
+def _qa_ddg(query, limit=8):
+    """DuckDuckGo's plain page (free, no key), tried three ways because it sometimes refuses one."""
+    import html as _h
+    tries = [("https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query), None),
+             ("https://html.duckduckgo.com/html/", urllib.parse.urlencode({"q": query, "kl": "wt-wt"}).encode()),
+             ("https://lite.duckduckgo.com/lite/", urllib.parse.urlencode({"q": query}).encode())]
+    for url, data in tries:
+        try:
+            h = dict(_QA_UA)
+            if data:
+                h["Content-Type"] = "application/x-www-form-urlencoded"
+            code, _t, raw = _fetch(url, timeout=10, data=data, headers=h)
+            raw = raw.decode("utf8", "ignore")
+            if code != 200 or ("result__a" not in raw and "result-link" not in raw):
+                continue
+            out, seen = [], set()
+            pat = (r'class="result__a" href="([^"]+)"[^>]*>(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</a>'
+                   if "result__a" in raw else
+                   r'<a[^>]+href="([^"]+)"[^>]*class=.result-link.[^>]*>(.*?)</a>.*?class=.result-snippet.[^>]*>(.*?)</td>')
+            for m in re.finditer(pat, raw, re.S):
+                href, title, snip = m.group(1), m.group(2), m.group(3)
+                qd = urllib.parse.parse_qs(urllib.parse.urlparse(_h.unescape(href)).query).get("uddg")
+                u = qd[0] if qd else _h.unescape(href)
+                if u.startswith("//"):
+                    u = "https:" + u
+                if not u.startswith("http") or "duckduckgo.com" in u:
+                    continue
+                host = urllib.parse.urlparse(u).netloc.replace("www.", "")
+                if host in seen:
+                    continue
+                seen.add(host)
+                clean = lambda t: re.sub(r"\s+", " ", _h.unescape(re.sub(r"<[^>]+>", "", t))).strip()
+                out.append({"title": clean(title)[:110], "url": u, "snip": clean(snip)[:300], "src": host, "date": ""})
+                if len(out) >= limit:
+                    break
+            if out:
+                return out
+        except Exception as e:
+            log(f"QA ddg: {type(e).__name__}")
+    return []
+
+
+def _qa_news(query, limit=6):
+    """Google News headlines for the query (free feed, with dates and the outlet's name)."""
+    out = []
+    try:
+        for it in news_items(query, limit)[:limit]:
+            title, src, url, when = (list(it) + ["", "", "", ""])[:4]
+            out.append({"title": title[:140], "url": url, "snip": title, "src": src or "news", "date": when, "news": True})
+    except Exception as e:
+        log(f"QA news: {type(e).__name__}")
+    return out
+
+
+def _qa_wiki_search(query, limit=2):
+    out = []
+    try:
+        d = json.loads(_ga_get("https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit="
+                               f"{limit}&srsearch=" + urllib.parse.quote(query[:120]), 6))
+        for h in (d.get("query") or {}).get("search") or []:
+            t = h["title"]
+            snip = re.sub(r"<[^>]+>", "", h.get("snippet", ""))
+            out.append({"title": t + " - Wikipedia", "url": "https://en.wikipedia.org/wiki/" + urllib.parse.quote(t.replace(" ", "_")),
+                        "snip": snip, "src": "wikipedia.org", "date": "", "wiki": t})
+    except Exception as e:
+        log(f"QA wiki search: {type(e).__name__}")
+    return out
+
+
+def qa_search(query, fresh=False, limit=8):
+    """Results from several free sources at once: web pages, news (for fresh questions) and Wikipedia."""
+    box = {}
+
+    def run(k, fn):
+        try:
+            box[k] = fn()
+        except Exception:
+            box[k] = []
+    jobs = [("web", lambda: _qa_ddg(query, limit)), ("wiki", lambda: _qa_wiki_search(query, 2))]
+    if fresh:
+        jobs.append(("news", lambda: _qa_news(re.sub(r"\b(latest|news|today|now|current|recent)\b", "", query, flags=re.I).strip() or query, 6)))
+    ts = [threading.Thread(target=run, args=j, daemon=True) for j in jobs]
+    for t in ts:
+        t.start()
+    end = time.time() + 14
+    for t in ts:
+        t.join(max(0.1, end - time.time()))
+    order = (["news", "web", "wiki"] if fresh else ["web", "wiki", "news"])
+    out, seen = [], set()
+    for k in order:
+        for r in box.get(k) or []:
+            key = r["url"].split("#")[0]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(r)
+    return out[:limit + 4]
+
+
+def _qa_page(url, limit=12000):
+    """Readable text and the publish date of a web page."""
+    import html as _h
+    raw = _ho_get(url, timeout=10)
+    date = ""
+    m = re.search(r'(?i)(article:published_time|datePublished|pubdate|og:updated_time)["\']?\s*(content=|:)\s*["\']([0-9]{4}-[0-9]{2}-[0-9]{2})', raw)
+    if m:
+        date = m.group(3)
+    raw = re.sub(r"(?is)<(script|style|noscript|svg|header|footer|nav|form|aside|figure)[^>]*>.*?</\1>", " ", raw)
+    mm = re.search(r"(?is)<(article|main)[^>]*>(.*?)</\1>", raw)
+    body = mm.group(2) if mm and len(mm.group(2)) > 1500 else raw
+    paras = re.findall(r"(?is)<(?:p|li|h[1-4]|td|blockquote)[^>]*>(.*?)</(?:p|li|h[1-4]|td|blockquote)>", body)
+    text = "\n".join(re.sub(r"\s+", " ", _h.unescape(re.sub(r"<[^>]+>", "", x))).strip() for x in paras)
+    text = "\n".join(l for l in text.split("\n") if len(l) > 35 and not re.search(r"(?i)cookie|subscribe|sign up|newsletter|all rights reserved", l))
+    return text[:limit], date
+
+
+def qa_best_paras(text, q, limit=1800):
+    """The paragraphs of a page that best match the question (instead of just the top of the page)."""
+    words = set(w for w in re.findall(r"[a-z0-9']+", (q or "").lower()) if w not in _LIB_STOP and len(w) > 2)
+    paras = [p for p in (text or "").split("\n") if p.strip()]
+    if not paras:
+        return ""
+    scored = []
+    for i, p in enumerate(paras):
+        pw = set(re.findall(r"[a-z0-9']+", p.lower()))
+        s = len(words & pw) * 3 + (2 if re.search(r"\d", p) else 0) - i * 0.02
+        scored.append((s, i, p))
+    keep = sorted(sorted(scored, key=lambda x: -x[0])[:8], key=lambda x: x[1])
+    out = ""
+    for _s, _i, p in keep:
+        if len(out) + len(p) > limit:
+            break
+        out += p + "\n"
+    return out.strip() or paras[0][:limit]
+
+
+_QA_NEWSY = re.compile(r"\b(news|headlines?|latest|today|tonight|yesterday|this week|breaking|happening|who won|score|"
+                       r"results?|election|died|announced|launch|released|price|rate|weather)\b", re.I)
+_QA_CUR = {"dollar": "USD", "usd": "USD", "euro": "EUR", "eur": "EUR", "pound": "GBP", "gbp": "GBP", "shilling": "KES",
+           "kes": "KES", "ksh": "KES", "tsh": "TZS", "tzs": "TZS", "rand": "ZAR", "naira": "NGN", "yuan": "CNY",
+           "dirham": "AED", "rupee": "INR"}
+
+
+def qa_live_sources(q):
+    """Exact live numbers from free data services (exchange rates, coin prices) as sources."""
+    out = []
+    ql = (q or "").lower()
+    try:
+        if re.search(r"exchange rate|dollar|usd|euro|pound|shilling|ugx|forex|currency|rate", ql):
+            r = usd_rates()
+            if r.get("UGX"):
+                lines = [f"1 USD = {r['UGX']:,.2f} UGX"]
+                for word, code in _QA_CUR.items():
+                    if word in ql and code != "USD" and r.get(code):
+                        lines.append(f"1 {code} = {r['UGX'] / r[code]:,.2f} UGX")
+                out.append({"title": "Live exchange rates (USD base)", "url": "https://open.er-api.com/v6/latest/USD",
+                            "src": "open.er-api.com", "date": time.strftime("%d %b %Y"), "text": "; ".join(dict.fromkeys(lines)) +
+                            ". Mid-market rate; banks and forex bureaus buy and sell a little below and above it."})
+        m = re.search(r"\b(bitcoin|btc|ethereum|eth|usdt|bnb|solana|sol)\b", ql)
+        if m:
+            c = crypto_price({"bitcoin": "btc", "ethereum": "eth", "solana": "sol"}.get(m.group(1), m.group(1)))
+            if c and c.get("usd"):
+                out.append({"title": f"Live {m.group(1).upper()} price", "url": "https://www.coingecko.com/",
+                            "src": "coingecko.com", "date": time.strftime("%d %b %Y %H:%M"),
+                            "text": f"{m.group(1).upper()} = ${c['usd']:,.2f}" + (f", 24h change {c['chg']:+.1f}%" if c.get("chg") is not None else "")})
+    except Exception as e:
+        log(f"QA live: {type(e).__name__}")
+    return out
+
+
+def qa_library_sources(q):
+    out = []
+    try:
+        for doc in brain_library(q, 2):
+            out.append({"title": doc.get("title", "Guide"), "url": doc.get("url") or BRAIN_REPO_PAGE,
+                        "src": doc.get("source", "library"), "date": doc.get("as_of", ""), "text": str(doc.get("text"))[:2000]})
+    except Exception:
+        pass
+    return out
+
+
+def qa_gather(question, convo=None, pages=4, queries=None, fresh=None, per_page=1800):
+    """Search, open the best pages at the same time, and keep the parts that answer the question.
+    Returns a list of numbered sources: {n, title, url, src, date, text}."""
+    route = qa_route(question)
+    fresh = (route == "fresh" and bool(_QA_NEWSY.search(question))) if fresh is None else fresh
+    queries = queries or [qa_rewrite_query(question, convo, route)]
+    pre = qa_live_sources(question) + qa_library_sources(question)
+    for p in pre:
+        live_step("Checking " + p["src"])
+    results = []
+    for qq in queries:
+        live_step("Searching: " + qq[:70])
+        for r in qa_search(qq, fresh=fresh):
+            if r["url"] not in [x["url"] for x in results]:
+                results.append(r)
+    if not results and not pre:
+        return []
+    got = {}
+    skip = re.compile(r"(youtube\.com|facebook\.com|instagram\.com|tiktok\.com|x\.com|twitter\.com|news\.google\.com|pinterest)")
+
+    def read(i, r):
+        try:
+            if r.get("wiki"):
+                _t, text, _u = ga_wiki(r["wiki"], full=True, timeout=8)
+                d = ""
+            else:
+                text, d = _qa_page(r["url"])
+            if text and len(text) > 250:
+                got[i] = (qa_best_paras(text, question, per_page), d)
+        except Exception:
+            pass
+    ts = []
+    want = [(i, r) for i, r in enumerate(results) if not skip.search(r["url"])][:pages + 2]
+    if want:
+        live_step(f"Reading {len(want)} pages")
+    for i, r in want:
+        th = threading.Thread(target=read, args=(i, r), daemon=True)
+        th.start()
+        ts.append(th)
+    end = time.time() + 15
+    for th in ts:
+        th.join(max(0.1, end - time.time()))
+    sources, n_pages = list(pre), 0
+    for i, r in enumerate(results):
+        if i in got and n_pages < pages:
+            n_pages += 1
+            text, d = got[i]
+            sources.append(dict(r, text=text, date=r.get("date") or d))
+        elif r.get("snip") and len(sources) < pages + 5 and (r.get("news") or i not in got):
+            sources.append(dict(r, text=r["snip"]))
+    for k, s in enumerate(sources, 1):
+        s["n"] = k
+    return sources
+
+
+def qa_sources_block(sources, n=6):
+    lines = []
+    for s in sources[:n]:
+        lines.append(f"[{s['n']}] {s['src']}" + (f" ({s['date']})" if s.get("date") else "") + f" - {s['title']}\n{s['text']}")
+    return "\n\n".join(lines)
+
+
+def qa_render_sources(answer, sources, limit=6):
+    """Kivy markup: the answer, then numbered sources the person can tap."""
+    used = set(int(x) for x in re.findall(r"\[(\d{1,2})\]", answer or ""))
+    shown = [s for s in sources if s["n"] in used] or sources[:3]
+    body = md_to_markup(answer)
+    body = re.sub(r"(?<!&bl;)\[(\d{1,2})\]", r"[color=8ab4ff][sup]\1[/sup][/color]", _qa_esc_keep(body))
+    lines = ["", "[size=13sp][b]Sources[/b][/size]"]
+    for s in shown[:limit]:
+        k = _qa_key("src", s["url"], QA_SRC)
+        when = f" · {_esc(s['date'])}" if s.get("date") else ""
+        lines.append(f"[size=13sp][ref={k}][color=8ab4ff]{s['n']}. [u]{_esc(s['title'][:70])}[/u][/color][/ref]"
+                     f"[color=9aa0c0] {_esc(s['src'])}{when}[/color][/size]")
+    return body + "\n".join(lines)
+
+
+def _qa_esc_keep(t):
+    return t
+
+
+def qa_extractive(question, sources):
+    """When no AI can answer: the best lines straight from the sources, with their numbers."""
+    if not sources:
+        return None
+    words = set(w for w in re.findall(r"[a-z0-9']+", question.lower()) if w not in _LIB_STOP and len(w) > 2)
+    picks = []
+    def rel(s):
+        return len(words & set(re.findall(r"[a-z0-9']+", (s.get("title", "") + " " + s.get("text", "")).lower())))
+    ranked = sorted(sources[:8], key=lambda s: -rel(s))
+    ranked = [s for s in ranked if rel(s) >= max(1, min(2, len(words) // 2))]
+    for s in ranked[:6]:
+        sents = re.split(r"(?<=[.!?])\s+", s.get("text") or "")
+        best = max(sents, key=lambda x: len(words & set(re.findall(r"[a-z0-9']+", x.lower()))) + (0.5 if re.search(r"\d", x) else 0),
+                   default="")
+        if best and len(best) > 25:
+            picks.append(f"- {best.strip()[:260]} [{s['n']}]")
+    if not picks:
+        return None
+    return ("The AI helpers are busy, so here is what the sources say:\n" + "\n".join(picks[:5]))
+
+
+def qa_free_wait(max_wait=30):
+    """When every free AI is resting for a few seconds, wait for the first one (quietly) instead of failing."""
+    try:
+        with _FREE_LOCK:
+            ready = [t for t in FREE_COOL.values() if t > time.time()]
+        hosts = set(_free_host(u) for u, _m in FREE_WAYS)
+        if ready and len(ready) >= len(hosts):
+            gap = min(ready) - time.time()
+            if 0 < gap <= max_wait:
+                live_step("Waiting a moment for a free AI")
+                time.sleep(gap + 0.5)
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def qa_free(prompt, system=None, convo=None, max_tokens=800, max_wait=30):
+    r = free_ai(prompt, system=system, convo=convo, max_tokens=max_tokens)
+    if (not r or is_fail_reply(r)) and qa_free_wait(max_wait):
+        r = free_ai(prompt, system=system, convo=convo, max_tokens=max_tokens)
+    return r
+
+
+def qa_ai(prompt, system, max_tokens=900, convo=None, deadline=60):
+    """The best AI the person has (their own keys first), raced with the free ones; never a raw error."""
+    def main():
+        if os.path.exists(KEY_FILE):
+            r = _ask_gemini_only(prompt[:16000], max_tokens, False, False, system)
+            if r and not is_fail_reply(r):
+                return r
+        for prov in ranked_providers()[:2]:
+            r = other_ai(prov, prompt[:12000], system=system, convo=convo, max_tokens=max_tokens)
+            if r and not is_fail_reply(r):
+                return r
+        return None
+    if connected_ais():
+        try:
+            r = main()
+        except Exception:
+            r = None
+        if r:
+            return qa_clean_output(r)
+    try:
+        r = qa_free(prompt[:9000], system=system, convo=convo, max_tokens=max_tokens, max_wait=min(35, deadline / 2))
+    except Exception:
+        r = None
+    return qa_clean_output(r) if r and not is_fail_reply(r) else None
+
+
+def qa_research(question, convo=None, deep=False):
+    """Web answer: rewrite the query, gather and fuse several pages, answer with numbered citations.
+    Returns (markup_answer, plain_answer) or (None, None)."""
+    q = qa_clean_user(question)
+    sources = qa_gather(q, convo=convo, pages=4)
+    if not sources:
+        try:
+            title, text, url = ga_wiki(_ho_topic(q), full=False, timeout=6)
+            if text:
+                sources = [{"n": 1, "title": title + " - Wikipedia", "url": url, "src": "wikipedia.org", "date": "", "text": text[:2500]}]
+        except Exception:
+            pass
+    if not sources:
+        return None, None
+    live_step(f"Comparing {len(sources)} sources and writing the answer")
+    ctx = ""
+    if convo:
+        last = [(m.get("role"), qa_clean_user(_qa_msg_text(m))[:300]) for m in convo[-4:]]
+        ctx = "Recent chat (for context):\n" + "\n".join(f"{r}: {t}" for r, t in last if t) + "\n\n"
+    prompt = (ctx + f"Today is {time.strftime('%d %B %Y')}.\nQuestion: {q}\n\nNumbered web sources:\n" +
+              qa_sources_block(sources, 7))
+    system = qa_persona("fresh", brain_prompt("web"))
+    ans = qa_ai(prompt, system, max_tokens=900, deadline=50)
+    if not ans:
+        ans = qa_extractive(q, sources)
+        if not ans:
+            return None, None
+    ans = qa_strip_sources_list(ans)
+    return qa_render_sources(ans, sources), ans
+
+
+def qa_strip_sources_list(ans):
+    """The app shows its own tappable source list, so a list the AI wrote is removed."""
+    return re.sub(r"(?is)\n+\s*(\*\*)?(sources?|references?)(\*\*)?\s*:?\s*(\*\*)?\s*\n?(\s*([-*\d\[].*|\w[^\n]{0,80}https?://\S+)\n?)*\s*$",
+                  "\n", ans or "").rstrip()
+
+
+# ---------- 6. the free answer path, rebuilt (used whenever no key or as the fast backup) ----------
+_qa_prev_ga_free = ga_free
+
+
+def ga_free(prompt, convo=None):
+    """Free backup AI with the shared rules, the right mode, exact sums, library facts and self-checks."""
+    try:
+        said = qa_clean_user(prompt)
+        route = qa_route(said)
+        extra = []
+        facts = qa_calc_facts(said) if route in ("math", "homework", "chat", "fact") else []
+        if facts:
+            extra.append("Calculator results (exact, trust these): " + "; ".join(facts))
+        try:
+            ctx = ga_context(said, web=False)
+            if ctx:
+                extra.append(ctx[:2500])
+        except Exception:
+            pass
+        refs = []
+        if route in ("fact", "homework") and net_online():
+            try:
+                title, text, url = ga_wiki(_ho_topic(said), timeout=4)
+                if text and len(text) > 120:
+                    refs.append({"n": 1, "title": title + " - Wikipedia", "url": url, "src": "wikipedia.org", "date": "", "text": text[:1500]})
+            except Exception:
+                pass
+        try:
+            for doc in brain_library(said, 1):
+                refs.append({"n": len(refs) + 1, "title": doc.get("title", "Guide"), "url": doc.get("url") or BRAIN_REPO_PAGE,
+                             "src": doc.get("source", APP_NAME_FREE + " library"), "date": doc.get("as_of", ""),
+                             "text": str(doc.get("text"))[:2000]})
+        except Exception:
+            pass
+        if refs:
+            extra.append("Reference text (cite as [n] only if you use it):\n" + qa_sources_block(refs))
+        system = qa_persona(route, "\n".join(extra))
+        convo2 = [m for m in (convo or []) if _qa_msg_text(m)]
+        r = qa_free(prompt, system=system, convo=convo2, max_tokens=1100 if route in ("code", "homework", "math") else 800,
+                    max_wait=25)
+        if not r or is_fail_reply(r):
+            return r
+        r = qa_clean_output(r)
+        r = qa_self_check(r, route, prompt, system, convo2)
+        if refs and re.search(r"\[\d\]", r):
+            return qa_render_sources(qa_strip_sources_list(r), refs)
+        return r
+    except Exception as e:
+        log(f"QA free: {type(e).__name__}: {e}")
+        return _qa_prev_ga_free(prompt, convo=convo)
+
+
+def qa_self_check(r, route, prompt, system, convo):
+    """Maths: re-do each written sum. Code: check it compiles. One repair if needed, else an honest note."""
+    try:
+        if route in ("math", "homework", "chat", "fact"):
+            bad = qa_check_math(r)
+            if bad:
+                live_step("Checking the maths")
+                fix = free_ai(prompt + "\n\n(Your last answer had arithmetic slips: " +
+                              "; ".join(f"{w} should be {c}" for w, c in bad) + ". Write the corrected full answer.)",
+                              system=system, convo=convo, max_tokens=1000)
+                fix = qa_clean_output(fix) if fix and not is_fail_reply(fix) else None
+                if fix and not qa_check_math(fix):
+                    return fix
+                return r + "\n\n[i]Checked: " + "; ".join(c for _w, c in bad) + "[/i]"
+        if route == "code":
+            probs = qa_check_code(r)
+            if probs:
+                live_step("Testing the code")
+                fix = free_ai(prompt + "\n\n(Your code has a syntax error: " + "; ".join(probs) +
+                              ". Write the full corrected answer with complete code.)", system=system, convo=convo, max_tokens=1300)
+                fix = qa_clean_output(fix) if fix and not is_fail_reply(fix) else None
+                if fix and not qa_check_code(fix):
+                    return fix
+    except Exception as e:
+        log(f"QA check: {type(e).__name__}")
+    return r
+
+
+# ---------- 7. more free AIs, each limit tracked on its own, and cleaner output ----------
+FREE_WAYS = [
+    ("https://text.pollinations.ai/openai", "openai"),
+    ("https://api.llm7.io/v1/chat/completions", "glm-5.3-flash"),
+    ("https://api.llm7.io/v1/chat/completions", "gpt-oss:20b"),
+    ("https://api.llm7.io/v1/chat/completions", "default"),
+    ("https://api.llm7.io/v1/chat/completions", "codestral-latest"),
+    ("https://api.llm7.io/v1/chat/completions", "mistral-Nemo-Instruct-2407"),
+]
+_qa_prev_free_ai = free_ai
+
+
+def free_ai(prompt, system=None, convo=None, max_tokens=700, _waited=False):
+    """The free AIs (see FREE_WAYS), with hidden thinking removed from what they write."""
+    r = _qa_prev_free_ai(prompt, system=system, convo=convo, max_tokens=max_tokens, _waited=_waited)
+    return qa_clean_output(r) if isinstance(r, str) else r
+
+
+def qa_reply(q, convo=None):
+    """The answer path without the screen (used by tests and benchmarks): returns (text, way)."""
+    qa_refresh_rules()
+    route = qa_route(q)
+    if route == "fresh" and net_online():
+        r, plain = qa_research(q, convo=convo)
+        if r:
+            return r, "web"
+    pre = v110_prompt_prefix(q)
+    text = (pre + "\n" + q) if pre else q
+    r = ga_free(text, convo=convo)
+    if not r or is_fail_reply(r):
+        r = rescue_answer(text, convo=convo) or NET_AI_MSG
+    return r, route
+
+
+# ---------- 8. how answers look: code blocks, inline code, tables, citations ----------
+_qa_prev_md = md_to_markup
+
+
+def md_to_markup(text, pal=None):
+    """Adds code blocks (monospace, exact characters) and small tables to the simple markdown the app shows."""
+    if not text or not isinstance(text, str):
+        return text
+    if "[" in text and "[/" in text and "```" not in text:
+        return _qa_prev_md(text, pal)
+    try:
+        parts = re.split(r"```[ \t]*([\w+#.-]*)[ \t]*\n(.*?)```", text, flags=re.S)
+        out = []
+        for i in range(0, len(parts), 3):
+            seg = parts[i]
+            seg = _qa_tables(seg)
+            seg = re.sub(r"`([^`\n]{1,80})`", lambda m: "\u0001" + m.group(1) + "\u0002", seg)
+            seg = _qa_prev_md(seg, pal) if not ("[" in seg and "[/" in seg) else seg
+            seg = re.sub("\u0001(.*?)\u0002", lambda m: "[font=RobotoMono-Regular][color=ffd27a]" + _esc(m.group(1)) +
+                         "[/color][/font]", seg)
+            out.append(seg)
+            if i + 2 < len(parts):
+                lang, code = parts[i + 1], parts[i + 2].rstrip("\n")
+                head = f"[size=12sp][color=9aa0c0]{_esc(lang or 'code')}[/color][/size]\n"
+                out.append("\n" + head + "[font=RobotoMono-Regular][size=14sp][color=c8f7c5]" + _esc(code) +
+                           "[/color][/size][/font]\n")
+        return "".join(out)
+    except Exception:
+        return _qa_prev_md(text, pal)
+
+
+def _qa_tables(seg):
+    """Markdown tables don't fit a phone screen: each row becomes one readable line."""
+    if "|" not in seg:
+        return seg
+    lines, out, header = seg.split("\n"), [], None
+    for ln in lines:
+        s = ln.strip()
+        if s.startswith("|") and s.endswith("|") and s.count("|") >= 3:
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
+                continue
+            if header is None:
+                header = cells
+                out.append("**" + " · ".join(cells) + "**")
+            else:
+                out.append("- " + " · ".join(cells))
+        else:
+            header = None if not s else header
+            out.append(ln)
+    return "\n".join(out)
+
+
+# ---------- 9. read aloud: on/off, read again, never read links or markup ----------
+_qa_prev_tts = tts
+_QA_TTS = {"force": False, "last": ""}
+
+
+def tts(text):
+    try:
+        if not isinstance(text, str):
+            return _qa_prev_tts(text)
+        t = re.split(r"\n\s*(\[size=13sp\]\[b\])?(Sources|Related|Ask next)\b", text)[0]
+        t = re.sub(r"\[/?[a-z_]+(=[^\]]*)?\]", "", t)
+        t = re.sub(r"https?://\S+", "", t)
+        t = re.sub(r"```.*?```", " (code shown on screen) ", t, flags=re.S)
+        t = t.replace("&bl;", "[").replace("&br;", "]").replace("&amp;", "&")
+        t = re.sub(r"[*#`|_]+", "", t)
+        t = re.sub(r"\[\d+\]", "", t).strip()
+        _QA_TTS["last"] = t
+        if not t:
+            return None
+        if not qa_settings().get("voice", True) and not _QA_TTS["force"]:
+            return None
+        _QA_TTS["force"] = False
+        return _qa_prev_tts(t[:3500])
+    except Exception:
+        return _qa_prev_tts(text)
+
+
+# ---------- 10. chat: web answers when the question needs today's facts; follow-ups you can tap ----------
+_qa_prev_chat = ChatScreen.chat
+
+
+def _qa_chat(self, text):
+    said = text
+    try:
+        qa_refresh_rules()
+        route = qa_route(said)
+        if route != "fresh":
+            self._ho_q = said if ho_wants_media(said) else ""
+            return _ho_prev_chat(self, text)            # normal answer (keys first, free AIs as backup)
+        if not net_online() or getattr(self, "busy", False) or is_distressed(said):
+            return _qa_prev_chat(self, text)
+        self._ho_q = said if ho_wants_media(said) else ""
+        convo = list(history)
+
+        def run():
+            self.busy = True
+            self._busy_since = time.time()
+            self.live_begin("Searching the web", "Understanding your question")
+            r, plain = None, None
+            try:
+                r, plain = qa_research(said, convo=convo)
+            except Exception as e:
+                log(f"QA research: {type(e).__name__}: {e}")
+            if plain:
+                try:
+                    history.append({"role": "user", "parts": [{"text": said}]})
+                    history.append({"role": "model", "parts": [{"text": plain}]})
+                    save_memory()
+                    offline_cache_add(said, plain)
+                except Exception:
+                    pass
+
+            def done(*_):
+                self.busy = False
+                self.live_end(bool(r))
+                if r:
+                    self.say(r)
+                else:
+                    _ho_prev_chat(self, said)          # the web was slow: answer the normal way
+            Clock.schedule_once(done, 0)
+        threading.Thread(target=run, daemon=True).start()
+        return
+    except Exception as e:
+        log(f"QA chat: {type(e).__name__}: {e}")
+    return _qa_prev_chat(self, text)
+
+
+ChatScreen.chat = _qa_chat
+_qa_prev_say = ChatScreen.say
+
+
+def _qa_say(self, text, plain=False):
+    try:
+        if isinstance(text, str) and not plain and "Ask next:" in text:
+            body, follow = split_follow_ups(text)
+            if follow and qa_settings().get("followups", True):
+                if not ("[" in body and "[/" in body):
+                    body = md_to_markup(body)
+                chips = []
+                for q in follow[:3]:
+                    k = _qa_key("ask", q, QA_ASK)
+                    chips.append(f"[ref={k}][color=ffc84d]\u203a [u]{_esc(q)}[/u][/color][/ref]")
+                text = body + "\n\n[size=13sp][color=9aa0c0]Related[/color]\n" + "\n".join(chips) + "[/size]"
+            else:
+                text = body
+    except Exception as e:
+        log(f"QA say: {type(e).__name__}")
+    return _qa_prev_say(self, text, plain)
+
+
+ChatScreen.say = _qa_say
+_qa_prev_ref = ChatScreen._on_chat_ref
+
+
+def _qa_ref(self, w, ref):
+    try:
+        if isinstance(ref, str) and ref in QA_ASK:
+            q = QA_ASK[ref]
+            Clock.schedule_once(lambda *_: self.handle(q), 0.05)
+            return
+        if isinstance(ref, str) and ref in QA_SRC:
+            try:
+                open_in_genius(QA_SRC[ref], "Source")
+            except Exception:
+                open_url(QA_SRC[ref])
+            return
+        if ref == "qa:storage":
+            Clock.schedule_once(lambda *_: storage_screen(self), 0.05)
+            return
+    except Exception as e:
+        log(f"QA ref: {type(e).__name__}")
+    return _qa_prev_ref(self, w, ref)
+
+
+ChatScreen._on_chat_ref = _qa_ref
+_qa_prev_rescue = rescue_answer
+
+
+def rescue_answer(prompt, convo=None, max_tokens=700, system=None, json_mode=False):
+    """When every AI fails on a chat question: answer from Wikipedia or the news instead of a 'busy' message."""
+    r = _qa_prev_rescue(prompt, convo=convo, max_tokens=max_tokens, system=system, json_mode=json_mode)
+    if r or json_mode or system:
+        return r
+    try:
+        q = qa_clean_user(prompt)
+        if 6 < len(q) < 300 and net_online() and qa_route(q) in ("fact", "fresh", "homework"):
+            src = qa_gather(q, convo=convo, pages=2)
+            ans = qa_extractive(q, src)
+            if ans:
+                return qa_render_sources(ans, src, 4)
+    except Exception as e:
+        log(f"QA fallback: {type(e).__name__}")
+    return r
+
+
+# ---------- 11. deep research: several searches, many pages, one cited report in the chat ----------
+def qa_deep_queries(topic):
+    t = re.sub(r"\s+", " ", topic).strip(" ?.")
+    y = time.strftime("%Y")
+    qs = [t, f"{t} latest {y}", f"{t} facts statistics"]
+    if "uganda" not in t.lower():
+        qs.append(f"{t} Uganda")
+    else:
+        qs.append(f"{t} challenges and solutions")
+    return qs[:4]
+
+
+def qa_deep_research(topic, convo=None):
+    """Returns (markup, plain) of a cited research brief, or (None, None)."""
+    sources = qa_gather(topic, convo=convo, pages=7, queries=qa_deep_queries(topic), fresh=True, per_page=1400)
+    if not sources:
+        return None, None
+    live_step(f"Reading done: {len(sources)} sources. Writing the report")
+    prompt = (f"Today is {time.strftime('%d %B %Y')}.\nResearch question: {topic}\n\nNumbered sources:\n" +
+              qa_sources_block(sources, 10))
+    ans = qa_ai(prompt, qa_persona("fresh", brain_prompt("research")), max_tokens=1800, deadline=110)
+    if not ans:
+        ans = qa_extractive(topic, sources)
+        if not ans:
+            return None, None
+    ans = qa_strip_sources_list(ans)
+    return qa_render_sources(ans, sources, 10), ans
+
+
+# ---------- 12. files: PDFs with text read on the phone (no upload), text files with the free AI ----------
+def qa_pdf_text(path, limit=60000):
+    """Plain-Python text from a normal (not scanned) PDF. Returns '' when it can't."""
+    import zlib
+    try:
+        data = open(path, "rb").read()
+        if not data.startswith(b"%PDF"):
+            return ""
+        chunks = []
+        for m in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", data, re.S):
+            raw = m.group(1)
+            head = data[max(0, m.start() - 300):m.start()]
+            if b"FlateDecode" in head:
+                try:
+                    raw = zlib.decompress(raw)
+                except Exception:
+                    try:
+                        raw = zlib.decompressobj().decompress(raw)
+                    except Exception:
+                        continue
+            if b"BT" not in raw:
+                continue
+            for bt in re.findall(rb"BT(.*?)ET", raw, re.S):
+                line = []
+                for tm in re.finditer(rb"\((.*?)(?<!\\)\)\s*(Tj|'|\")|\[(.*?)\]\s*TJ|(T\*|Td|TD)", bt, re.S):
+                    if tm.group(1) is not None:
+                        line.append(_qa_pdf_str(tm.group(1)))
+                    elif tm.group(3) is not None:
+                        parts = re.findall(rb"\((.*?)(?<!\\)\)|(-?\d+\.?\d*)", tm.group(3), re.S)
+                        for s, num in parts:
+                            if s:
+                                line.append(_qa_pdf_str(s))
+                            elif num and float(num) < -200:
+                                line.append(" ")
+                    else:
+                        line.append("\n")
+                chunks.append("".join(line))
+            if sum(len(c) for c in chunks) > limit:
+                break
+        text = re.sub(r"[ \t]+", " ", "\n".join(chunks))
+        text = re.sub(r"\n\s*\n+", "\n", text).strip()
+        letters = sum(ch.isalpha() for ch in text)
+        return text[:limit] if len(text) > 150 and letters > len(text) * 0.5 else ""
+    except Exception as e:
+        log(f"QA pdf: {type(e).__name__}")
+        return ""
+
+
+def _qa_pdf_str(b):
+    b = re.sub(rb"\\([nrtbf()\\])", lambda m: {b"n": b"\n", b"r": b"", b"t": b" ", b"b": b"", b"f": b"",
+                                                b"(": b"(", b")": b")", b"\\": b"\\"}[m.group(1)], b)
+    b = re.sub(rb"\\([0-7]{1,3})", lambda m: bytes([int(m.group(1), 8) & 255]), b)
+    return b.decode("latin-1", "ignore")
+
+
+_qa_prev_ask_file = ask_about_file
+
+
+def ask_about_file(path, kind, question):
+    """No key needed for text files and normal PDFs: their words are read here and a free AI answers from them."""
+    try:
+        if not os.path.exists(KEY_FILE) and not connected_ais() and kind in ("text", "pdf") and os.path.exists(path):
+            q = (question or "").strip() or "Explain what this is and the important information in it, simply."
+            if kind == "text":
+                words = open(path, encoding="utf8", errors="ignore").read()[:40000]
+            else:
+                words = qa_pdf_text(path)
+            if words:
+                live_step(f"Read {len(words):,} characters on your phone")
+                sysm = (qa_persona("fact") + "\nThe text below comes from the user's file " + os.path.basename(path) +
+                        ". Answer only from it; if it doesn't say, say so. Quote short key lines exactly.")
+                body = words if len(words) <= 8000 else qa_best_paras(words, q, 7500)
+                r = free_ai("File text:\n" + body + "\n\nQuestion: " + q, system=sysm, max_tokens=900)
+                if r and not is_fail_reply(r):
+                    return r
+    except Exception as e:
+        log(f"QA file: {type(e).__name__}")
+    return _qa_prev_ask_file(path, kind, question)
+
+
+# ---------- 13. YouTube links: summarise from the video's own captions or description ----------
+_qa_prev_read_link = hk_read_link
+
+
+def hk_read_link(url, question=None):
+    try:
+        m = re.search(r"(?:youtube\.com/(?:watch\?v=|shorts/|live/)|youtu\.be/)([\w-]{11})", url or "")
+        if m:
+            vid = m.group(1)
+            got = qa_youtube_text(vid)
+            if got:
+                title, text = got
+                ask = question or "Summarise this video: what it is about, the main points, and anything useful to remember."
+                prompt = f"Video title: {title}\nVideo link: https://youtu.be/{vid}\n\nVideo words:\n{text[:8000]}\n\nQuestion: {ask}"
+                ans = qa_ai(prompt, qa_persona("fact", brain_prompt("link")), max_tokens=900)
+                if ans:
+                    HK_LINK.update(url=url, text=text[:14000], title=title)
+                    return f"[b]{_esc(title)}[/b]\n{md_to_markup(ans)}\n\n[size=13sp]Ask more, e.g. \"page: what did they say about prices?\"[/size]", None
+    except Exception as e:
+        log(f"QA youtube: {type(e).__name__}")
+    return _qa_prev_read_link(url, question)
+
+
+def qa_youtube_text(vid):
+    """(title, words) from a YouTube video's captions, or its description when there are none."""
+    import html as _h
+    raw = _ho_get("https://www.youtube.com/watch?hl=en&v=" + vid, timeout=12)
+    tm = re.search(r'"title":"(.*?)","lengthSeconds"', raw) or re.search(r"<title>(.*?)</title>", raw)
+    title = tm.group(1) if tm else "YouTube video"
+    try:
+        title = json.loads('"' + title + '"')
+    except Exception:
+        pass
+    words = ""
+    cm = re.search(r'"captionTracks":(\[.*?\])', raw)
+    if cm:
+        try:
+            tracks = json.loads(cm.group(1))
+            tracks.sort(key=lambda t: 0 if str(t.get("languageCode", "")).startswith("en") else 1)
+            xml = _ho_get(tracks[0]["baseUrl"], timeout=12)
+            words = " ".join(_h.unescape(re.sub(r"<[^>]+>", "", x)) for x in re.findall(r"<text[^>]*>(.*?)</text>", xml, re.S))
+        except Exception:
+            words = ""
+    if len(words) < 200:
+        dm = re.search(r'"shortDescription":"(.*?)","', raw)
+        if dm:
+            try:
+                words = "Description: " + json.loads('"' + dm.group(1) + '"')
+            except Exception:
+                words = "Description: " + dm.group(1)
+    return (str(title).replace(" - YouTube", ""), words) if len(words) > 80 else None
+
+
+# ---------- 14. new commands ----------
+_QA_HELP = (
+    "[b]Smarter answers[/b]\n"
+    "- Questions about today (news, prices, who won, who leads) are searched on the web and answered with numbered sources you can tap.\n"
+    "- [b]deep research <topic>[/b]: several searches, many pages, one report with sources.\n"
+    "- [b]step by step <question>[/b] or [b]steps on[/b] / [b]steps off[/b]: show the working.\n"
+    "- [b]my instructions: <how you want answers>[/b], [b]instructions[/b], [b]clear instructions[/b].\n"
+    "- [b]voice off[/b] / [b]voice on[/b], [b]read aloud[/b] (reads the last answer again).\n"
+    "- [b]related off[/b] / [b]related on[/b]: the follow-up questions under answers.\n"
+    "- [b]chat summary[/b]: what I remember from this long chat.\n"
+    "- [b]storage[/b]: where everything is kept. [b]brain update[/b]: get the newest knowledge.\n"
+    "- Add a PDF or text file with +, then ask about it (works without a key for normal PDFs).")
+
+
+def _qa_handle(screen, line, action, arg, low):
+    lw = (line or "").strip().lower().strip(" .!?")
+    raw = (line or "").strip()
+    if lw in ("voice off", "mute", "stop reading", "dont read aloud", "don't read aloud", "read aloud off", "quiet answers"):
+        qa_set("voice", False)
+        screen.say("Okay, I'll stay quiet. Say [b]read aloud[/b] to hear an answer, or [b]voice on[/b] to switch it back on.")
+        return True
+    if lw in ("voice on", "read aloud on", "unmute", "speak answers"):
+        qa_set("voice", True)
+        screen.say("Voice is on: I'll read answers aloud.")
+        return True
+    if lw in ("read aloud", "read it again", "read that", "read it", "say it again", "repeat that"):
+        _QA_TTS["force"] = True
+        last = getattr(screen, "_last_said", "") or _QA_TTS.get("last", "")
+        tts(last if isinstance(last, str) else "")
+        return True
+    if lw in ("related off", "follow ups off", "followups off", "suggestions off"):
+        qa_set("followups", False)
+        screen.say("Okay, no follow-up questions under answers. Say [b]related on[/b] to bring them back.")
+        return True
+    if lw in ("related on", "follow ups on", "followups on", "suggestions on"):
+        qa_set("followups", True)
+        screen.say("Follow-up questions are back under answers. Tap one to ask it.")
+        return True
+    if lw in ("steps on", "step by step on", "thinking mode on", "show working on", "show my working"):
+        qa_set("steps", True)
+        screen.say("Step-by-step is on: maths, homework and reasoning answers show numbered working. Say [b]steps off[/b] to stop.")
+        return True
+    if lw in ("steps off", "step by step off", "thinking mode off", "show working off"):
+        qa_set("steps", False)
+        screen.say("Step-by-step is off. Answers go straight to the point again.")
+        return True
+    m = re.match(r"^(?:please\s+)?(?:think\s+)?step[- ]by[- ]step[:,]?\s+(.{3,})$", raw, re.I) or \
+        re.match(r"^(?:solve|explain) (?:it )?step[- ]by[- ]step[:,]?\s+(.{3,})$", raw, re.I)
+    if m:
+        screen.chat("[Step-by-step mode: number the steps, check each one, final answer in bold.]\n" + m.group(1))
+        return True
+    m = re.match(r"^(?:my instructions|set instructions|custom instructions|instructions|always)\s*[:\-]\s*(.{3,600})$", raw, re.I)
+    if m:
+        qa_set("instructions", m.group(1).strip())
+        qa_refresh_rules()
+        screen.say("Saved. Every answer will follow this:\n[i]" + _esc(m.group(1).strip()) + "[/i]\n"
+                   "Say [b]instructions[/b] to see it or [b]clear instructions[/b] to remove it.")
+        return True
+    if lw in ("instructions", "my instructions", "custom instructions", "show instructions"):
+        cur = qa_settings().get("instructions")
+        screen.say(("Your instructions for every answer:\n[i]" + _esc(cur) + "[/i]") if cur else
+                   "You have no instructions yet. Say it like: [b]my instructions: keep answers short and use examples from Uganda[/b]")
+        return True
+    if lw in ("clear instructions", "delete instructions", "remove instructions", "forget instructions"):
+        qa_set("instructions", "")
+        qa_refresh_rules()
+        screen.say("Your instructions are cleared.")
+        return True
+    if lw in ("chat summary", "summary of our chat", "what do you remember from this chat"):
+        qa_summary_update(force=True)
+        s = qa_summary_text()
+        screen.say(("From earlier in this chat:\n" + _esc(s)) if s else "This chat is still short, so I remember all of it.")
+        return True
+    if lw in ("smart answers", "answer help", "new answers", "what's new in answers"):
+        screen.say(_QA_HELP)
+        return True
+    if lw in ("brain update", "update brain", "brain refresh", "refresh brain"):
+        def job():
+            man = brain_manifest(force=True)
+            brain_get("prompts/core")
+            return (f"My online knowledge is up to date (version {man.get('version')})." if man else
+                    "I couldn't reach my online knowledge right now. Answers still work with what's on the phone.")
+        screen._bg(job, "Getting my newest knowledge", speak=False)
+        return True
+    if lw in ("storage", "storage screen", "where is my data", "where is everything kept", "where is everything", "cloud storage"):
+        Clock.schedule_once(lambda *_: storage_screen(screen), 0.05)
+        return True
+    m = re.match(r"^(?:please\s+)?deep research\s+(?:on\s+|about\s+)?(.{3,200})$", raw, re.I)
+    if m:
+        topic = m.group(1).strip(" ?.")
+        if not net_online():
+            screen.say("Deep research needs internet. Try again when you're online.")
+            return True
+        convo = list(history)
+
+        def job():
+            r, plain = qa_deep_research(topic, convo)
+            if plain:
+                try:
+                    history.append({"role": "user", "parts": [{"text": "deep research " + topic}]})
+                    history.append({"role": "model", "parts": [{"text": plain[:3000]}]})
+                    save_memory()
+                except Exception:
+                    pass
+                return (f"[b]Research: {_esc(topic)}[/b]\n" + r +
+                        "\n\n[size=13sp]Say [b]research " + _esc(topic) + "[/b] for a designed page you can save as PDF.[/size]")
+            return "I couldn't gather enough sources on that right now. Try other words, or ask again in a minute."
+        screen._bg(job, "Deep research: " + topic, speak=False)
+        return True
+    return None
+
+
+_qa_prev_ga_handle = ga_handle
+
+
+def ga_handle(screen, line, action, arg, low):
+    try:
+        done = _qa_handle(screen, line, action, arg, low)
+        if done:
+            return True
+        done = cloud_handle(screen, line, action, arg, low)
+        if done:
+            return True
+    except Exception as e:
+        log(f"QA command: {type(e).__name__}: {e}")
+    return _qa_prev_ga_handle(screen, line, action, arg, low)
+
+
+try:
+    GA_ABOUT = GA_ABOUT + "\n" + _QA_HELP
+except Exception:
+    pass
+
+
+# ===================== 120: every letter drawn (no boxes), no raw error words in the chat =====================
+import unicodedata as _ud
+_FONTCOV = {"main": None, "wide": None, "wide_name": None}
+_ZW_RE = re.compile("[\u200b\u200c\u200d\u2060\ufeff\u00ad\ufe0e\ufe0f]")
+_EMOJI_TEXT = {
+    "\U0001F600": ":D", "\U0001F601": ":D", "\U0001F602": "(laughing)", "\U0001F923": "(laughing)", "\U0001F603": ":)",
+    "\U0001F604": ":D", "\U0001F605": "(phew)", "\U0001F609": ";)", "\U0001F60A": ":)", "\U0001F642": ":)",
+    "\U0001F60D": "(love it)", "\U0001F618": "(kiss)", "\U0001F60E": "(cool)", "\U0001F914": "(thinking)",
+    "\U0001F622": ":(", "\U0001F62D": "(crying)", "\U0001F621": "(angry)", "\U0001F620": "(angry)", "\U0001F631": "(shocked)",
+    "\U0001F64F": "(thank you)", "\U0001F44D": "(thumbs up)", "\U0001F44E": "(thumbs down)", "\U0001F44F": "(clapping)",
+    "\U0001F44B": "(waving)", "\U0001F4AA": "(strong)", "\U0001F525": "(fire)", "\U0001F389": "(celebration)",
+    "\U0001F680": "(rocket)", "\U0001F4A1": "(idea)", "\U0001F4DA": "(books)", "\U0001F4DD": "(note)", "\U0001F4B0": "(money)",
+    "\U0001F4B5": "(money)", "\U0001F4F1": "(phone)", "\U0001F4BB": "(laptop)", "\U0001F4F7": "(camera)", "\U0001F3B5": "(music)",
+    "\U0001F3B6": "(music)", "\U0001F4CC": "(pin)", "\U0001F4CD": "(location)", "\U0001F4C5": "(date)", "\U0001F4C8": "(rising)",
+    "\U0001F4C9": "(falling)", "\U0001F50D": "(search)", "\U0001F512": "(locked)", "\U0001F513": "(unlocked)", "\U0001F514": "(alert)",
+    "\U0001F31F": "*", "\U0001F4AF": "(100)", "\U0001F64C": "(hooray)", "\U0001F91D": "(handshake)", "\U0001F449": "->",
+    "\U0001F448": "<-", "\U0001F446": "^", "\U0001F447": "v", "\U0001F6A8": "(warning)", "\U0001F6AB": "(no)",
+    "\U0001F7E2": "(green)", "\U0001F534": "(red)", "\U0001F7E1": "(yellow)", "\U0001F535": "(blue)", "\U0001F30D": "(world)",
+    "\U0001F30E": "(world)", "\U0001F1FA\U0001F1EC": "(Uganda flag)", "\U0001F496": "<3", "\U0001F499": "<3", "\U0001F49A": "<3",
+    "\U0001F49B": "<3", "\U0001F49C": "<3", "\U0001F5A4": "<3", "\U0001F90D": "<3", "\U0001F497": "<3", "\U0001F495": "<3",
+}
+_TEXT_EQUIV = {"\u2705": "(done)", "\u274c": "(x)", "\u2714": "(ok)", "\u2716": "x", "\u26a0": "(warning)", "\u2764": "<3",
+               "\u2b50": "*", "\u2728": "*", "\u27a1": "->", "\u2b05": "<-", "\u2b06": "^", "\u2b07": "v", "\u2122": "(TM)",
+               "\u20bf": "BTC", "\u2192": "->", "\u2190": "<-", "\u21d2": "=>", "\u2194": "<->", "\u2022": "-",
+               "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": " - ", "\u2026": "...",
+               "\u2212": "-", "\u00d7": "x", "\u00f7": "/", "\u2264": "<=", "\u2265": ">=", "\u2260": "!=", "\u2248": "~=",
+               "\u221a": "sqrt", "\u221e": "infinity", "\u03c0": "pi", "\u00b2": "^2", "\u00b3": "^3", "\u00bd": "1/2",
+               "\u00bc": "1/4", "\u00be": "3/4", "\u00b0": " deg", "\u2211": "sum", "\u222b": "integral", "\u0394": "Delta"}
+
+
+def _ttf_cmap(path):
+    """The set of characters a TrueType font can draw (cmap formats 4 and 12), read in plain Python."""
+    import struct
+    cov = set()
+    try:
+        d = open(path, "rb").read()
+        n = struct.unpack(">H", d[4:6])[0]
+        cmap = None
+        for i in range(n):
+            tag, _c, off, _l = struct.unpack(">4sIII", d[12 + 16 * i:28 + 16 * i])
+            if tag == b"cmap":
+                cmap = off
+        if cmap is None:
+            return cov
+        nt = struct.unpack(">H", d[cmap + 2:cmap + 4])[0]
+        subs = []
+        for i in range(nt):
+            pid, eid, off = struct.unpack(">HHI", d[cmap + 4 + 8 * i:cmap + 12 + 8 * i])
+            subs.append((pid, eid, cmap + off))
+        for _pid, _eid, so in subs:
+            fmt = struct.unpack(">H", d[so:so + 2])[0]
+            if fmt == 12:
+                ng = struct.unpack(">I", d[so + 12:so + 16])[0]
+                for g in range(ng):
+                    a, b, _s = struct.unpack(">III", d[so + 16 + 12 * g:so + 28 + 12 * g])
+                    if b - a < 70000:
+                        cov.update(range(a, b + 1))
+            elif fmt == 4:
+                seg = struct.unpack(">H", d[so + 6:so + 8])[0] // 2
+                ends = struct.unpack(">%dH" % seg, d[so + 14:so + 14 + 2 * seg])
+                starts = struct.unpack(">%dH" % seg, d[so + 16 + 2 * seg:so + 16 + 4 * seg])
+                for a, b in zip(starts, ends):
+                    if a != 0xFFFF:
+                        cov.update(range(a, b + 1))
+    except Exception as e:
+        log(f"FONT cmap: {type(e).__name__}")
+    return cov
+
+
+def _font_cover():
+    if _FONTCOV["main"] is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        inter = os.path.join(here, "fonts", "Inter-Regular.ttf")
+        _FONTCOV["main"] = _ttf_cmap(inter) if os.path.exists(inter) else set()
+        try:
+            import kivy
+            wide = os.path.join(kivy.kivy_data_dir, "fonts", "DejaVuSans.ttf")
+        except Exception:
+            wide = ""
+        if wide and os.path.exists(wide):
+            _FONTCOV["wide"] = _ttf_cmap(wide)
+            try:
+                from kivy.core.text import LabelBase as _LB
+                _LB.register("AppSymbols", wide)
+                _FONTCOV["wide_name"] = "AppSymbols"
+            except Exception:
+                _FONTCOV["wide_name"] = wide
+        else:
+            _FONTCOV["wide"] = set()
+        if not _FONTCOV["main"]:                    # no Inter: Kivy's own Roboto draws basic Latin
+            _FONTCOV["main"] = set(range(32, 0x250)) | set(range(0x2000, 0x2070))
+    return _FONTCOV
+
+
+def text_normal(t):
+    """NFC letters, no invisible characters, emoji as short words (the phone's font has no emoji)."""
+    if not t or not isinstance(t, str):
+        return t
+    t = _ud.normalize("NFC", t)
+    for k, v in _EMOJI_TEXT.items():
+        if k in t:
+            t = t.replace(k, v)
+    t = _ZW_RE.sub("", t)
+    t = re.sub("[\U0001F3FB-\U0001F3FF]", "", t)                 # skin-tone marks
+    return t
+
+
+def _char_fallback(ch):
+    if ch in _TEXT_EQUIV:
+        return _TEXT_EQUIV[ch]
+    base = _ud.normalize("NFKD", ch)
+    base = "".join(c for c in base if not _ud.combining(c))
+    if base and base != ch and all(ord(c) < 0x250 for c in base):
+        return base
+    if 0x1F000 <= ord(ch) <= 0x1FAFF or 0x2600 <= ord(ch) <= 0x27BF:
+        name = _ud.name(ch, "").lower()
+        return f"({name.split(' with ')[0]})" if name else ""
+    return ""
+
+
+def text_drawable(t):
+    """Markup text where every character can be drawn: letters the main font lacks use the wide font,
+    and anything no font has becomes a sensible text equivalent instead of a box."""
+    if not t or not isinstance(t, str):
+        return t
+    cov = _font_cover()
+    main, wide, wname = cov["main"], cov["wide"], cov["wide_name"]
+    parts = _MARKUP_TAG.split(t)
+    out = []
+    for i, seg in enumerate(parts):
+        if i % 2 or not seg:
+            out.append(seg)
+            continue
+        if all(ord(c) < 0x250 or ord(c) in main for c in seg):
+            out.append(seg)
+            continue
+        buf, in_wide = [], False
+        for ch in seg:
+            o = ord(ch)
+            if o < 0x250 or o in main or ch in "\n\t":
+                if in_wide:
+                    buf.append("[/font]")
+                    in_wide = False
+                buf.append(ch)
+            elif o in wide and wname:
+                if not in_wide:
+                    buf.append(f"[font={wname}]")
+                    in_wide = True
+                buf.append(ch)
+            else:
+                if in_wide:
+                    buf.append("[/font]")
+                    in_wide = False
+                buf.append(_char_fallback(ch))
+        if in_wide:
+            buf.append("[/font]")
+        out.append("".join(buf))
+    return "".join(out)
+
+
+_RAW_ERR = re.compile(r"(Traceback \(most recent call last\)|\b[A-Z][a-zA-Z]+(Error|Exception)\b\s*:|"
+                      r"\bErrno\s*-?\d+|\bHTTP(\s+Error)?\s*[45]\d\d\b|\b[45]\d\d (Client|Server) Error|urlopen error|"
+                      r"\{\s*\"error\"\s*:|\bException:|\bstatus\"?\s*:\s*[45]\d\d|SSL: |CERTIFICATE_VERIFY|Max retries exceeded|"
+                      r"\bNoneType\b|object has no attribute|is not subscriptable|invalid literal for)", re.I)
+
+
+def text_no_errors(t):
+    """Raw error words never reach the chat: error lines are dropped; an answer that is only an error
+    becomes one friendly line. Returns (text, was_error_only)."""
+    if not t or not isinstance(t, str) or not _RAW_ERR.search(t):
+        return t, False
+    if "```" in t:                     # code the person asked about may mention errors: keep it
+        return t, False
+    keep = [ln for ln in t.split("\n") if not _RAW_ERR.search(ln) or len(ln) > 260 and
+            not re.search(r"Traceback|Errno|HTTP\s*[45]\d\d", ln)]
+    body = "\n".join(keep).strip()
+    plain = re.sub(r"\[/?[a-z_]+(=[^\]]*)?\]", "", body).strip()
+    if len(plain) < 25:
+        return "That didn't go through on my side. I'm trying another way now.", True
+    return body, False
+
+
+_qa_prev_show = ChatScreen.show
+
+
+def _qa_show(self, who, text, plain=False):
+    try:
+        if isinstance(text, str):
+            text = text_normal(text)
+            if who == "AI":
+                asked = str(getattr(self, "_v110_q", "") or "").lower()
+                if not re.search(r"error|bug|crash|exception|traceback|http|code|python|debug", asked):
+                    text, only_err = text_no_errors(text)
+                    if only_err:
+                        q = getattr(self, "_v110_q", "") or getattr(self, "_pending_q", "")
+                        q = qa_clean_user(q) if q else ""
+                        if q and getattr(self, "_qa_retried", "") != q and not getattr(self, "busy", False):
+                            self._qa_retried = q
+                            Clock.schedule_once(lambda *_: self.chat(q), 0.8)    # one quiet retry
+    except Exception as e:
+        log(f"QA show: {type(e).__name__}")
+    return _qa_prev_show(self, who, text, plain)
+
+
+ChatScreen.show = _qa_show
+_qa_prev_add = ChatBubbles.add
+_qa_prev_set_text = getattr(ChatBubbles, "set_text", None)
+
+
+def _qa_add(self, mine, text, *a, **k):
+    try:
+        text = text_drawable(text)
+    except Exception:
+        pass
+    return _qa_prev_add(self, mine, text, *a, **k)
+
+
+ChatBubbles.add = _qa_add
+if _qa_prev_set_text:
+    def _qa_set_text(self, row, text, *a, **k):
+        try:
+            text = text_drawable(text_normal(text))
+        except Exception:
+            pass
+        return _qa_prev_set_text(self, row, text, *a, **k)
+    ChatBubbles.set_text = _qa_set_text
+
+
+# ===================== 120: Storage screen: where everything is kept =====================
+def phone_free_bytes():
+    try:
+        st = os.statvfs("/storage/emulated/0" if os.path.isdir("/storage/emulated/0") else ROOT)
+        return st.f_bavail * st.f_frsize
+    except Exception:
+        return 0
+
+
+def _mb(n):
+    n = float(n or 0)
+    if n >= 1024 ** 3:
+        return f"{n / 1024 ** 3:.1f} GB"
+    if n >= 1024 * 1024:
+        return f"{n / 1048576:.1f} MB"
+    return f"{max(n, 0) / 1024:.0f} KB"
+
+
+def local_cache_dirs():
+    out = [brain_dir()]
+    try:
+        out.append(ho_dir())
+    except Exception:
+        pass
+    return out
+
+
+def clear_local_cache():
+    freed = 0
+    for d in local_cache_dirs():
+        try:
+            for n in os.listdir(d):
+                p = os.path.join(d, n)
+                if os.path.isfile(p):
+                    freed += os.path.getsize(p)
+                    os.remove(p)
+        except Exception:
+            pass
+    _BRAIN["mem"].clear()
+    _BRAIN["manifest"] = None
+    return freed
+
+
+_qa_prev_ho_cache = ho_cache
+
+
+def ho_cache(url):
+    """Pictures for answers are kept in a small cache that never grows past 6 MB."""
+    p = _qa_prev_ho_cache(url)
+    try:
+        brain_cache_trim(6, ho_dir())
+    except Exception:
+        pass
+    return p
+
+
+def storage_screen(screen):
+    """A simple screen that shows each place the app keeps things, with links and buttons."""
+    from kivy.uix.scrollview import ScrollView as _SV
+    root = BoxLayout(orientation="vertical", spacing=dp(8), padding=[dp(10), dp(8)])
+    pop = Popup(title="Storage: where everything is kept", content=root, size_hint=(0.96, 0.94),
+                separator_color=GOLD, title_color=GOLD, title_size="18sp")
+    sv = _SV(do_scroll_x=False)
+    col = BoxLayout(orientation="vertical", spacing=dp(10), size_hint_y=None, padding=[0, dp(4)])
+    col.bind(minimum_height=col.setter("height"))
+    sv.add_widget(col)
+    root.add_widget(sv)
+    links = {}
+
+    def on_ref(_w, ref):
+        url = links.get(ref)
+        if url:
+            try:
+                open_in_genius(url, "Storage")
+            except Exception:
+                open_url(url)
+
+    def card(title, body_text, buttons=()):
+        c = _card(title, body_text)
+        c.body.bind(on_ref_press=on_ref)
+        col.add_widget(c)
+        if buttons:
+            row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+            for label, fn, colr in buttons:
+                b = RoundButton(text=label, bg=colr, fg=(0.1, 0.1, 0.1, 1) if colr == GOLD else TEXTCOL,
+                                font_size="14sp", bold=True)
+                b.bind(on_press=lambda _b, fn=fn: fn())
+                row.add_widget(b)
+            col.add_widget(row)
+        return c
+
+    def link(key, url, label):
+        links[key] = url
+        return f"[ref={key}][color=8ab4ff][u]{_esc(label)}[/u][/color][/ref]"
+
+    brain_c = card("Online brain (shared knowledge)", "Checking...")
+    packs_c = card("Big packs (downloaded only when you ask)", "Checking...")
+    cloud_c = card("Your private cloud backup", "Checking...",
+                   [("Sync now", lambda: (pop.dismiss(), screen.handle("cloud sync")), GOLD),
+                    ("Set up / help", lambda: (pop.dismiss(), screen.handle("setcloud")), GREY)])
+    cache_c = card("Cache on this phone", "Checking...",
+                   [("Clear cache", lambda: clear(), GREY)])
+    free_c = card("Free space on this phone", "Checking...")
+    close = RoundButton(text="Close", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), size_hint_y=None, height=dp(46), bold=True)
+    close.bind(on_press=pop.dismiss)
+    root.add_widget(close)
+
+    def set_body(c, t):
+        Clock.schedule_once(lambda *_: setattr(c.body, "text", t), 0)
+
+    def cache_text():
+        used = sum(folder_size(d) for d in local_cache_dirs())
+        return (f"{_mb(used)} used (the brain keeps at most {BRAIN_CACHE_MB:.0f} MB, pictures at most 6 MB; "
+                "the oldest go first). Your chats and notes are not cache and are never cleared here.")
+
+    def clear():
+        freed = clear_local_cache()
+        set_body(cache_c, f"Cleared {_mb(freed)}. " + cache_text())
+
+    def fill():
+        try:
+            st = brain_status() if net_online() else {"version": _BRAIN.get("version"), "size": 0, "items": 0,
+                                                       "cache": folder_size(brain_dir()), "repo": BRAIN_REPO_PAGE}
+            v = st.get("version")
+            set_body(brain_c, (f"Version {v}, {st.get('items', 0)} parts, {_mb(st.get('size'))} online. " if v else
+                               "Built-in answers are in use until the phone is online. ") +
+                     "Prompts, guides, answer recipes and a fact and how-to library live online and are read when needed.\n" +
+                     link("st:brain", BRAIN_REPO_PAGE, "Open the brain online") + "   " +
+                     link("st:api", "https://ssalimuto.github.io/genius-brain/", "Open the public knowledge API"))
+        except Exception:
+            set_body(brain_c, "The online brain will show here when the phone is online.")
+        try:
+            packs = brain_packs() if net_online() else []
+            if packs:
+                lines = []
+                for i, p in enumerate(packs[:8]):
+                    lines.append(f"- {_esc(p['title'])}: {_mb(p['size'])}  " + link(f"st:p{i}", p["url"], "link"))
+                set_body(packs_c, "\n".join(lines) + "\nThey stay online until you choose one.")
+            else:
+                set_body(packs_c, "No big packs are needed right now. Big files live online (up to 2 GB each) and "
+                                  "are never put on the phone unless you choose them.\n" +
+                         link("st:rel", BRAIN_REPO_PAGE + "/releases", "See the packs page"))
+        except Exception:
+            set_body(packs_c, "Big packs will show here when the phone is online.")
+        try:
+            d = cloud_settings()
+            if d.get("on") and d.get("repo"):
+                when = time.strftime("%d %b %Y %H:%M", time.localtime(d["last"])) if d.get("last") else "not yet"
+                be = cloud_backend(d)
+                page = be.page() if be else ""
+                set_body(cloud_c, f"[b]On[/b], encrypted on this phone before upload.\nAccount: {_esc(d['repo'])}\n"
+                                  f"Used: {_mb(d.get('used'))}\nLast backup: {when}" +
+                         (("\n" + link("st:cloud", page, "Open your private storage")) if page else "") +
+                         ("" if d.get("key") else "\nSet your passphrase: [b]cloudpass <passphrase>[/b]"))
+            else:
+                set_body(cloud_c, "[b]Off[/b]. Your chats, memory, notes, apps and pictures stay only on this phone. "
+                                  "Switch on a free private backup (encrypted, your own account) with Set up.")
+        except Exception:
+            set_body(cloud_c, "Off.")
+        set_body(cache_c, cache_text())
+        free = phone_free_bytes()
+        set_body(free_c, (f"{_mb(free)} free." if free else "Couldn't read it on this phone.") +
+                 " The app keeps big knowledge online so your phone stays light.")
+    threading.Thread(target=fill, daemon=True).start()
+    pop.open()
+
+
+# ===================== 120: Private cloud backup (off until "setcloud"; encrypted on the phone) =====================
+# Your chats, memory, notes, created apps and pictures are copied, encrypted, to YOUR OWN private storage
+# (a private GitHub repository or a private Hugging Face dataset). The token you give stays on this phone only.
+# Encryption: a key made from your passphrase (PBKDF2-SHA256, 200k rounds), a keyed BLAKE2b stream, and an
+# HMAC-SHA256 seal, so nobody can read or change the files without the passphrase.
+CLOUD_FILE = "cloud_settings.json"          # in the person's own folder; never inside the app or the code
+CLOUD_STATE = {"running": False, "last": "", "note": ""}
+CLOUD_ITEMS = ("chat_memory.json", "chat_summary.json", "genius_memory.json", "knowledge.json", "notes.txt",
+               "about_me.txt", "life_data.json", "reminders.json", "problems.json", "genius_bots.json", "my_cv.txt",
+               "genius110_settings.json", "qa_settings.json", "offline_answers.json", "projects.json")
+CLOUD_DIRS = ("my_apps", "genius_apps")
+CLOUD_BIG = 512 * 1024                      # bigger files may leave the phone once they're safely in the cloud
+CLOUD_KEEP_DAYS = 30                        # ...but only after this many days unused
+
+
+def cloud_settings():
+    d = _v110_load(CLOUD_FILE, {})
+    d.setdefault("on", False)
+    d.setdefault("backend", "")
+    d.setdefault("repo", "")
+    d.setdefault("token", "")
+    d.setdefault("key", "")
+    d.setdefault("salt", "")
+    d.setdefault("index", {})
+    d.setdefault("last", 0)
+    d.setdefault("used", 0)
+    d.setdefault("offloaded", {})
+    return d
+
+
+def cloud_save(d):
+    _v110_save(CLOUD_FILE, d)
+    try:
+        os.chmod(CLOUD_FILE, 0o600)
+    except Exception:
+        pass
+
+
+# ---------- encryption ----------
+def cloud_key(passphrase, salt):
+    return hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf8"), salt, 200000, 64)
+
+
+def _cloud_stream(key, nonce, n):
+    out = bytearray()
+    ctr = 0
+    while len(out) < n:
+        out += hashlib.blake2b(nonce + ctr.to_bytes(8, "big"), key=key[:32], digest_size=64).digest()
+        ctr += 1
+    return bytes(out[:n])
+
+
+def cloud_encrypt(data, key):
+    nonce = os.urandom(16)
+    ks = _cloud_stream(key, nonce, len(data))
+    ct = (int.from_bytes(data, "big") ^ int.from_bytes(ks, "big")).to_bytes(len(data), "big") if data else b""
+    mac = hmac.new(key[32:], b"GB1" + nonce + ct, hashlib.sha256).digest()
+    return b"GB1" + nonce + mac + ct
+
+
+def cloud_decrypt(blob, key):
+    try:
+        if not blob.startswith(b"GB1"):
+            return None
+        nonce, mac, ct = blob[3:19], blob[19:51], blob[51:]
+        if not hmac.compare_digest(mac, hmac.new(key[32:], b"GB1" + nonce + ct, hashlib.sha256).digest()):
+            return None
+        ks = _cloud_stream(key, nonce, len(ct))
+        return (int.from_bytes(ct, "big") ^ int.from_bytes(ks, "big")).to_bytes(len(ct), "big") if ct else b""
+    except Exception:
+        return None
+
+
+# ---------- storage backends (add more by adding a class with put/get/usage) ----------
+class _CloudGitHub:
+    name = "GitHub (private repository)"
+
+    def __init__(self, repo, token):
+        self.repo, self.token = repo, token
+        self.api = "https://api.github.com/repos/" + repo
+
+    def _req(self, method, url, body=None, timeout=60):
+        h = {"Authorization": "Bearer " + self.token, "Accept": "application/vnd.github+json",
+             "User-Agent": APP_NAME_FREE.replace(" ", "") + "-backup"}
+        data = json.dumps(body).encode() if body is not None else None
+        if data:
+            h["Content-Type"] = "application/json"
+        code, _t, raw = _fetch(url, timeout=timeout, data=data, headers=h, method=method)
+        return code, (json.loads(raw.decode("utf8")) if raw else {})
+
+    def ensure(self):
+        try:
+            code, d = self._req("GET", self.api, timeout=20)
+            return bool(d.get("private")), "found"
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                return False, "token"
+        owner, _, name = self.repo.partition("/")
+        try:
+            self._req("POST", "https://api.github.com/user/repos",
+                      {"name": name, "private": True, "auto_init": True, "description": "Private backup (encrypted)"})
+            return True, "created"
+        except Exception:
+            return False, "create"
+
+    def _sha(self, path):
+        try:
+            _c, d = self._req("GET", f"{self.api}/contents/{path}", timeout=20)
+            return d.get("sha")
+        except Exception:
+            return None
+
+    def put(self, path, blob):
+        body = {"message": "backup " + path, "content": base64.b64encode(blob).decode()}
+        sha = self._sha(path)
+        if sha:
+            body["sha"] = sha
+        self._req("PUT", f"{self.api}/contents/{path}", body, timeout=120)
+
+    def get(self, path):
+        h = {"Authorization": "Bearer " + self.token, "Accept": "application/vnd.github.raw",
+             "User-Agent": "backup"}
+        _c, _t, raw = _fetch(f"{self.api}/contents/{path}", timeout=120, headers=h)
+        return raw
+
+    def usage(self):
+        try:
+            _c, d = self._req("GET", self.api, timeout=20)
+            return int(d.get("size") or 0) * 1024
+        except Exception:
+            return 0
+
+    def page(self):
+        return "https://github.com/" + self.repo
+
+
+class _CloudHF:
+    name = "Hugging Face (private dataset)"
+
+    def __init__(self, repo, token):
+        self.repo, self.token = repo, token
+        self.api = "https://huggingface.co/api/datasets/" + repo
+
+    def _h(self, extra=None):
+        h = {"Authorization": "Bearer " + self.token, "User-Agent": "backup"}
+        h.update(extra or {})
+        return h
+
+    def ensure(self):
+        try:
+            _c, _t, raw = _fetch(self.api, timeout=20, headers=self._h())
+            return bool(json.loads(raw.decode()).get("private")), "found"
+        except urllib.error.HTTPError as e:
+            if e.code not in (401, 404):
+                return False, "token"
+        try:
+            org, _, name = self.repo.partition("/")
+            body = json.dumps({"type": "dataset", "name": name, "organization": org, "private": True}).encode()
+            _fetch("https://huggingface.co/api/repos/create", timeout=30, data=body,
+                   headers=self._h({"Content-Type": "application/json"}), method="POST")
+            return True, "created"
+        except Exception:
+            return False, "create"
+
+    def put(self, path, blob):
+        lines = [json.dumps({"key": "header", "value": {"summary": "backup " + path}}),
+                 json.dumps({"key": "file", "value": {"path": path, "content": base64.b64encode(blob).decode(),
+                                                       "encoding": "base64"}})]
+        _fetch(f"{self.api}/commit/main", timeout=180, data="\n".join(lines).encode(),
+               headers=self._h({"Content-Type": "application/x-ndjson"}), method="POST")
+
+    def get(self, path):
+        _c, _t, raw = _fetch(f"https://huggingface.co/datasets/{self.repo}/resolve/main/{path}", timeout=180, headers=self._h())
+        return raw
+
+    def usage(self):
+        try:
+            _c, _t, raw = _fetch(self.api + "?blobs=true", timeout=20, headers=self._h())
+            return sum(int(s.get("size") or 0) for s in json.loads(raw.decode()).get("siblings") or [])
+        except Exception:
+            return 0
+
+    def page(self):
+        return "https://huggingface.co/datasets/" + self.repo
+
+
+CLOUD_BACKENDS = {"github": _CloudGitHub, "hf": _CloudHF, "huggingface": _CloudHF}
+
+
+def cloud_backend(d=None):
+    d = d or cloud_settings()
+    cls = CLOUD_BACKENDS.get(d.get("backend"))
+    return cls(d["repo"], d["token"]) if cls and d.get("repo") and d.get("token") else None
+
+
+# ---------- what to back up ----------
+def cloud_files():
+    """[(local path, cloud name)] for the person's own data."""
+    out = []
+    for n in CLOUD_ITEMS:
+        if os.path.isfile(n):
+            out.append((n, "data/" + n))
+    for folder in CLOUD_DIRS:
+        if os.path.isdir(folder):
+            for base, _d, files in os.walk(folder):
+                for f in files:
+                    p = os.path.join(base, f)
+                    out.append((p, "files/" + p.replace(os.sep, "/")))
+    for sub in ("creations", "storage", "attached"):
+        for folder in {private_dir(sub)}:
+            if os.path.isdir(folder):
+                for base, _d, files in os.walk(folder):
+                    for f in files:
+                        p = os.path.join(base, f)
+                        rel = os.path.relpath(p, private_dir()).replace(os.sep, "/")
+                        out.append((p, "files/private/" + rel))
+    return out
+
+
+def _cloud_name(name):
+    """Names in the cloud don't reveal what the files are."""
+    return "b/" + hashlib.sha256(("gb:" + name).encode()).hexdigest()[:40] + ".bin"
+
+
+def cloud_conditions_ok():
+    """Auto-sync only on Wi-Fi or while charging (saves the person's data bundle)."""
+    try:
+        from jnius import autoclass
+        act = autoclass("org.kivy.android.PythonActivity").mActivity
+        Ctx = autoclass("android.content.Context")
+        cm = act.getSystemService(Ctx.CONNECTIVITY_SERVICE)
+        net = cm.getActiveNetwork()
+        if net is not None:
+            caps = cm.getNetworkCapabilities(net)
+            if caps is not None and caps.hasTransport(1):        # TRANSPORT_WIFI
+                return True
+        bm = act.getSystemService(Ctx.BATTERY_SERVICE)
+        if bm is not None and bm.isCharging():
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def cloud_sync(force=False, progress=None):
+    """Upload what changed. Returns a short friendly summary."""
+    d = cloud_settings()
+    if not d.get("on"):
+        return "Cloud backup is off. Say [b]setcloud[/b] to switch it on."
+    if not d.get("key"):
+        return "Choose your backup passphrase first: say [b]cloudpass <your passphrase>[/b]."
+    if CLOUD_STATE["running"]:
+        return "A backup is already running."
+    be = cloud_backend(d)
+    if be is None:
+        return "Cloud backup isn't set up yet. Say [b]setcloud[/b]."
+    CLOUD_STATE["running"] = True
+    sent, failed, freed = 0, 0, 0
+    try:
+        key = bytes.fromhex(d["key"])
+        idx = d.get("index") or {}
+        for path, name in cloud_files():
+            try:
+                st = os.stat(path)
+                stamp = f"{int(st.st_mtime)}:{st.st_size}"
+                if idx.get(name, {}).get("stamp") == stamp and not force:
+                    continue
+                data = open(path, "rb").read()
+                if progress:
+                    progress("Backing up " + os.path.basename(path))
+                be.put(_cloud_name(name), cloud_encrypt(data, key))
+                idx[name] = {"stamp": stamp, "size": st.st_size, "t": int(time.time())}
+                sent += 1
+            except Exception as e:
+                failed += 1
+                log(f"CLOUD put: {type(e).__name__}")
+        manifest = json.dumps({"index": idx, "offloaded": d.get("offloaded", {}), "t": int(time.time())}).encode()
+        be.put("b/index.bin", cloud_encrypt(manifest, key))
+        # big files nobody used for a while leave the phone (they come back with 'cloud restore')
+        now = time.time()
+        for path, name in cloud_files():
+            try:
+                st = os.stat(path)
+                if st.st_size >= CLOUD_BIG and now - max(st.st_atime, st.st_mtime) > CLOUD_KEEP_DAYS * 86400 \
+                        and idx.get(name, {}).get("stamp") == f"{int(st.st_mtime)}:{st.st_size}" \
+                        and name.startswith("files/"):
+                    os.remove(path)
+                    d.setdefault("offloaded", {})[name] = path
+                    freed += st.st_size
+            except Exception:
+                pass
+        d["index"], d["last"] = idx, int(time.time())
+        d["used"] = be.usage() or d.get("used", 0)
+        cloud_save(d)
+    finally:
+        CLOUD_STATE["running"] = False
+    CLOUD_STATE["last"] = time.strftime("%d %b %H:%M")
+    msg = f"Backed up {sent} new or changed item{'s' if sent != 1 else ''}." if sent else "Everything is already backed up."
+    if freed:
+        msg += f" Freed {freed / 1048576:.1f} MB on the phone (old big files, safe in your cloud)."
+    if failed:
+        msg += f" {failed} will be tried again next time."
+    return msg
+
+
+def cloud_restore(progress=None):
+    """Bring everything back from the cloud (after a reinstall, or files that left the phone)."""
+    d = cloud_settings()
+    be = cloud_backend(d)
+    if be is None or not d.get("key"):
+        return "Set up the cloud first: [b]setcloud[/b], then [b]cloudpass <your passphrase>[/b] (the same one as before)."
+    key = bytes.fromhex(d["key"])
+    try:
+        man = cloud_decrypt(be.get("b/index.bin"), key)
+    except Exception:
+        man = None
+    if man is None:
+        return ("I couldn't open your backup. Check the passphrase with [b]cloudpass <passphrase>[/b] "
+                "(it must be the one you used before).")
+    m = json.loads(man.decode("utf8"))
+    got = 0
+    for name, info in (m.get("index") or {}).items():
+        if name.startswith("data/"):
+            path = name[5:]
+        elif name.startswith("files/private/"):
+            path = os.path.join(private_dir(), name[len("files/private/"):])
+        elif name.startswith("files/"):
+            path = name[6:]
+        else:
+            continue
+        if os.path.exists(path) and os.path.getsize(path) == info.get("size") and name.startswith("files/"):
+            continue
+        try:
+            if progress:
+                progress("Restoring " + os.path.basename(path))
+            data = cloud_decrypt(be.get(_cloud_name(name)), key)
+            if data is None:
+                continue
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            tmp = path + ".restore"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
+            got += 1
+        except Exception as e:
+            log(f"CLOUD get: {type(e).__name__}")
+    d["index"] = m.get("index") or {}
+    d["offloaded"] = {}
+    cloud_save(d)
+    try:
+        history[:] = load_memory()
+    except Exception:
+        pass
+    return f"Restored {got} item{'s' if got != 1 else ''} from your cloud backup. Reopen the app to see everything."
+
+
+def cloud_auto_loop():
+    """Quiet background backup: about every 2 hours, only on Wi-Fi or while charging."""
+    time.sleep(90)
+    while True:
+        try:
+            d = cloud_settings()
+            if d.get("on") and d.get("key") and net_online() and cloud_conditions_ok() \
+                    and time.time() - d.get("last", 0) > 2 * 3600:
+                log("CLOUD: " + re.sub(r"\[/?b\]", "", cloud_sync()))
+        except Exception as e:
+            log(f"CLOUD auto: {type(e).__name__}")
+        time.sleep(15 * 60)
+
+
+_CLOUD_STARTED = {"on": False}
+
+
+def cloud_start():
+    if not _CLOUD_STARTED["on"]:
+        _CLOUD_STARTED["on"] = True
+        threading.Thread(target=cloud_auto_loop, daemon=True).start()
+
+
+CLOUD_HELP = ("[b]Private cloud backup[/b] (off until you switch it on)\n"
+              "1. Make a free token: GitHub (Settings > Developer settings > Fine-grained token, with Contents: "
+              "read and write, and Administration: read and write so it can create the private repository) or "
+              "Hugging Face (Settings > Access Tokens, Write).\n"
+              "2. Say [b]setcloud github yourname/my-backup <token>[/b] or [b]setcloud hf yourname/my-backup <token>[/b].\n"
+              "3. Say [b]cloudpass <a passphrase you will remember>[/b]. Everything is locked with it on this phone "
+              "before it leaves. Without it, nobody can open your backup, not even you, so write it down.\n"
+              "Then: [b]cloud sync[/b] (now), [b]cloud restore[/b] (bring everything back), [b]cloud status[/b], "
+              "[b]cloud off[/b]. It also backs up by itself on Wi-Fi or while charging.")
+
+
+def cloud_handle(screen, line, action, arg, low):
+    raw = (line or "").strip()
+    lw = raw.lower().strip(" .!?")
+    if lw in ("setcloud", "cloud", "cloud backup", "cloud help", "backup to cloud"):
+        screen.say(CLOUD_HELP)
+        return True
+    m = re.match(r"^setcloud\s+(github|hf|huggingface)\s+([\w.-]+/[\w.-]+)\s+(\S{20,})$", raw, re.I)
+    if m:
+        backend, repo, token = m.group(1).lower(), m.group(2), m.group(3)
+        backend = "hf" if backend.startswith("h") else backend
+
+        def job():
+            d = cloud_settings()
+            d.update(backend=backend, repo=repo, token=token)
+            be = cloud_backend(d)
+            ok, why = be.ensure()
+            if not ok:
+                return {"token": "That token was refused. Make a new one with write access and say setcloud again.",
+                        "create": "I couldn't create the private storage. Create it yourself as PRIVATE, then say setcloud again."
+                        }.get(why, "That storage is public, so I won't put your data there. Use a private one.")
+            d["on"] = True
+            cloud_save(d)
+            cloud_start()
+            nxt = ("Now choose your passphrase: [b]cloudpass <passphrase>[/b]." if not d.get("key") else
+                   "Your passphrase is already set. Say [b]cloud sync[/b] to back up now.")
+            return f"Cloud backup is on, using your private storage [b]{_esc(repo)}[/b]. The token stays on this phone only. " + nxt
+        screen._bg(job, "Connecting your private cloud", speak=False)
+        return True
+    m = re.match(r"^cloudpass\s+(.{8,200})$", raw, re.I)
+    if m:
+        d = cloud_settings()
+        if not d.get("repo"):
+            screen.say("First connect your private storage with [b]setcloud[/b], then set the passphrase.")
+            return True
+        # same storage + same passphrase gives the same key after a reinstall, so restore works
+        d["salt"] = hashlib.sha256(("gb-salt:" + d["repo"].lower()).encode()).hexdigest()[:32]
+        d["key"] = cloud_key(m.group(1), bytes.fromhex(d["salt"])).hex()
+        cloud_save(d)
+        screen.say("Passphrase set. Keep it safe: you need it to restore. Say [b]cloud sync[/b] to back up now.")
+        return True
+    if re.match(r"^cloudpass\b", lw):
+        screen.say("Use at least 8 characters: [b]cloudpass <passphrase>[/b].")
+        return True
+    if lw in ("cloud sync", "sync now", "backup now", "cloud backup now", "sync cloud"):
+        screen._bg(lambda: cloud_sync(force=False, progress=live_step), "Backing up to your private cloud", speak=False)
+        return True
+    if lw in ("cloud restore", "restore cloud", "restore from cloud", "restore my cloud", "cloud restore all"):
+        screen._bg(lambda: cloud_restore(progress=live_step), "Restoring from your private cloud", speak=False)
+        return True
+    if lw in ("cloud off", "stop cloud", "cloud backup off"):
+        d = cloud_settings()
+        d["on"] = False
+        cloud_save(d)
+        screen.say("Cloud backup is off. Your backup stays in your private storage. Say [b]cloud on[/b] to resume.")
+        return True
+    if lw in ("cloud on",):
+        d = cloud_settings()
+        if not d.get("token"):
+            screen.say(CLOUD_HELP)
+            return True
+        d["on"] = True
+        cloud_save(d)
+        cloud_start()
+        screen.say("Cloud backup is on again.")
+        return True
+    if lw in ("cloud forget", "cloud remove token", "remove cloud token"):
+        d = cloud_settings()
+        d.update(on=False, token="")
+        cloud_save(d)
+        screen.say("I removed the cloud token from this phone. Your backup is still in your private storage.")
+        return True
+    if lw in ("cloud status", "backup status"):
+        d = cloud_settings()
+        when = time.strftime("%d %b %Y %H:%M", time.localtime(d["last"])) if d.get("last") else "not yet"
+        screen.say(f"Cloud backup: [b]{'on' if d.get('on') else 'off'}[/b]" +
+                   (f"\nStorage: {_esc(d.get('repo'))}\nUsed: {d.get('used', 0) / 1048576:.1f} MB\nLast backup: {when}"
+                    if d.get("repo") else "\nSay [b]setcloud[/b] to set it up."))
+        return True
+    return None
+
+
+try:
+    if cloud_settings().get("on") and os.environ.get("QA_TEST") != "1":
+        cloud_start()
 except Exception:
     pass
 

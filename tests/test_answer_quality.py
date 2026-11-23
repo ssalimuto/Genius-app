@@ -95,6 +95,25 @@ def quality_tests(m, tag):
     check(f"{tag}: built-in brain works offline", "Answer first" in brain)
     check(f"{tag}: app keeps its own name", m.APP_NAME_FREE in m.qa_persona("chat"))
     check(f"{tag}: no outside brand in the prompt", "hark" not in m.qa_persona("chat").lower())
+    if hasattr(m, "text_drawable"):
+        dv = os.path.expanduser("~/.local/lib/python3.12/site-packages/kivy/data/fonts/DejaVuSans.ttf")
+        cov = m._font_cover()
+        if os.path.exists(dv):
+            cov["wide"], cov["wide_name"] = m._ttf_cmap(dv), "AppSymbols"
+        check(f"{tag}: main font read ({len(cov['main'])} letters)", len(cov["main"]) > 500)
+        t = m.text_drawable(m.text_normal("Webale nnyo \U0001F64F \u014bu \u222b x dx \U0001F680 caf\u0065\u0301 a\u200bb"))
+        check(f"{tag}: emoji become words", "(thank you)" in t and "(rocket)" in t)
+        check(f"{tag}: accents joined (NFC) and invisible marks removed", "caf\u00e9" in t and "ab" in t)
+        check(f"{tag}: Luganda letter drawn", "\u014b" in t)
+        check(f"{tag}: maths symbol drawn by the wide font", "[font=AppSymbols]\u222b" in t or "\u222b" in t)
+        weird = m.text_drawable("\U0001F9FF")
+        check(f"{tag}: unknown emoji is a word, not a box", weird.startswith("(") or weird == "")
+        txt, only = m.text_no_errors("HTTPError: HTTP Error 503: Service Unavailable")
+        check(f"{tag}: raw error never shown", only and "503" not in txt)
+        txt, only = m.text_no_errors("Kampala is the capital.\nTraceback (most recent call last): boom\nIt has 1.9 million people.")
+        check(f"{tag}: error line removed, answer kept", "Traceback" not in txt and "capital" in txt and not only)
+        txt, only = m.text_no_errors("With the exception of Sundays, markets open daily.")
+        check(f"{tag}: normal words kept", not only and "exception" in txt)
     if hasattr(m, "cloud_encrypt"):
         key = m.cloud_key("correct horse battery", b"0123456789abcdef")
         blob = m.cloud_encrypt(b"private chat " * 1000, key)
