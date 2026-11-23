@@ -1,0 +1,67 @@
+name: Build Ssalimuto AI for app stores
+# Store copy of Ssalimuto AI (Uptodown and similar): quiet code updates switched off,
+# release build, unsigned. It is signed afterwards with the owner's private upload key,
+# which never goes into this public repo. Nothing is published to Releases.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  store:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: ssalimuto
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install build tools
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo "http://archive.ubuntu.com/ubuntu/	priority:1" | sudo tee /etc/apt/apt-mirrors.txt; fi
+          sudo sed -i 's#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g' /etc/apt/sources.list 2>/dev/null || true
+          for i in 1 2 3; do
+            sudo apt-get update -o Acquire::Retries=3 && sudo apt-get install -y -o Acquire::Retries=5 --fix-missing git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev automake && break
+            echo "apt failed, retrying in 20s"; sleep 20
+          done
+          pip install --upgrade pip
+          pip install buildozer cython==0.29.36
+      - name: Add app reader (messages, screen, share) to the Android manifest
+        run: |
+          git clone --depth 1 -b v2024.01.21 https://github.com/kivy/python-for-android.git p4a-src
+          python3 -c "p='p4a-src/pythonforandroid/bootstraps/sdl2/build/templates/AndroidManifest.tmpl.xml'; s=open(p).read(); x=open('android_extra/services.xml').read(); assert s.count('</application>')==1; open(p,'w').write(s.replace('</application>', x+'\n    </application>'))"
+          sed -i "s#^p4a.source_dir = .*#p4a.source_dir = $PWD/p4a-src#" buildozer.spec
+      - name: Make the store version (quiet code updates off)
+        run: |
+          sed -i 's/^PLAY_BUILD = False/PLAY_BUILD = True/' main.py
+          sed -i 's/^if __name__ == "__main__" and _boot_live():/if False and __name__ == "__main__" and _boot_live():/' main.py
+          sed -i 's/Ssalimuto AI updates through the Play Store. Open Play Store, search Ssalimuto AI, and tap Update./Ssalimuto AI updates through the app store you installed it from. Open that store and tap Update./g' main.py
+          grep -q '^PLAY_BUILD = True' main.py
+          grep -q '^if False and __name__ == "__main__" and _boot_live():' main.py
+          if grep -q 'Open Play Store' main.py; then echo 'Play Store text left'; exit 1; fi
+          sed -i '/^\[buildozer\]/i android.release_artifact = apk' buildozer.spec
+          grep -n '^PLAY_BUILD\|^VERSION = \|_boot_live():$' main.py
+          grep -n '^version\|release_artifact' buildozer.spec
+      - name: Build the App Maker template (WebView shell -> apk_template.bin)
+        run: |
+          bash ../shellapp/build_template.sh apk_template.bin
+          ls -l apk_template.bin
+      - name: Build release APK (unsigned)
+        run: yes | buildozer android release
+      - name: Align the APK
+        run: |
+          ZA=$(ls -d ~/.buildozer/android/platform/android-sdk/build-tools/*/ | sort -V | tail -1)zipalign
+          IN=$(ls bin/*-release-unsigned.apk bin/*release*.apk 2>/dev/null | head -1)
+          echo "input: $IN"
+          "$ZA" -p -f 4 "$IN" bin/SsalimutoAI-store-unsigned-aligned.apk
+          "$ZA" -c -p 4 bin/SsalimutoAI-store-unsigned-aligned.apk && echo aligned
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SsalimutoAI-store-unsigned
+          path: ssalimuto/bin/SsalimutoAI-store-unsigned-aligned.apk
+          retention-days: 1
