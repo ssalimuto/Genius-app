@@ -19,6 +19,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Release gate (every promised feature present, no banned names, no raw tracebacks)
+        working-directory: ${{ github.workspace }}
+        run: |
+          python tests/release_gate.py main.py
+          python tests/test_answer_quality.py
       - name: Install build tools
         run: |
           # GitHub's Azure Ubuntu mirror sometimes fails; use the main Ubuntu servers and retry.
@@ -42,13 +47,38 @@ jobs:
           V=$(grep -m1 '^VERSION = ' main.py | cut -d'"' -f2)
           NV="$V.$GITHUB_RUN_NUMBER"
           sed -i "0,/^VERSION = \"$V\"/s//VERSION = \"$NV\"/" main.py
-          grep -m1 '^VERSION = ' main.py
+          sed -i "0,/^BUILD_NUMBER = \"dev\"/s//BUILD_NUMBER = \"$GITHUB_RUN_NUMBER\"/" main.py
+          sed -i "0,/^BUILD_COMMIT = \"dev\"/s//BUILD_COMMIT = \"${GITHUB_SHA::7}\"/" main.py
+          grep -m3 -E '^(VERSION|BUILD_NUMBER|BUILD_COMMIT) = ' main.py
+          grep -q "^BUILD_NUMBER = \"$GITHUB_RUN_NUMBER\"" main.py
       - name: Build the App Maker template (WebView shell -> apk_template.bin)
         run: |
           bash shellapp/build_template.sh apk_template.bin
           ls -l apk_template.bin
       - name: Build APK
         run: yes | buildozer android debug
+      - name: Release gate on the built copy
+        run: |
+          python tests/release_gate.py main.py
+          ls -l bin/*.apk
+      - name: Sign with the permanent key (only when the key is saved in the repo's Actions secrets)
+        env:
+          KS_B64: ${{ secrets.SIGNING_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.SIGNING_KEYSTORE_PASS }}
+        run: |
+          if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ]; then
+            echo "::warning::No signing key in Actions secrets. The quiet code update is published, but the fixed download link keeps its current app (a random-key app can't install over the phone's copy)."
+            exit 0
+          fi
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          echo "$KS_B64" | base64 -d > /tmp/upload.jks
+          IN="$(ls bin/*.apk | head -1)"
+          "$BT/zipalign" -p -f 4 "$IN" /tmp/aligned.apk
+          "$BT/apksigner" sign --ks /tmp/upload.jks --ks-pass env:KS_PASS --out bin/Genius.apk /tmp/aligned.apk
+          rm -f /tmp/upload.jks
+          D=$("$BT/apksigner" verify --print-certs bin/Genius.apk | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')
+          test "$D" = "320faeaf8da56b8a0b98148d680af3fb2443499a00f9be853cdad18bf8b019c4"
+          echo "SIGNED=1" >> $GITHUB_ENV
       - name: Prepare quiet update files
         run: |
           VER=$(grep -m1 '^VERSION = ' main.py | cut -d'"' -f2)
@@ -68,17 +98,20 @@ jobs:
           files: |
             bin/genius_live.py
             bin/genius_live.sha256
-      - name: Newest app on one fixed link
+      - name: Newest app on one fixed link (only a permanent-key app that passed the gate)
+        if: success() && env.SIGNED == '1'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp "$(ls bin/*.apk | head -1)" bin/Genius.apk
-          NOTES="Genius for Android, made in Uganda by Ssali Muto. Tap Genius.apk below to download the newest app. After you install it, Genius keeps itself up to date."
+          NOTES="Genius for Android, made in Uganda by Ssali Muto. Tap Genius.apk below to download the newest app. After you install it, Genius keeps itself up to date.
+
+          Version: $VER
+          Build: ${{ github.run_number }} (code ${GITHUB_SHA::7})"
           gh release view android >/dev/null 2>&1 || gh release create android --title "Genius for Android (newest)" --notes "$NOTES" --latest
           gh release upload android bin/Genius.apk --clobber
           gh release edit android --title "Genius for Android (newest)" --notes "$NOTES" --latest
       - name: Old shared links get the newest app too
-        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[refresh-links]')
+        if: env.SIGNED == '1' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[refresh-links]'))
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

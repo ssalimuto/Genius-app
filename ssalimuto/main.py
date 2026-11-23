@@ -3,6 +3,8 @@ import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random
 from types import MappingProxyType
 
 VERSION = "1.7"
+BUILD_NUMBER = "dev"   # stamped by the build server
+BUILD_COMMIT = "dev"   # stamped by the build server
 NEEDS_APK = "1.0"     # the oldest installed app this code can run inside
 LIVE_DIR = os.path.join(os.path.abspath(os.getcwd()), "live")
 LIVE_CODE = os.path.join(LIVE_DIR, "ssalimuto_live.py")
@@ -624,8 +626,22 @@ What this means
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
-VERSION_DATE = "2026-11-12"
-CHANGELOG = """Ssalimuto AI 1.5 (2026-11-12)
+VERSION_DATE = "2026-11-23"
+CHANGELOG = """Ssalimuto AI 1.7 (2026-11-23)
+- Better answers: facts come with numbered sources you can open, and maths is checked before it is shown
+- Deep research reads more pages and writes a cleaner report with sources
+- What's new now shows the exact version and build installed on your phone
+- Updates: the app now finds the newest download correctly
+
+Ssalimuto AI 1.6 (2026-11-14)
+- Typing: letters never repeat on Gboard or Infinix keyboards
+- Chat bubbles: your words and the answers in their own boxes
+- New look: search bar, Home / Chat / Projects tabs and cards
+- App Maker: makes real apps you can install; a live progress card shows each step
+- Creations: one shared design, a plan first, then a self-check that repairs mistakes
+- Pictures: realistic photo model first; "setpolli" connects sharper pictures in one approval
+
+Ssalimuto AI 1.5 (2026-11-12)
 - Opportunities: "opportunities", "hackathons", "scholarships", "competitions for robotics"
 - Background brain: studies what you ask about and reviews itself; say "brain" to see it
 - Find links: "find links for cheap phones" or "where can I apply for a passport" gives the best pages to tap
@@ -1619,13 +1635,19 @@ def online_update():
     except Exception:
         return None, "I couldn't reach the update page. Check your internet and try again."
     best = None
-    for rel in rels:
-        if rel.get("draft"):
-            continue
-        for a in rel.get("assets") or []:
-            m = re.match(r"genius2-(\d+(?:\.\d+)*)-.*\.apk$", a.get("name", ""))
-            if m and (best is None or _ver_tuple(m.group(1)) > _ver_tuple(best[0])):
-                best = (m.group(1), a.get("browser_download_url"))
+    try:   # the newest app always sits on one fixed release; its notes say "Version: X"
+        rel = next((x for x in rels if x.get("tag_name") == UPDATE_TAG), None)
+        if rel is None:
+            rq = urllib.request.Request("https://api.github.com/repos/ssalimuto/Genius-app/releases/tags/" + UPDATE_TAG,
+                                        headers={"Accept": "application/vnd.github+json", "User-Agent": "Genius-app"})
+            with urllib.request.urlopen(rq, timeout=20, context=ssl_context()) as r2:
+                rel = json.load(r2)
+        vm = re.search(r"Version:\s*([0-9][0-9.]*[0-9])", rel.get("body") or "")
+        url = next((a.get("browser_download_url") for a in rel.get("assets") or [] if a.get("name") == UPDATE_APK), None)
+        if vm and url:
+            best = (vm.group(1), url)
+    except Exception:
+        best = None
     if not best:
         return None, "No Ssalimuto AI download is on the release page yet."
     if _ver_tuple(best[0]) <= _ver_tuple(SHIP_VERSION):
@@ -11119,7 +11141,7 @@ class ChatScreen(BoxLayout):
                 ("Storage: where everything is kept", lambda: self.handle("storage"), BLUE),
                 ("Smart answers (what's new)", lambda: self.handle("smart answers"), GOLD),
                 ("New in Ssalimuto AI 110", lambda: self.show("AI", V110_HELP), GOLD),
-                ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
+                ("What's new", lambda: self.show("AI", whats_new_text()), GREY),
                 ("Help (all commands)", lambda: self.handle("help"), GREY),
                 ("Change secret code", lambda: self.handle("change code"), GREY),
                 ("Accounts", self.accounts_box, GREY),
@@ -11147,7 +11169,7 @@ class ChatScreen(BoxLayout):
                 ("My storage", self.storage_box, BLUE),
                 ("Add a picture or file", self.attach_menu, BLUE),
                 ("New in Ssalimuto AI 110", lambda: self.show("AI", V110_HELP), GOLD),
-                ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
+                ("What's new", lambda: self.show("AI", whats_new_text()), GREY),
                 ("Help (all commands)", lambda: self.handle("help"), GREY),
                 ("Change secret code", lambda: self.handle("change code"), GREY),
                 ("Accounts", self.accounts_box, GREY),
@@ -12807,7 +12829,7 @@ class ChatScreen(BoxLayout):
                 ("Profile", self.profile_drawer, GREY), ("Set up AI key", self.key_wizard, GOLD),
                 ("Theme / look", lambda: self.handle("theme"), GREY), ("Update Ssalimuto AI", lambda: self.handle("update"), GREY),
                 ("New in Ssalimuto AI 110", lambda: self.show("AI", V110_HELP), GREY),
-                ("What's new", lambda: self.show("AI", CHANGELOG), GREY),
+                ("What's new", lambda: self.show("AI", whats_new_text()), GREY),
                 ("Help (all commands)", lambda: self.handle("help"), GREY),
                 ("Change secret code", lambda: self.handle("change code"), GREY),
                 ("Accounts", self.accounts_box, GREY), ("Clear chat", self.clear_chat, GREY),
@@ -13943,7 +13965,7 @@ class ChatScreen(BoxLayout):
             self.show("AI", ABOUT_TEXT)
             return
         if action in ("version", "whatsnew", "changelog"):
-            self.show("AI", CHANGELOG)
+            self.show("AI", whats_new_text())
             return
         if action == "licenses":
             self.show("AI", LICENSES_TEXT)
@@ -23014,6 +23036,23 @@ def _qa_say_dedupe(self, text, plain=False):
 
 
 ChatScreen.say = _qa_say_dedupe
+
+
+# ===================== Installed version line and the one fixed download =====================
+UPDATE_TAG = "ssalimuto-android"            # the release the app updates from (the same fixed download link people share)
+UPDATE_APK = "SsalimutoAI.apk"
+
+
+def version_line():
+    """Exactly which copy is installed: version, build number, code commit and date."""
+    build = BUILD_NUMBER if BUILD_NUMBER != "dev" else "test copy"
+    commit = BUILD_COMMIT if BUILD_COMMIT != "dev" else "not from the build server"
+    return f"Ssalimuto AI {VERSION}  |  build {build}  |  code {commit}  |  {VERSION_DATE}"
+
+
+def whats_new_text():
+    return "[b]Installed: " + version_line() + "[/b]\n\n" + CHANGELOG
+# ===================== end installed version line =====================
 
 
 if __name__ == "__main__":

@@ -1,0 +1,54 @@
+name: Publish permanent-key apps to the fixed download links
+# Used when the apps were signed with the permanent key outside GitHub (the key is never in this repo).
+# The signed apps sit on the branch "signed-apks" with version.json; this checks the key, the
+# package, the version and the release gate, then puts them on the fixed links the in-app updater reads.
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get the signed apps
+        run: |
+          git fetch --depth 1 origin signed-apks
+          mkdir -p signed && git --work-tree=signed checkout origin/signed-apks -- .
+          ls -l signed
+          cat signed/version.json
+      - name: Release gate on the code these apps were built from
+        run: |
+          python3 tests/release_gate.py main.py ssalimuto/main.py
+      - name: Check key, package and version of each app
+        run: |
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          EXPECT=320faeaf8da56b8a0b98148d680af3fb2443499a00f9be853cdad18bf8b019c4
+          for A in Genius SsalimutoAI; do
+            F=signed/$A.apk
+            "$BT/apksigner" verify --verbose $F
+            D=$("$BT/apksigner" verify --print-certs $F | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')
+            test "$D" = "$EXPECT" || { echo "$A is not signed with the permanent key"; exit 1; }
+            "$BT/aapt" dump badging $F | head -1 | tee /tmp/$A.badging
+            WANT=$(python3 -c "import json;print(json.load(open('signed/version.json'))['$A']['version'])")
+            grep -q "versionName='${WANT%.*}'" /tmp/$A.badging || grep -q "versionName='$WANT'" /tmp/$A.badging || { echo "$A version does not match version.json"; exit 1; }
+          done
+          grep -q "package: name='org.ssalimuto.genius'" /tmp/Genius.badging
+          grep -q "package: name='org.ssalimuto.ssalimutoai'" /tmp/SsalimutoAI.badging
+      - name: Put them on the fixed links
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, subprocess
+          v = json.load(open("signed/version.json"))
+          apps = [("Genius", "android", "Genius for Android (newest)",
+                   "Genius for Android, made in Uganda by Ssali Muto. Tap Genius.apk below to download the newest app. After you install it, Genius keeps itself up to date.", "--latest"),
+                  ("SsalimutoAI", "ssalimuto-android", "Ssalimuto AI for Android (newest)",
+                   "Ssalimuto AI for Android, free for everyone, made in Uganda by Ssali Muto. Tap SsalimutoAI.apk below to download the newest app. After you install it, Ssalimuto AI keeps itself up to date.", "--latest=false")]
+          for a, tag, title, text, latest in apps:
+              notes = f"{text}\n\nVersion: {v[a]['version']}\nBuild: {v[a]['build']} (code {v[a]['commit']})"
+              subprocess.run(["gh", "release", "upload", tag, f"signed/{a}.apk", "--clobber"], check=True)
+              subprocess.run(["gh", "release", "edit", tag, "--title", title, "--notes", notes, latest], check=True)
+              print(tag, v[a]["version"])
+          PY

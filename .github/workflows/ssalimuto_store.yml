@@ -21,6 +21,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Release gate (every promised feature present, no banned names, no raw tracebacks)
+        working-directory: ${{ github.workspace }}
+        run: |
+          python tests/release_gate.py ssalimuto/main.py
+          python tests/test_answer_quality.py
       - name: Install build tools
         run: |
           if [ -f /etc/apt/apt-mirrors.txt ]; then echo "http://archive.ubuntu.com/ubuntu/	priority:1" | sudo tee /etc/apt/apt-mirrors.txt; fi
@@ -41,6 +46,9 @@ jobs:
           sed -i 's/^PLAY_BUILD = False/PLAY_BUILD = True/' main.py
           sed -i 's/^if __name__ == "__main__" and _boot_live():/if False and __name__ == "__main__" and _boot_live():/' main.py
           sed -i 's/Ssalimuto AI updates through the Play Store. Open Play Store, search Ssalimuto AI, and tap Update./Ssalimuto AI updates through the app store you installed it from. Open that store and tap Update./g' main.py
+          sed -i "0,/^BUILD_NUMBER = \"dev\"/s//BUILD_NUMBER = \"store-$GITHUB_RUN_NUMBER\"/" main.py
+          sed -i "0,/^BUILD_COMMIT = \"dev\"/s//BUILD_COMMIT = \"${GITHUB_SHA::7}\"/" main.py
+          grep -q '^BUILD_NUMBER = "store-' main.py
           grep -q '^PLAY_BUILD = True' main.py
           grep -q '^if False and __name__ == "__main__" and _boot_live():' main.py
           if grep -q 'Open Play Store' main.py; then echo 'Play Store text left'; exit 1; fi
@@ -53,6 +61,8 @@ jobs:
           ls -l apk_template.bin
       - name: Build release APK (unsigned)
         run: yes | buildozer android release
+      - name: Release gate on the store copy
+        run: python ../tests/release_gate.py main.py
       - name: Align the APK
         run: |
           ZA=$(ls -d ~/.buildozer/android/platform/android-sdk/build-tools/*/ | sort -V | tail -1)zipalign
