@@ -17,6 +17,10 @@ ROOT = os.path.dirname(HERE)
 # feature name -> (functions/classes that must exist, words or commands that must appear in the code)
 FEATURES = {
     "Typing fix (no repeated letters)": (["_ti_guard_insert"], []),
+    "Word suggestion bar (keeps the keyboard open)": (["sb_suggest", "sb_apply", "sb_learn", "sb_clear", "sb_pick_into",
+                                                       "sb_hold_focus", "SuggestChip", "SuggestScroll", "sb_add_bar",
+                                                       "_sb_chat_typing"],
+                                                      ['"suggest on"', '"suggest off"', "SuggestScroll(", "sb_add_bar(root, ti)"]),
     "Chat bubbles": (["ChatBubbles"], []),
     "App Builder": (["hk_build", "hk_builder_panel", "hk_edit"], []),
     "App Maker (installable apps)": (["ho_make_apk"], ["apk_template.bin"]),
@@ -98,6 +102,12 @@ def check_file(path):
                 if isinstance(sub, ast.Call) and _call_name(sub) in TRACE_CALLS:
                     problems.append(f"line {node.lineno}: a raw traceback is shown to the person ({_call_name(node)})")
                     break
+    # The phone keyboard's own suggestions stay off (they made letters repeat); the app's bar is used instead
+    if 'kw["keyboard_suggestions"] = False' not in src:
+        problems.append("keyboard suggestions were turned back on (they make letters repeat): keep keyboard_suggestions=False")
+    m_sb = re.search(r"(?s)# =+ 115\.6 Word suggestions.*?# =+ end word suggestions", src)
+    if m_sb and re.search(r"hide_keyboard|\.focus = False|focus\", False", m_sb.group(0)):
+        problems.append("the word suggestion bar must never close the keyboard")
     # What's new must describe the version being shipped
     m = re.search(r'^VERSION = "([^"]+)"', src, re.M)
     c = re.search(r'^CHANGELOG = """([^\n]*)', src, re.M)

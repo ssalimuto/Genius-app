@@ -63,6 +63,88 @@ def keyboard_tests(m, tag):
     check(f"{tag}: different lines kept", m.qa_dedupe_text("a b c\nd e f") == "a b c\nd e f")
 
 
+class FakeBox(FakeInput):
+    """A focused typing box for the word-suggestion tests."""
+
+    def __init__(self, text=""):
+        super().__init__()
+        self.text = text
+        self.focus = True
+        self.cursor = None
+        self.unfocused = 0
+
+    def get_cursor_from_index(self, i):
+        return (i, 0)
+
+    def __setattr__(self, k, v):
+        if k == "focus" and v is False:
+            self.__dict__["unfocused"] = self.__dict__.get("unfocused", 0) + 1
+        self.__dict__[k] = v
+
+
+def suggest_tests(m, tag):
+    try:
+        os.remove(m.SB_OFF_FLAG)
+    except Exception:
+        pass
+    m.sb_clear()
+    words = lambda t: [w for w, _ in m.sb_suggest(t)]
+    s = words("hel")
+    check(f"{tag}: suggest finishes a word (hel -> hello/help)", "hello" in s or "help" in s)
+    check(f"{tag}: suggest shows 3 to 5 chips", 3 <= len(m.sb_suggest("th")) <= 5)
+    check(f"{tag}: suggest keeps capitals (Hel -> Hello/Help)", any(w[:1] == "H" for w in words("Hel")))
+    check(f"{tag}: suggest predicts the next word (thank -> you)", "you" in words("thank "))
+    check(f"{tag}: suggest knows Luganda (oli -> otya)", "otya" in words("Oli "))
+    check(f"{tag}: suggest knows Luganda words (nkwa -> nkwagala)", "nkwagala" in words("nkwa"))
+    check(f"{tag}: suggest knows Ugandan words (mato -> matooke)", "matooke" in words("mato"))
+    check(f"{tag}: suggest skips secret commands", m.sb_suggest("setkey AIza") == [])
+    check(f"{tag}: suggest skips links and numbers", m.sb_suggest("see www.goo") == [] and m.sb_suggest("call 07") == [])
+    m.sb_learn("I love Kyankwanzi and my friend Nakato")
+    m.sb_learn("Nakato is coming to Kyankwanzi")
+    check(f"{tag}: suggest learns words you typed (kyank -> Kyankwanzi)", "kyankwanzi" in words("kyank"))
+    check(f"{tag}: suggest learns what comes next (friend -> nakato)", "nakato" in words("my friend "))
+    time.sleep(0.2)
+    check(f"{tag}: learned words are saved on the phone", os.path.exists(m.SB_FILE))
+    m.sb_learn("setkey ABCDEF123456")
+    m.sb_learn("my code is xq7z9 and abc@mail.com")
+    check(f"{tag}: suggest never learns keys, codes or emails", "abcdef" not in (m._sb_learned()[0]) and "xq7z9" not in m._sb_learned()[0])
+    m.sb_clear()
+    check(f"{tag}: suggest clear forgets learned words", "kyankwanzi" not in words("kyank") and not os.path.exists(m.SB_FILE))
+    check(f"{tag}: pick replaces the word being typed and adds a space", m.sb_apply("I want hel", None, "help", "complete") == ("I want help ", 12))
+    check(f"{tag}: pick adds the next word", m.sb_apply("thank ", None, "you", "next") == ("thank you ", 10))
+    check(f"{tag}: pick adds a space before the next word", m.sb_apply("thank", None, "you", "next") == ("thank you ", 10))
+    check(f"{tag}: pick in the middle of the text", m.sb_apply("hel world", 3, "hello", "complete") == ("hello world", 6))
+    m._ti_orig_insert = lambda self, s, from_undo=False: setattr(self, "text", self.text + s)
+    ti = FakeBox("I want hel")
+    m.sb_pick_into(ti, "help", "complete")
+    check(f"{tag}: picking a chip keeps the box focused (keyboard stays open)", ti.focus is True and ti.unfocused == 0)
+    check(f"{tag}: picking a chip puts the word in", ti.text == "I want help ")
+    m._ti_guard_insert(ti, "m")
+    m._ti_guard_insert(ti, "m")              # keyboard sends the same letter twice at once
+    check(f"{tag}: duplicate-insert guard still works after a pick", ti.text == "I want help m")
+    class T:
+        pass
+    m._SB_Focus = type("F", (), {"ignored_touch": []})
+    t = T()
+    m.sb_hold_focus(t)
+    m.sb_hold_focus(t)
+    check(f"{tag}: a chip touch never closes the keyboard", m._SB_Focus.ignored_touch == [t])
+    open(m.SB_OFF_FLAG, "w").write("1")
+    check(f"{tag}: suggest off hides the chips", m.sb_suggest("hel") == [])
+    os.remove(m.SB_OFF_FLAG)
+    check(f"{tag}: suggest on by default", m.sb_enabled() and m.sb_suggest("hel") != [])
+    check(f"{tag}: keyboard suggestions stay off (no doubled letters)", "keyboard_suggestions" in open(m.__file__).read()
+          and 'kw["keyboard_suggestions"] = False' in open(m.__file__).read())
+    texts = ["h", "he", "hel", "hello ", "hello how", "hello how ", "I want to make a sch", "Oli ", "webale ", "Kampa", "xqz", "ennyim"]
+    t0 = time.perf_counter()
+    for _ in range(25):
+        for x in texts:
+            m.sb_suggest(x)
+    ms = (time.perf_counter() - t0) * 1000 / (25 * len(texts))
+    print(f"     suggest speed: {ms:.2f} ms per key on this computer")
+    check(f"{tag}: suggest is fast (under 3 ms a key here)", ms < 3)
+
+
 def quality_tests(m, tag):
     if not hasattr(m, "qa_route"):
         return
@@ -129,6 +211,7 @@ def main():
         m = kivy_stub.load_app(os.path.join(ROOT, rel), "/tmp/qa_test_" + tag.split()[0].lower())
         m.net_online = lambda *a, **k: False
         keyboard_tests(m, tag)
+        suggest_tests(m, tag)
         quality_tests(m, tag)
     print(f"\n{len(FAILS)} failed" if FAILS else "\nall passed")
     sys.exit(1 if FAILS else 0)

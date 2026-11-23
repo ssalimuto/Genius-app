@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "115.5"
+VERSION = "115.6"
 BUILD_NUMBER = "dev"   # stamped by the build server
 BUILD_COMMIT = "dev"   # stamped by the build server
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
@@ -635,7 +635,13 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-11-23"
-CHANGELOG = """Genius 115.5 (2026-11-23)
+CHANGELOG = """Genius 115.6 (2026-11-23)
+- Word suggestions are back: as you type, 3 to 5 words appear just above the box. They finish the word you're typing or guess the next one, in English, Ugandan words and Luganda
+- Tap a word to add it: the keyboard stays open and letters still never repeat
+- Suggestions learn the words you use, kept only on your phone. Say suggest off, suggest on, or suggest clear to forget them
+- Also in Writing Tools, notes, the App Builder and photo edits
+
+Genius 115.5 (2026-11-23)
 - Better answers: facts come with numbered sources you can open, and maths is checked before it is shown
 - Deep research reads more pages and writes a cleaner report with sources
 - What's new now shows the exact version and build installed on your phone
@@ -10606,7 +10612,7 @@ class ChatScreen(BoxLayout):
         self.deep_btn = RoundButton(text="Deep", bg=GREY, fg=TEXTCOL)   # not shown; keeps Deep's state
 
         # suggestion strip: matching commands appear above the box while you type; tap one to fill it in
-        self.sugg_sv = ScrollView(size_hint_y=None, height=0, opacity=0, do_scroll_y=False, bar_width=0)
+        self.sugg_sv = SuggestScroll(size_hint_y=None, height=0, opacity=0, do_scroll_y=False, bar_width=0)   # 115.6 word bar
         self.sugg_row = BoxLayout(orientation="horizontal", size_hint_x=None, spacing=6, padding=[10, 2, 10, 2])
         self.sugg_row.bind(minimum_width=self.sugg_row.setter("width"))
         self.sugg_sv.add_widget(self.sugg_row)
@@ -12444,6 +12450,7 @@ class ChatScreen(BoxLayout):
         ti = style_input(TextInput(hint_text="e.g. put me in a blue suit at Entebbe airport at sunset",
                                    font_size="17sp"))
         box.add_widget(ti)
+        sb_add_bar(box, ti)
         pop = Popup(title="Banana edit", content=box, size_hint=(0.94, 0.55),
                     separator_color=GOLD, title_color=GOLD)
         b = RoundButton(text="Make it", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), size_hint_y=None, height="52dp", bold=True)
@@ -12746,6 +12753,7 @@ class ChatScreen(BoxLayout):
         box = BoxLayout(orientation="vertical", spacing=8, padding=10)
         ti = style_input(TextInput(hint_text="Write your note...", font_size="17sp"))
         box.add_widget(ti)
+        sb_add_bar(box, ti)
         pop = Popup(title="New note", content=box, size_hint=(0.94, 0.6),
                     separator_color=GOLD, title_color=GOLD)
         b = RoundButton(text="Save", bg=BLUE, fg=TEXTCOL, size_hint_y=None, height="50dp", bold=True)
@@ -17385,6 +17393,7 @@ def ga_writing_tools(screen, preset=""):
                 title_color=GOLD, title_size="20sp")
     ti = TextInput(text=preset, hint_text="Type or paste your text here...", font_size="16sp", size_hint_y=0.32)
     root.add_widget(ti)
+    sb_add_bar(root, ti)
     grid = GridLayout(cols=3, spacing=dp(5), size_hint_y=None, height=dp(150))
     sv = ScrollView(size_hint_y=0.45)
     out = Label(text="[color=9aa0c0]Pick a tool. The result shows here.[/color]", markup=True, color=TEXTCOL,
@@ -18617,6 +18626,7 @@ def hk_builder_panel(screen):
     ti = TextInput(hint_text="e.g. a quiz app about Uganda's history with 10 questions and a score",
                    multiline=True, font_size="16sp", size_hint_y=None, height=dp(96))
     root.add_widget(ti)
+    sb_add_bar(root, ti)
     b = RoundButton(text="Build my app", bg=GOLD, fg=(0.1, 0.1, 0.1, 1), font_size="17sp", bold=True,
                     size_hint_y=None, height=dp(52))
 
@@ -22963,6 +22973,837 @@ def version_line():
 def whats_new_text():
     return "[b]Installed: " + version_line() + "[/b]\n\n" + CHANGELOG
 # ===================== end installed version line =====================
+
+
+# ===================== 115.6 Word suggestions: the app's own bar above the typing box =====================
+# The phone keyboard's own suggestions stay OFF (see Safe keyboard at the top: they made letters repeat).
+# Instead the app shows 3-5 word chips above the box: finish the word being typed, or guess the next word.
+# Built-in English word list (most used words first) + Ugandan and Luganda words + words this person has typed
+# before (kept only on this phone, per account; "suggest clear" forgets them). Works offline, light and fast.
+# Tapping a chip never takes the keyboard away: the chip tells Kivy to ignore its touch for focus, and the box
+# is focused again right away.
+try:
+    from kivy.uix.behaviors import FocusBehavior as _SB_Focus
+except Exception:          # pragma: no cover
+    _SB_Focus = None
+
+SB_FILE = "suggest_words.json"          # relative on purpose: each account's own folder
+SB_OFF_FLAG = "suggest_off.flag"
+SB_DEBOUNCE = 0.12                      # seconds after the last key before the chips update
+SB_MAX = 5
+_SB_EN = """
+the of and to a in for is on that by this with i you it not or be are from at as your all have new more an was
+we will home can us about if page my has search free but our one other do no information time they site he up
+may what which their news out use any there see only so his when contact here business who web also now help
+get view online first been would how were services some these click its like service than find price date back
+top people had list name just over state year day into email two health world next used go work last most
+products music buy data make them should product system post her city add policy number such please available
+copyright support message after best software then good video well where info rights public books high school
+through each links she review years order very privacy book items company read group need many user said does
+set under general research university january mail full map reviews program life know games way days
+management part could great united hotel real item international center must store travel comments made
+development report off member details line terms before hotels did send right type because local those using
+results office education national car design take posted internet address community within states area want
+phone shipping reserved subject between forum family long based code show even black check special prices
+website index being women much sign file link open today technology south case project same pages version
+section own found sports house related security both county american photo game members power while care
+network down computer systems three total place end following download him without per access think north
+resources current posts big media law control water history pictures size art personal since including guide
+shop directory board location change white text small rating rate government children during return students
+shopping account times sites level digital profile previous form events love old john main call hours image
+department title description non insurance another why shall property class still money quality every listing
+content country private little visit save tools low reply customer december compare movies include college
+value article york man card jobs provide food source author different press learn sale around print course job
+canada process room stock training too credit point join science men categories advanced west sales look
+english left team estate box conditions select windows photos thread week category note live large gallery
+table register however june october november market library really action start series model features air
+industry plan human provided yes required second hot accessories cost movie forums march september better say
+questions july going medical test friend come server study application cart staff articles san feedback again
+play looking issues april never users complete street topic comment financial things working against standard
+tax person below mobile less got blog party payment equipment login student let programs offers legal above
+recent park stores side act problem red give memory performance social august quote language story sell
+options experience rates create key body young america important field few east paper single age activities
+club example girls additional password latest something road gift question changes night hard texas pay four
+status browse issue range building seller court february always result audio light write war offer blue groups
+easy given files event release analysis request china making picture needs possible might professional yet
+month major star areas future space committee hand cards problems london washington meeting become interest
+child keep enter california share similar garden schools million added reference companies listed baby
+learning energy run delivery popular term film stories put computers journal reports try welcome central
+images president notice original head radio until cell color self council away includes track australia
+discussion archive once others entertainment agreement format least society months log safety friends sure
+trade edition cars messages marketing tell further updated association able having provides david fun already
+green studies close common drive specific several gold living collection called short arts lot ask display
+limited powered solutions means director daily beach past natural whether due electronics five upon period
+planning database says official weather land average done technical window france pro region island record
+direct microsoft conference environment records district calendar costs style front statement update parts
+ever downloads early miles sound resource present applications either ago document word works material bill
+written talk federal hosting rules final tickets thing centre requirements via cheap kids finance true minutes
+else mark third rock gifts europe reading topics bad individual tips plus auto cover usually edit together
+videos percent fast function fact unit getting global tech meet far economic player projects lyrics often
+subscribe submit germany amount watch included feel though bank risk thanks everything deals various words
+production commercial james weight town heart advertising received choose treatment newsletter archives points
+knowledge magazine error camera girl currently construction toys registered clear golf receive domain methods
+chapter makes protection policies loan wide beauty manager india position taken sort listings models michael
+known half cases step engineering florida simple quick none wireless license paul friday lake whole annual
+published later basic sony shows corporate google church method purchase customers active response practice
+hardware figure materials fire holiday chat enough designed along among death writing speed countries loss
+face brand discount higher effects created remember standards oil bit yellow political increase advertise
+kingdom base near environmental thought stuff french storage japan doing loans shoes entry stay nature orders
+availability africa summary turn mean growth notes agency king monday european activity copy although drug
+pics western income force cash employment overall bay river commission package contents seen players engine
+port album regional stop supplies started administration bar institute views plans double dog build screen
+exchange types soon sponsored lines electronic continue across benefits needed season apply someone held
+anything printer condition effective believe organization effect asked mind sunday selection lost tour menu
+volume cross anyone mortgage hope silver corporation wish inside solution role rather weeks addition came
+supply nothing certain executive running lower necessary union jewelry according clothing particular fine
+names robert homepage hour gas skills six bush islands advice career military rental decision leave british
+pre huge woman facilities zip bid kind sellers middle move cable opportunities taking values division coming
+tuesday object appropriate machine logo length actually nice score statistics client returns capital follow
+sample investment sent shown saturday christmas england culture band flash lead george choice went starting
+registration thursday courses consumer airport foreign artist outside furniture levels channel letter mode
+phones ideas wednesday structure fund summer allow degree contract button releases homes super male matter
+custom virginia almost took located multiple asian distribution editor inn industrial cause potential song los
+focus late fall featured idea rooms female responsible communications win associated thomas primary cancer
+numbers reason tool browser spring foundation answer voice friendly schedule documents communication purpose
+feature bed comes police everyone independent approach cameras brown physical operating hill maps medicine
+deal hold ratings chicago forms glass happy smith wanted developed thank safe unique survey prior telephone
+sport ready feed animal sources mexico population regular secure navigation operations therefore simply
+evidence station christian round favorite understand option master valley recently probably rentals sea built
+publications blood cut worldwide improve connection publisher hall larger anti networks earth parents impact
+transfer introduction kitchen strong carolina wedding properties hospital ground overview ship accommodation
+owners disease excellent paid italy perfect hair opportunity kit classic basis command cities william express
+award distance tree peter assessment ensure thus wall involved extra especially interface partners budget
+rated guides success maximum operation existing quite selected boy amazon patients restaurants beautiful
+warning wine locations horse vote forward flowers stars significant lists technologies owner retail animals
+useful directly manufacturer ways son providing rule mac housing takes bring catalog searches max trying
+mother authority considered told traffic programme joined input strategy feet agent valid bin modern senior
+ireland teaching door grand testing trial charge units instead canadian cool normal wrote enterprise ships
+entire educational leading metal positive fitness chinese opinion asia football abstract uses output funds
+greater likely develop employees artists alternative processing responsibility resolution guest seems
+publication pass relations trust van contains session multi photography republic fees components vacation
+century academic assistance completed skin graphics indian prev ads mary expected ring grade pacific mountain
+organizations pop filter mailing vehicle longer consider int northern behind panel floor german buying match
+proposed default require iraq boys outdoor deep morning otherwise allows rest protein plant reported hit
+transportation pool mini politics partner disclaimer authors boards faculty parties fish membership mission
+eye string sense modified pack released stage internal goods recommended born unless richard detailed japanese
+race approved background target except character usb maintenance ability maybe functions moving brands places
+pretty trademarks spain southern yourself winter battery youth pressure submitted boston debt keywords medium
+television interested core break purposes throughout sets dance wood msn itself defined papers playing awards
+fee studio reader virtual device established answers rent las remote dark programming external apple regarding
+instructions min offered theory enjoy remove aid surface minimum visual host variety teachers isbn martin
+manual block subjects agents increased repair fair civil steel understanding songs fixed wrong beginning hands
+associates finally updates desktop classes paris ohio gets sector capacity requires jersey fat fully father
+electric saw instruments quotes officer driver businesses dead respect unknown specified restaurant mike trip
+worth procedures poor teacher eyes relationship workers farm georgia peace traditional campus tom showing
+creative coast benefit progress funding devices lord grant sub agree fiction hear sometimes watches careers
+beyond goes families led museum themselves fan transport interesting blogs wife evaluation accepted former
+implementation ten hits zone complex cat galleries references die presented jack flat flow agencies literature
+respective parent spanish michigan columbia setting scale stand economy highest helpful monthly critical frame
+musical definition secretary angeles networking path australian employee chief gives bottom magazines packages
+detail francisco laws changed pet heard begin individuals colorado royal clean switch russian largest african
+guy titles relevant guidelines justice connect bible dev cup basket applied weekly vol installation described
+demand suite vegas square chris attention advance skip diet army auction gear lee difference allowed correct
+charles nation selling lots piece sheet firm seven older illinois regulations elements species jump cells
+module resort facility random pricing dvds certificate minister motion looks fashion directions visitors
+documentation monitor trading forest calls whose coverage couple giving chance vision ball ending clients
+actions listen discuss accept automotive goal successful sold wind communities clinical situation sciences
+markets lowest highly publishing appear emergency developing lives currency leather determine temperature palm
+announcements patient actual historical stone bob commerce ringtones perhaps persons difficult scientific
+satellite fit tests village accounts amateur met pain xbox particularly factors coffee settings buyer cultural
+steve easily oral ford poster edge functional root closed holidays ice pink zealand balance monitoring
+graduate replies shot architecture initial label thinking scott llc sec recommend canon league waste minute
+bus provider optional dictionary cold accounting manufacturing sections chair fishing effort phase fields bag
+fantasy letters motor professor context install shirt apparel generally continued foot mass crime count
+techniques ibm johnson quickly dollars websites religion claim driving permission surgery patch heat wild
+measures generation kansas miss chemical doctor task reduce brought himself nor component enable exercise bug
+santa mid guarantee leader diamond israel processes soft servers alone meetings seconds jones arizona keyword
+interests flight congress fuel username walk produced italian paperback classifieds wait supported pocket
+saint rose freedom argument competition creating jim drugs joint premium providers fresh characters attorney
+upgrade factor growing thousands stream apartments pick hearing eastern auctions therapy entries dates
+generated signed upper administrative serious prime samsung limit began louis steps errors shops del efforts
+informed thoughts creek worked quantity urban practices sorted reporting essential myself tours platform load
+affiliate labor immediately admin nursing defense machines designated tags heavy covered recovery joe guys
+integrated configuration merchant comprehensive expert universal protect drop solid cds presentation languages
+became orange compliance vehicles prevent theme rich campaign marine improvement guitar finding pennsylvania
+examples ipod saying spirit claims challenge motorola acceptance strategies seem affairs touch intended
+towards goals hire election suggest branch charges serve affiliates reasons magic mount smart talking gave
+ones latin multimedia avoid certified manage corner rank computing oregon element birth virus abuse
+interactive requests separate quarter procedure leadership tables define racing religious facts breakfast kong
+column plants faith chain developer identify avenue missing died approximately domestic sitemap
+recommendations moved houston reach comparison mental viewed moment extended sequence inch attack sorry
+centers opening damage lab reserve recipes cvs gamma plastic produce snow placed truth counter failure follows
+weekend dollar camp ontario automatically des minnesota films bridge native fill williams movement printing
+baseball owned approval draft chart played contacts jesus readers clubs lcd jackson equal adventure matching
+offering shirts profit leaders posters institutions assistant variable ave advertisement expect parking
+headlines yesterday compared determined wholesale workshop russia gone codes kinds extension seattle
+statements golden completely teams fort lighting senate forces funny brother gene turned portable tried
+electrical applicable disc returned pattern boat named theatre laser earlier manufacturers sponsor classical
+icon warranty dedicated indiana direction harry basketball objects ends delete evening assembly nuclear taxes
+mouse signal criminal issued brain wisconsin powerful dream obtained false cast flower felt personnel passed
+supplied identified falls pic soul aids opinions promote stated stats hawaii professionals appears carry flag
+decided covers advantage hello designs maintain tourism priority newsletters clips savings graphic atom
+payments estimated binding brief ended winning eight anonymous iron straight script served wants miscellaneous
+prepared void dining alert integration atlanta dakota tag interview mix framework disk installed queen vhs
+credits clearly fix handle sweet desk criteria pubmed dave massachusetts diego hong vice associate truck
+behavior enlarge ray frequently revenue measure changing votes duty looked discussions bear gain festival
+laboratory ocean flights experts signs lack depth iowa whatever logged laptop vintage train exactly dry
+explore maryland spa concept nearly eligible checkout reality forgot handling origin knew gaming feeds billion
+destination scotland faster intelligence dallas bought con ups nations route followed specifications broken
+tripadvisor frank alaska zoom blow battle residential anime speak decisions industries protocol query clip
+partnership editorial expression equity provisions speech wire principles suggestions rural shared sounds
+replacement tape strategic judge spam economics acid bytes cent forced compatible fight apartment height null
+zero speaker filed netherlands obtain consulting recreation offices designer remain managed failed marriage
+roll korea banks participants secret bath kelly leads negative austin favorites toronto theater springs
+missouri andrew var perform healthy translation estimates font assets injury joseph ministry drivers lawyer
+figures married protected proposal sharing philadelphia portal waiting birthday beta fail gratis banking
+officials brian toward won slightly assist conduct contained legislation calling parameters jazz serving bags
+profiles miami comics matters houses doc postal relationships tennessee wear controls breaking combined
+ultimate wales representative frequency introduced minor finish departments residents noted displayed mom
+reduced physics rare spent performed extreme samples davis daniel bars reviewed row forecast removed helps
+administrator cycle amounts contain accuracy dual rise sleep bird pharmacy brazil creation static scene hunter
+addresses lady crystal famous writer chairman violence fans oklahoma speakers drink academy dynamic gender eat
+permanent agriculture dell cleaning constitutes portfolio practical delivered collectibles infrastructure
+exclusive seat concerns vendor originally intel utilities philosophy regulation officers reduction aim bids
+referred supports nutrition recording regions junior toll les cape ann rings meaning tip secondary wonderful
+mine ladies henry ticket announced guess agreed prevention whom ski soccer math import posting presence
+instant mentioned automatic healthcare viewing maintained increasing majority connected christ dan dogs
+directors aspects austria ahead moon participation scheme utility preview fly manner matrix containing
+combination devel amendment despite strength guaranteed turkey libraries proper distributed degrees singapore
+enterprises delta fear seeking inches phoenix convention shares principal daughter standing comfort colors
+wars cisco ordering kept alpha appeal cruise bonus certification previously hey bookmark buildings specials
+beat disney household batteries adobe smoking becomes drives arms alabama tea improved trees avg achieve
+positions dress subscription dealer contemporary sky utah nearby rom carried happen exposure panasonic hide
+permalink signature refer miller provision outdoors clothes caused luxury frames certainly indeed newspaper
+toy circuit layer printed slow removal easier liability trademark hip printers faqs nine adding kentucky
+mostly eric spot taylor trackback prints spend factory interior revised grow americans optical promotion
+relative amazing clock dot hiv identity suites conversion feeling hidden reasonable victoria serial relief
+revision broadband influence ratio pda importance rain onto dsl planet webmaster copies recipe zum permit
+seeing proof dna diff tennis bass prescription bedroom empty instance hole pets ride licensed orlando
+specifically tim bureau maine sql represent conservation pair ideal specs recorded don pieces finished parks
+dinner lawyers sydney stress cream runs trends yeah discover patterns boxes louisiana hills javascript fourth
+advisor marketplace evil aware wilson shape evolution irish certificates objectives stations suggested gps
+remains acc greatest firms concerned euro operator structures generic encyclopedia usage cap ink charts
+continuing mixed census interracial peak competitive exist wheel transit suppliers salt compact poetry lights
+tracking angel bell keeping preparation attempt receiving matches accordance width noise engines forget array
+discussed accurate stephen elizabeth climate reservations pin playstation alcohol greek instruction managing
+annotation sister raw differences walking explain smaller newest establish gnu happened expressed jeff extent
+sharp lesbians ben lane paragraph kill mathematics aol compensation export managers aircraft modules sweden
+conflict conducted versions employer occur percentage knows mississippi describe concern backup requested
+citizens connecticut heritage personals immediate holding trouble spread coach kevin agricultural expand
+supporting audience assigned jordan collections ages participate plug specialist cook affect virgin
+experienced investigation raised hat institution directed dealers searching sporting helping perl affected lib
+bike totally plate expenses indicate proceedings transmission anderson utc characteristics der lose organic
+seek experiences albums cheats extremely verzeichnis contracts guests hosted diseases concerning developers
+equivalent chemistry tony neighborhood nevada kits thailand variables agenda anyway continues tracks advisory
+cam curriculum logic template prince circle soil grants anywhere psychology responses atlantic wet
+circumstances edward investor identification ram leaving wildlife appliances matt elementary cooking speaking
+sponsors fox unlimited respond sizes plain exit entered iran arm keys launch wave checking costa belgium
+printable holy acts guidance mesh trail enforcement symbol crafts highway buddy hardcover observed dean setup
+poll booking glossary fiscal celebrity styles denver unix filled bond channels ericsson appendix notify blues
+chocolate pub portion scope hampshire supplier cables cotton bluetooth controlled requirement authorities
+biology dental killed border ancient debate representatives starts pregnancy causes arkansas biography leisure
+attractions learned transactions notebook explorer historic attached opened husband disabled authorized crazy
+upcoming britain concert retirement scores financing efficiency comedy adopted efficient weblog linear
+commitment specialty bears jean hop carrier edited constant visa mouth jewish meter linked portland interviews
+concepts gun reflect pure deliver wonder lessons fruit begins qualified reform lens alerts treated discovery
+draw mysql classified relating assume confidence alliance confirm warm neither lewis howard offline leaves
+engineer lifestyle consistent replace clearance connections inventory converter organisation checks reached
+becoming safari objective indicated sugar crew legs sam stick securities allen pdt relation enabled genre
+slide montana volunteer tested rear democratic enhance switzerland exact bound parameter adapter processor
+node formal dimensions contribute lock hockey storm micro colleges laptops mile showed challenges editors mens
+threads bowl supreme brothers recognition presents tank submission dolls estimate encourage navy kid
+regulatory inspection consumers cancel limits territory transaction manchester weapons paint delay pilot
+outlet contributions continuous czech resulting cambridge initiative novel pan execution disability increases
+ultra winner idaho contractor episode examination potter dish plays bulletin indicates modify oxford adam
+truly epinions painting committed extensive affordable universe candidate databases patent slot psp
+outstanding eating perspective planned watching lodge messenger mirror tournament consideration discounts
+sterling sessions kernel stocks buyers journals gray catalogue jennifer antonio charged broad taiwan und
+chosen demo greece swiss sarah clark hate terminal publishers nights behalf caribbean liquid rice nebraska
+loop salary reservation foods gourmet guard properly orleans saving nfl remaining empire resume twenty newly
+raise prepare avatar gary depending illegal expansion vary hundreds rome arab lincoln helped premier tomorrow
+purchased milk decide consent drama visiting performing downtown keyboard contest collected bands boot
+suitable absolutely millions lunch audit push chamber guinea findings muscle featuring iso implement clicking
+scheduled polls typical tower yours sum misc calculator significantly chicken temporary attend shower alan
+sending jason tonight dear sufficient holdem shell province catholic oak vat awareness vancouver governor beer
+seemed contribution measurement swimming spyware formula constitution packaging solar jose catch jane pakistan
+reliable consultation northwest sir doubt earn finder unable periods classroom tasks democracy attacks kim
+wallpaper merchandise const resistance doors symptoms resorts biggest memorial visitor twin forth insert
+baltimore gateway dont alumni drawing candidates charlotte ordered biological fighting transition happens
+preferences spy romance instrument bruce split themes powers heaven bits pregnant twice classification focused
+egypt physician hollywood bargain wikipedia cellular norway vermont asking blocks normally spiritual hunting
+diabetes suit shift chip res sit bodies photographs cutting wow simon writers marks flexible loved mapping
+numerous relatively birds satisfaction represents char indexed pittsburgh superior preferred saved paying
+cartoon shots intellectual moore granted choices carbon spending comfortable magnetic interaction listening
+effectively registry crisis outlook massive denmark employed bright treat header poverty formed piano echo que
+grid sheets patrick experimental puerto revolution consolidation displays plasma allowing earnings voip
+mystery landscape dependent mechanical journey delaware bidding consultants risks banner applicant charter fig
+barbara cooperation counties acquisition ports implemented directories recognized dreams blogger notification
+licensing stands teach occurred textbooks rapid pull hairy diversity cleveland reverse deposit seminar
+investments nasa wheels specify accessibility dutch sensitive templates formats tab depends boots holds router
+concrete editing poland folder womens css completion upload pulse universities technique contractors voting
+courts notices subscriptions calculate detroit alexander broadcast converted metro toshiba anniversary
+improvements specification pearl accident nick accessible accessory resident plot qty possibly airline
+typically representation regard pump exists arrangements smooth conferences uniprotkb strike consumption
+birmingham flashing narrow afternoon threat surveys sitting putting consultant controller ownership committees
+legislative researchers vietnam trailer anne castle gardens missed malaysia unsubscribe antique labels willing
+bio molecular acting heads stored exam logos residence attorneys antiques density hundred ryan operators
+strange sustainable philippines statistical beds mention innovation pcs employers grey parallel honda amended
+operate bills bold bathroom stable opera definitions von doctors lesson cinema asset scan elections drinking
+reaction blank enhanced entitled severe generate stainless newspapers hospitals deluxe humor aged monitors
+exception lived duration bulk successfully indonesia pursuant sci fabric edt visits primarily tight domains
+capabilities pmid contrast recommendation flying recruitment sin berlin cute organized para siemens adoption
+improving expensive meant capture pounds buffalo organisations plane explained seed programmes desire
+expertise mechanism camping jewellery meets welfare peer caught eventually marked driven measured medline
+bottle agreements considering innovative marshall massage rubber conclusion closing tampa thousand meat legend
+grace susan ing adams python monster alex bang villa bone columns disorders bugs collaboration hamilton
+detection ftp cookies inner formation tutorial med engineers entity cruises gate holder proposals moderator
+tutorials settlement portugal lawrence roman duties valuable tone collectables ethics forever dragon busy
+captain fantastic imagine brings heating leg neck wing governments purchasing scripts abc stereo appointed
+taste dealing commit tiny operational rail airlines liberal livecam jay trips gap sides tube turns
+corresponding descriptions cache belt jacket determination animation oracle matthew lease productions aviation
+hobbies proud excess disaster console commands telecommunications instructor giant achieved injuries shipped
+seats approaches biz alarm voltage anthony nintendo usual loading stamps appeared franklin angle rob vinyl
+highlights mining designers melbourne ongoing worst imaging scientists liberty wyoming blackjack argentina era
+convert possibility analyst commissioner dangerous garage exciting reliability thongs gcc unfortunately
+respectively volunteers attachment ringtone finland morgan derived pleasure honor oriented eagle desktops
+pants columbus nurse prayer appointment workshops hurricane quiet luck postage producer represented mortgages
+dial responsibilities cheese comic carefully jet productivity investors crown par underground diagnosis maker
+crack principle picks vacations gang semester calculated applies casinos appearance smoke apache filters
+incorporated craft cake notebooks apart fellow blind lounge mad algorithm semi coins andy gross strongly cafe
+valentine hilton ken proteins horror exp familiar capable douglas debian till involving pen investing
+christopher admission epson shoe elected carrying victory sand madison terrorism joy editions cpu mainly
+ethnic ran parliament actor finds seal situations fifth allocated citizen vertical corrections structural
+municipal describes prize occurs jon absolute disabilities consists anytime substance prohibited addressed
+lies pipe soldiers guardian lecture simulation layout initiatives ill concentration classics lbs lay
+interpretation horses lol dirty deck wayne donate taught bankruptcy worker optimization alive temple
+substances prove discovered wings breaks genetic restrictions participating waters promise thin exhibition
+prefer ridge cabinet modem harris mph bringing sick dose evaluate tiffany tropical collect composition toyota
+streets nationwide vector definitely shaved turning buffer purple existence commentary larry limousines
+developments def immigration destinations lets mutual pipeline necessarily syntax attribute prison skill
+chairs everyday apparently surrounding mountains moves popularity inquiry ethernet checked exhibit throw trend
+sierra visible cats desert postposted oldest rhode nba coordinator obviously mercury steven handbook greg
+navigate worse summit victims epa spaces fundamental burning escape coupons somewhat receiver substantial
+progressive boats glance scottish championship arcade richmond sacramento impossible ron russell tells obvious
+fiber depression graph covering platinum judgment bedrooms talks filing foster modeling passing awarded
+testimonials trials tissue memorabilia clinton masters bonds cartridge alberta explanation folk commons
+cincinnati subsection fraud electricity permitted spectrum arrival okay pottery emphasis roger aspect
+workplace awesome mexican confirmed counts priced wallpapers hist crash lift desired inter closer assumes
+heights shadow riding infection firefox lisa expense grove eligibility venture clinic korean healing princess
+mall entering packet spray studios involvement dad buttons placement observations vbulletin funded thompson
+winners extend roads subsequent pat dublin rolling fell motorcycle yard disclosure establishment memories
+nelson arrived creates faces tourist mayor murder sean adequate senator yield presentations grades cartoons
+pour digest reg lodging tion dust hence wiki entirely replaced radar rescue undergraduate losses combat
+reducing stopped occupation lakes donations associations citysearch closely radiation diary seriously kings
+shooting kent adds nsw ear flags pci baker launched elsewhere pollution conservative guestbook shock
+effectiveness walls abroad tie ward drawn arthur ian visited roof walker demonstrate atmosphere suggests kiss
+beast operated experiment targets overseas purchases dodge counsel federation pizza invited yards assignment
+chemicals gordon mod farmers queries bmw rush ukraine absence nearest cluster vendors mpeg whereas yoga serves
+woods surprise lamp rico partial shoppers phil everybody couples nashville ranking jokes cst ceo simpson twiki
+sublime counseling palace acceptable satisfied glad wins measurements verify globe trusted copper milwaukee
+rack medication warehouse shareware rep dicke kerry receipt supposed ordinary nobody ghost violation configure
+stability mit applying southwest boss pride institutional expectations independence knowing reporter
+metabolism keith champion cloudy linda ross personally chile anna plenty solo sentence throat ignore maria
+uniform excellence wealth tall somewhere vacuum dancing attributes recognize brass writes plaza pdas outcomes
+survival quest publish sri screening toe thumbnail trans jonathan whenever nova lifetime api pioneer booty
+forgotten acrobat plates acres venue athletic thermal essays vital telling fairly coastal config charity
+intelligent edinburgh excel modes obligation campbell wake stupid harbor hungary traveler urw segment realize
+regardless lan enemy puzzle rising aluminum wells wishlist opens insight sms restricted republican secrets
+lucky latter merchants thick trailers repeat syndrome philips attendance penalty drum glasses enables nec
+iraqi builder vista jessica chips terry flood foto ease arguments amsterdam arena adventures pupils stewart
+announcement tabs outcome appreciate expanded casual grown polish lovely extras centres jerry clause smile
+lands troops indoor bulgaria armed broker charger regularly believed pine cooling tend gulf rick trucks
+mechanisms divorce laura shopper tokyo partly nikon customize tradition candy pills tiger donald folks sensor
+exposed telecom hunt angels deputy indicators sealed thai emissions physicians loaded fred complaint scenes
+experiments afghanistan boost spanking scholarship governance mill founded supplements chronic icons moral den
+catering finger keeps pound locate camcorder trained burn implementing roses labs ourselves bread tobacco
+wooden motors tough roberts incident gonna dynamics lie crm conversation decrease chest pension billy revenues
+emerging worship capability craig herself producing churches precision damages reserves contributed solve
+shorts reproduction minority diverse amp ingredients johnny sole franchise recorder complaints facing nancy
+promotions tones passion rehabilitation maintaining sight laid clay defence patches weak refund usc towns
+environments trembl divided blvd reception amd wise emails cyprus odds correctly insider seminars consequences
+makers hearts geography appearing integrity worry discrimination eve carter legacy marc pleased danger vitamin
+widely processed phrase genuine raising implications functionality paradise hybrid reads roles intermediate
+emotional sons leaf pad glory platforms bigger billing diesel versus combine overnight geographic exceed rod
+saudi fault cuba hrs preliminary districts introduce silk promotional kate chevrolet babies karen compiled
+romantic revealed specialists generator albert examine jimmy graham suspension bristol margaret compaq sad
+correction wolf slowly authentication communicate rugby supplement showtimes cal portions infant promoting
+sectors samuel fluid grounds fits kick regards meal hurt machinery bandwidth unlike equation baskets
+probability pot dimension wright barry proven schedules admissions cached warren slip studied reviewer
+involves quarterly rpm profits devil grass comply marie florist illustrated cherry continental alternate
+deutsch achievement limitations kenya cuts funeral nutten earrings enjoyed automated chapters pee charlie
+quebec passenger convenient dennis mars francis tvs sized manga noticed socket silent literary egg mhz signals
+caps orientation pill theft childhood swing symbols lat meta humans analog facial choosing talent dated
+flexibility seeker wisdom shoot boundary mint packard offset payday philip elite spin holders believes swedish
+poems deadline jurisdiction robot displaying witness collins equipped stages encouraged sur winds powder
+broadway acquired assess wash cartridges stones entrance gnome roots declaration losing attempts gadgets noble
+glasgow automation impacts rev gospel advantages shore loves induced knight preparing loose aims recipient
+linking extensions appeals earned illness islamic athletics southeast ieee alternatives pending parker
+determining lebanon corp personalized kennedy conditioning teenage soap triple cooper nyc vincent jam secured
+unusual answered partnerships destruction slots increasingly migration disorder routine toolbar basically
+rocks conventional titans applicants wearing axis sought genes mounted habitat firewall median guns scanner
+herein occupational animated judicial rio adjustment hero integer treatments bachelor attitude camcorders
+engaged falling basics montreal carpet struct lenses binary genetics attended difficulty punk collective
+coalition dropped enrollment duke walter pace besides wage producers collector arc hosts interfaces
+advertisers moments atlas strings dawn representing observation feels torture carl deleted coat mitchell mrs
+rica restoration convenience returning ralph opposition container defendant warner confirmation app embedded
+inkjet supervisor wizard corps actors liver peripherals
+"""
+_SB_CHAT = ("hi hello hey okay ok yes no please thanks thank sorry i'm don't can't it's what's i'll you're "
+            "that's let's didn't doesn't isn't won't i've we're they're there's how's where's who's wasn't aren't "
+            "couldn't wouldn't shouldn't haven't today tomorrow yesterday morning afternoon evening tonight "
+            "maybe sure fine great nice cool wow love miss happy sad tired hungry")
+_SB_UG = ("uganda ugandan kampala entebbe jinja mbarara gulu masaka mityana wakiso mukono lira mbale kabale arua "
+          "soroti hoima fort portal kasese tororo iganga busia mubende luwero buswabulongo kololo nakasero ntinda "
+          "kireka bweyogerere makerere kyambogo mulago owino nakawa kawempe rubaga makindye boda matooke posho "
+          "rolex chapati kikomando samosa mandazi luwombo nsenene katogo shillings ugx mtn airtel momo "
+          "luganda buganda kabaka lubiri busoga acholi ankole uneb uce uace ple nssf ura kcca")
+_SB_LG = ("oli otya gyendi bulungi webale weebale nnyo ssebo nnyabo kale nedda yee nkwagala mukwano ggwe nze ffe "
+          "mmwe bo ani ki wa ddi lwaki meka olunaku leero jjo enkya ekiro emmere amazzi ssente omulimu essomero "
+          "omusomesa omuyizi maama taata muganda mwannyinaze ennyimba yimba nnyamba ndaga wasuze osiibye ndi "
+          "mulamu tugende jangu genda tuula wuliriza nsonyiwa tewali waliwo kirungi kibi kinene kitono naye era "
+          "oba nga kubanga buli bangi kati mpola mangu omwana abaana omusajja omukazi ennyumba ekyalo ekibuga "
+          "enkuba enjuba ennyanja omugga emmotoka ente embuzi enkoko katonda mukama ssaawa wiiki omwezi omwaka "
+          "okusoma okuwandiika okulya okunywa okwebaka okukola okugenda okujja okulaba okwagala gonja muwogo "
+          "lumonde kawunga sukaali caayi kaawa mmwanyi ebijanjaalo ebinyeebwa")
+_SB_NEXT = {
+    "how": "are is to do much many", "what": "is are time do about", "thank": "you", "thanks": "for a",
+    "good": "morning evening night afternoon", "i": "am want need have will think love can", "i'm": "fine good not going",
+    "can": "you i we", "could": "you", "would": "you like", "will": "you be", "tell": "me", "write": "a me an",
+    "make": "a me an", "show": "me", "give": "me", "help": "me", "explain": "how the what", "please": "help tell send",
+    "where": "is are can", "when": "is will", "who": "is are", "why": "is do", "which": "is one", "is": "it the",
+    "are": "you we", "do": "you i", "you": "are can know", "it": "is was", "the": "best same", "a": "good new",
+    "in": "the uganda kampala", "to": "the be do make", "of": "the uganda", "for": "the me you", "my": "name phone",
+    "want": "to", "need": "to a", "going": "to", "have": "a you", "see": "you", "how's": "it", "what's": "up the",
+    "happy": "birthday new", "new": "year", "merry": "christmas", "god": "bless",
+    "oli": "otya", "wasuze": "otya bulungi", "osiibye": "otya bulungi", "webale": "nnyo", "weebale": "nnyo",
+    "nkwagala": "nnyo", "ndi": "bulungi mulamu", "bulungi": "nnyo ssebo nnyabo", "gyendi": "ssebo nnyabo",
+    "kale": "ssebo nnyabo", "nsonyiwa": "ssebo nnyabo", "jangu": "wano", "tugende": "ewaka", "mukama": "katonda",
+}
+_SB = {"base": None, "idx": None, "uni": None, "bi": None, "home": None, "dirty": False}
+_SB_LOCK = threading.RLock()
+_SB_WORD_RE = re.compile(r"[A-Za-z\u00C0-\u024F']+")
+_SB_TAIL_RE = re.compile(r"([A-Za-z\u00C0-\u024F']+)$")
+
+
+def sb_enabled():
+    return not os.path.exists(SB_OFF_FLAG)
+
+
+def _sb_index_add(w):
+    k = w[:2]
+    b = _SB["idx"].setdefault(k, [])
+    if w not in b:
+        b.append(w)
+
+
+def _sb_base():
+    """Built-in words with a score (most used English words first). Built once, a few milliseconds."""
+    with _SB_LOCK:
+        if _SB["base"] is None:
+            _sb_build()
+    return _SB["base"]
+
+
+def _sb_build():
+    base = {}
+    for r, w in enumerate(_SB_EN.split()):
+        base.setdefault(w, 1000.0 / (r + 20))
+    for w in _SB_CHAT.split():
+        base[w] = max(base.get(w, 0), 18.0)
+    for w in _SB_UG.split():
+        base[w] = max(base.get(w, 0), 5.0)
+    for w in _SB_LG.split():
+        base[w] = max(base.get(w, 0), 6.0)
+    _SB["base"] = base
+    _SB["idx"] = {}
+    for w in base:
+        _sb_index_add(w)
+
+
+def _sb_learned():
+    """Words this person typed before. Reloaded when another account signs in (each has its own folder)."""
+    home = os.getcwd()
+    with _SB_LOCK:
+        return _sb_learned_locked(home)
+
+
+def _sb_learned_locked(home):
+    if _SB["uni"] is None or _SB["home"] != home:
+        _sb_base()
+        uni, bi = {}, {}
+        try:
+            d = json.load(open(SB_FILE))
+            uni = {str(w): int(n) for w, n in d.get("uni", {}).items()}
+            bi = {str(a): {str(b): int(n) for b, n in m.items()} for a, m in d.get("bi", {}).items()}
+        except Exception:
+            try:      # words learned by the older word predictor (owner's folder only)
+                if os.path.abspath(home) == os.path.abspath(ROOT) and os.path.exists(WORDS_FILE):
+                    d = json.load(open(WORDS_FILE))
+                    uni = {str(w): int(n) for w, n in d.get("uni", {}).items()}
+                    bi = {str(a): {str(b): int(n) for b, n in m.items()} for a, m in d.get("bi", {}).items()}
+            except Exception:
+                uni, bi = {}, {}
+        _SB["idx"] = {}
+        for w in _SB["base"]:
+            _sb_index_add(w)
+        for w in uni:
+            _sb_index_add(w)
+        _SB["uni"], _SB["bi"], _SB["home"] = uni, bi, home
+    return _SB["uni"], _SB["bi"]
+
+
+def _sb_case(src, word):
+    if word == "i" or word.startswith("i'"):
+        return "I" + word[1:]
+    if src.isupper() and len(src) > 1:
+        return word.upper()
+    if src[:1].isupper():
+        return word[:1].upper() + word[1:]
+    return word
+
+
+def _sb_skip(text):
+    t = (text or "").lstrip().lower()
+    try:
+        if t.startswith(_NO_SUGGEST):
+            return True
+    except Exception:
+        pass
+    return len(text or "") > 2000
+
+
+def sb_suggest(text, limit=SB_MAX, cursor=None):
+    """Words for the chip row: [(word, kind)] where kind is 'complete' (replaces the word being typed)
+    or 'next' (added after it). Fast: looks only at words starting with the same two letters."""
+    if not text or _sb_skip(text) or not sb_enabled():
+        return []
+    before = text if cursor is None else text[:cursor]
+    if not before.strip():
+        return []
+    base = _sb_base()
+    uni, bi = _sb_learned()
+    m = _SB_TAIL_RE.search(before)
+    out = []
+    if m and not before.endswith((" ", "\n")):
+        part = m.group(1)
+        head = before[:m.start(1)]
+        if head and head[-1] in "@/.:#_-=\\0123456789":     # part of a link, email, code or number
+            return []
+        low = part.lower()
+        prev = _SB_WORD_RE.findall(head)
+        prev = prev[-1].lower() if prev else ""
+        nb = bi.get(prev, {})
+        seeds = _SB_NEXT.get(prev, "").split()
+        if len(low) == 1:
+            pool = [w for k, b in _SB["idx"].items() if k[:1] == low for w in b]
+        else:
+            pool = _SB["idx"].get(low[:2], [])
+        scored = []
+        for w in pool:
+            if w.startswith(low) and w != low:
+                s = base.get(w, 0.0) + 6.0 * uni.get(w, 0) + 15.0 * nb.get(w, 0)
+                if w in seeds:
+                    s += 25.0 - seeds.index(w)
+                scored.append((-s, len(w), w))
+        scored.sort()
+        fix = None
+        try:
+            fix = _AUTOCORRECT.get(low)
+        except Exception:
+            fix = None
+        if fix and fix.lower() != low:
+            out.append((_sb_case(part, fix), "complete"))
+        if low in base or low in uni:     # the typed word itself is a real word: offer it, with a space
+            out.append((_sb_case(part, low), "complete"))
+        for _, _, w in scored:
+            if len(out) >= limit:
+                break
+            out.append((_sb_case(part, w), "complete"))
+        if len(out) < 2 and len(low) >= 3:
+            import difflib
+            near = [w for k, b in _SB["idx"].items() if k[:1] == low[:1] for w in b if abs(len(w) - len(low)) <= 2]
+            for w in difflib.get_close_matches(low, near[:1500], n=3, cutoff=0.75):
+                out.append((_sb_case(part, w), "complete"))
+    else:
+        if not before.endswith((" ", "\n")):       # a number, link or symbol is being typed
+            return []
+        ws = _SB_WORD_RE.findall(before)
+        if not ws:
+            return []
+        prev = ws[-1].lower()
+        end_sentence = before.rstrip()[-1:] in ".!?"
+        cand = {}
+        for w, n in bi.get(prev, {}).items():
+            cand[w] = cand.get(w, 0) + 10.0 * n
+        for i, w in enumerate(_SB_NEXT.get(prev, "").split()):
+            cand[w] = cand.get(w, 0) + 20.0 - i
+        for w in cand:
+            cand[w] += base.get(w, 0) * 0.2 + uni.get(w, 0) * 0.5
+        ranked = sorted(cand, key=lambda w: -cand[w])
+        fill = ["I", "The", "Please", "Thank", "What"] if end_sentence else ["the", "a", "to", "and", "is", "you"]
+        if end_sentence:
+            ranked = [w[:1].upper() + w[1:] for w in ranked]
+        n_own = len(ranked)
+        ranked += fill
+        for i, w in enumerate(ranked):
+            if len(out) >= limit or (i >= n_own and len(out) >= 3):   # common words only to fill up to 3
+                break
+            if w.lower() != prev:
+                out.append((w, "next"))
+    seen, res = set(), []
+    for w, k in out:
+        if w.lower() not in seen:
+            seen.add(w.lower())
+            res.append((w, k))
+    return res[:limit]
+
+
+def sb_apply(text, cursor, word, kind):
+    """Put a picked word in: replace the word being typed, or add the next word. Always ends with one space.
+    Returns (new text, new cursor index)."""
+    text = text or ""
+    cursor = len(text) if cursor is None else max(0, min(int(cursor), len(text)))
+    before, after = text[:cursor], text[cursor:]
+    if kind == "complete":
+        m = _SB_TAIL_RE.search(before)
+        if m and not before.endswith((" ", "\n")):
+            before = before[:m.start(1)]
+    elif before and not before.endswith((" ", "\n")):
+        before += " "
+    before += word
+    if after.startswith(" "):
+        return before + after, len(before) + 1
+    before += " "
+    return before + after, len(before)
+
+
+def sb_learn(text):
+    """Remember the words this person really types (only on this phone, only while suggestions are on)."""
+    if not text or _sb_skip(text) or not sb_enabled() or len(text) > 1500:
+        return
+    ws = []
+    for tok in re.split(r"\s+", text):
+        if re.search(r"[0-9@/\\:=_]", tok) or len(tok) > 24:   # no codes, keys, links or numbers
+            ws.append(None)
+            continue
+        for w in _SB_WORD_RE.findall(tok):
+            w = w.lower().strip("'")
+            ws.append(w if 0 < len(w) < 24 else None)
+    with _SB_LOCK:
+        uni, bi = _sb_learned()
+        for i, w in enumerate(ws):
+            if not w:
+                continue
+            if w not in uni:
+                _sb_index_add(w)
+            uni[w] = uni.get(w, 0) + 1
+            if i and ws[i - 1]:
+                m = bi.setdefault(ws[i - 1], {})
+                m[w] = m.get(w, 0) + 1
+        if len(uni) > 4000:                     # stay small on low-memory phones
+            for w, _ in sorted(uni.items(), key=lambda x: x[1])[:800]:
+                uni.pop(w, None)
+                bi.pop(w, None)
+            _SB["idx"] = {}
+            for w in list(_SB["base"]) + list(uni):
+                _sb_index_add(w)
+        data = {"uni": dict(uni), "bi": {a: dict(sorted(m.items(), key=lambda x: -x[1])[:10]) for a, m in bi.items()}}
+    path = os.path.abspath(SB_FILE)
+
+    def save():
+        try:
+            with _SB_LOCK:
+                tmp = path + ".tmp"
+                json.dump(data, open(tmp, "w"))
+                os.replace(tmp, path)
+        except Exception as e:
+            log(f"SUGGEST save failed: {type(e).__name__}")
+    threading.Thread(target=save, daemon=True).start()
+
+
+def sb_clear():
+    """Forget every word this person typed (built-in words stay)."""
+    with _SB_LOCK:
+        for p in (SB_FILE, SB_FILE + ".tmp"):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+        try:
+            if os.path.abspath(os.getcwd()) == os.path.abspath(ROOT) and os.path.exists(WORDS_FILE):
+                os.remove(WORDS_FILE)
+        except Exception:
+            pass
+        _SB["uni"], _SB["bi"], _SB["home"] = None, None, None
+        _WORDS["uni"], _WORDS["bi"] = None, None
+
+
+def sb_hold_focus(touch):
+    """Tell Kivy this touch must not close the keyboard (it is on a word chip, not outside the box)."""
+    try:
+        lst = _SB_Focus.ignored_touch
+        if touch not in lst:
+            lst.append(touch)
+    except Exception:
+        pass
+
+
+def sb_pick_into(ti, word, kind):
+    """Put the picked word into the box and keep typing: the box keeps focus, the keyboard stays open."""
+    try:
+        try:
+            ci = ti.cursor_index()
+        except Exception:
+            ci = len(ti.text)
+        new, nci = sb_apply(ti.text, ci, word, kind)
+        ti.text = new
+        try:
+            ti.cursor = ti.get_cursor_from_index(nci)
+        except Exception:
+            pass
+        ti._kb_last = ("", 0.0, -1)            # the duplicate-insert guard starts fresh after a pick
+        if not getattr(ti, "focus", True):
+            ti.focus = True
+        try:
+            Clock.schedule_once(lambda *_: (None if ti.focus else setattr(ti, "focus", True)), 0)
+        except Exception:
+            pass
+    except Exception as e:
+        log(f"SUGGEST pick: {type(e).__name__}")
+
+
+class SuggestChip(RoundButton):
+    """A word chip that never steals focus from the typing box."""
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            sb_hold_focus(touch)
+        return super().on_touch_down(touch)
+
+
+class SuggestScroll(ScrollView):
+    """The chip row. Swiping or tapping it never closes the keyboard."""
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            sb_hold_focus(touch)
+        return super().on_touch_down(touch)
+
+
+def sb_fill_row(row, sv, items, ti, on_pick=None):
+    """Draw the chips for items [(word, kind)] in row; hide the bar when there is nothing to show."""
+    try:
+        row.clear_widgets()
+        if not items or not sb_enabled():
+            sv.height, sv.opacity = 0, 0
+            return
+        cols = PAL["chip"]
+        for i, (w, kind) in enumerate(items):
+            col = cols[i % len(cols)]
+            dark = col[3] == 1 and _lum(col) > 0.45
+            fg = (0.08, 0.07, 0.05, 1) if dark else TEXTCOL
+            label = w
+            b = SuggestChip(text=_esc(label), bg=col, fg=fg, markup=True, size_hint_x=None, font_size="15sp",
+                            bold=True, width=dp(26) + dp(8.6) * len(label))
+
+            def pick(_b, w=w, kind=kind):
+                sb_pick_into(ti, w, kind)
+                if on_pick:
+                    on_pick()
+            b.bind(on_press=pick)
+            row.add_widget(b)
+        sv.height, sv.opacity = dp(42), 1
+    except Exception as e:
+        log(f"SUGGEST row: {type(e).__name__}")
+
+
+def sb_add_bar(container, ti, index=None):
+    """Add a word-suggestion bar above ti in a popup or screen. Returns the bar (or None)."""
+    try:
+        sv = SuggestScroll(size_hint_y=None, height=0, opacity=0, do_scroll_y=False, bar_width=0)
+        row = BoxLayout(orientation="horizontal", size_hint_x=None, spacing=6, padding=[4, 2, 4, 2])
+        row.bind(minimum_width=row.setter("width"))
+        sv.add_widget(row)
+        st = {"ev": None}
+
+        def update(*_):
+            st["ev"] = None
+            try:
+                ci = ti.cursor_index()
+            except Exception:
+                ci = None
+            sb_fill_row(row, sv, sb_suggest(ti.text, cursor=ci) if ti.focus else [], ti)
+
+        def typing(*_):
+            if st["ev"] is not None:
+                st["ev"].cancel()
+            st["ev"] = Clock.schedule_once(update, SB_DEBOUNCE)
+        ti.bind(text=typing, focus=typing)
+        if index is None:
+            kids = list(getattr(container, "children", []))
+            index = kids.index(ti) + 1 if ti in kids else 0
+        container.add_widget(sv, index=index)
+        return sv
+    except Exception as e:
+        log(f"SUGGEST bar: {type(e).__name__}")
+        return None
+
+
+def _sb_chat_typing(self, _ti, text):
+    if self._sugg_ev is not None:
+        self._sugg_ev.cancel()
+
+    def update(*_):
+        self._sugg_ev = None
+        try:
+            ci = self.inp.cursor_index()
+        except Exception:
+            ci = None
+        sb_fill_row(self.sugg_row, self.sugg_sv, sb_suggest(self.inp.text, cursor=ci), self.inp)
+    self._sugg_ev = Clock.schedule_once(update, SB_DEBOUNCE)
+
+
+ChatScreen._typing = _sb_chat_typing
+learn_words = sb_learn            # the chat's Send keeps teaching the new suggestions
+HELP_EXTRA["suggest on / suggest off / suggest clear"] = (
+    "Word suggestions above the typing box: on, off, or forget the words you typed (kept only on this phone)")
+_sb_prev_ga_handle = ga_handle
+
+
+def ga_handle(screen, line, action, arg, low):
+    lw = low.strip(" .!?")
+    try:
+        if lw in ("suggest on", "word suggestions on", "suggestions bar on", "words on", "suggest words on"):
+            try:
+                os.remove(SB_OFF_FLAG)
+            except Exception:
+                pass
+            screen.say("Word suggestions are on. As you type, words to pick appear just above the box. "
+                       "Tap one to add it; the keyboard stays open.")
+            return True
+        if lw in ("suggest off", "word suggestions off", "suggestions bar off", "words off", "suggest words off"):
+            open(SB_OFF_FLAG, "w").write("1")
+            try:
+                screen._show_suggestions([])
+            except Exception:
+                pass
+            screen.say("Word suggestions are off. Say [b]suggest on[/b] to bring them back.")
+            return True
+        if lw in ("suggest clear", "suggest forget", "clear suggestions", "forget my words", "clear my words"):
+            sb_clear()
+            screen.say("Done. I forgot the words you typed. The built-in English, Ugandan and Luganda words stay.")
+            return True
+        if lw in ("suggest", "word suggestions", "suggestions bar"):
+            uni, _ = _sb_learned()
+            screen.say(("Word suggestions are [b]on[/b]. " if sb_enabled() else "Word suggestions are [b]off[/b]. ")
+                       + f"I know {len(_sb_base()):,} built-in words and {len(uni):,} of your own. "
+                       "Say [b]suggest on[/b], [b]suggest off[/b] or [b]suggest clear[/b].")
+            return True
+    except Exception as e:
+        log(f"SUGGEST command: {type(e).__name__}")
+    return _sb_prev_ga_handle(screen, line, action, arg, low)
+
+
+threading.Thread(target=_sb_base, daemon=True).start()     # build the word list before the first key press
+# ===================== end word suggestions =====================
 
 
 if __name__ == "__main__":
