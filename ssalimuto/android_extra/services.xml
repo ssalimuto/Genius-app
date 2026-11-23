@@ -16,3 +16,7 @@
             <meta-data android:name="android.accessibilityservice"
                        android:resource="@xml/genius_accessibility" />
         </service>
+        <provider android:name="org.ssalimuto.ssalimutoai.GeniusApkProvider"
+                  android:authorities="{{ args.package }}.apkprovider"
+                  android:exported="false"
+                  android:grantUriPermissions="true" />

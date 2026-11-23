@@ -40,7 +40,61 @@ FEATURES = {
     "Pictures (setpolli)": ([], ["setpolli"]),
     "What's new with installed version": (["whats_new_text", "version_line"], ["BUILD_NUMBER", "BUILD_COMMIT"]),
     "App updater reads the fixed download": (["online_update", "fetch_live_update"], ["UPDATE_TAG"]),
+    "Safe updater (GET download, resume, checks, provider)": (
+        ["install_online_update", "update_download", "validate_update_apk", "apk_signer_sha256",
+         "installed_cert_sha256", "update_nag_due", "update_say_link", "update_open_link", "UpdateError"],
+        ['"updatelink"', "update_open_link()", ".apkprovider", "FLAG_GRANT_READ_URI_PERMISSION",
+         "canRequestPackageInstalls", "testzip()", "getPackageArchiveInfo", '"Range"', "UPDATE_STALL_SECONDS = 60"]),
 }
+
+UPDATE_CERT = "320faeaf8da56b8a0b98148d680af3fb2443499a00f9be853cdad18bf8b019c4"
+
+
+def check_updater(path, src, tree):
+    """The in-app updater: no DownloadManager, never HEAD, the permanent key, the read-only provider."""
+    problems = []
+    if "DownloadManager" in re.sub(r"(?m)#.*$", "", src):
+        problems.append("updater: DownloadManager is back (it failed on many phones); use update_download")
+    if re.search(r"""method\s*=\s*["']HEAD["']""", src):
+        problems.append("updater: a HEAD request is used (download servers refuse HEAD); use GET only")
+    m = re.search(r'^UPDATE_CERT_SHA256 = "([0-9a-f]+)"', src, re.M)
+    if not m or m.group(1) != UPDATE_CERT:
+        problems.append("updater: UPDATE_CERT_SHA256 is not the permanent signing key")
+    fn = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "update_download"), None)
+    if fn is not None:
+        body = ast.get_source_segment(src, fn) or ""
+        if 'method="GET"' not in body:
+            problems.append("updater: update_download must ask with GET")
+    fn = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "install_online_update"), None)
+    if fn is not None:
+        body = ast.get_source_segment(src, fn) or ""
+        for need in ("installed_cert_sha256", "update_download", "validate_update_apk", "update_log_error"):
+            if need not in body:
+                problems.append(f"updater: install_online_update no longer calls {need}")
+        if "getExternalStoragePublicDirectory" in body or "file://" in body:
+            problems.append("updater: the download must stay in the app's cache, shared through the provider")
+    # The provider and its manifest entry live next to the app file
+    here = os.path.dirname(os.path.abspath(path))
+    sx = os.path.join(here, "android_extra", "services.xml")
+    if os.path.exists(sx):
+        x = open(sx, encoding="utf-8").read()
+        pm = re.search(r'<provider\s[^>]*android:name="([\w.]+)\.GeniusApkProvider"[^>]*/>', x, re.S)
+        if not pm:
+            problems.append("updater: GeniusApkProvider is not registered in services.xml")
+        else:
+            tag = pm.group(0)
+            for need in ('android:authorities="{{ args.package }}.apkprovider"', 'android:exported="false"',
+                         'android:grantUriPermissions="true"'):
+                if need not in tag:
+                    problems.append(f"updater: the provider entry needs {need}")
+            jp = os.path.join(here, "android_extra", "java", *pm.group(1).split("."), "GeniusApkProvider.java")
+            if not os.path.exists(jp):
+                problems.append("updater: GeniusApkProvider.java is missing")
+            else:
+                j = open(jp, encoding="utf-8").read()
+                if '"updates"' not in j or ".apk" not in j or "MODE_READ_ONLY" not in j:
+                    problems.append("updater: GeniusApkProvider must serve only cache/updates/*.apk, read-only")
+    return problems
 
 TRACE_CALLS = {"format_exc", "format_exception", "print_exc", "format_tb"}
 SHOW_CALLS = {"show", "say", "tell", "set_text", "toast", "notify", "speak", "tts"}
@@ -108,6 +162,7 @@ def check_file(path):
     m_sb = re.search(r"(?s)# =+ 115\.6 Word suggestions.*?# =+ end word suggestions", src)
     if m_sb and re.search(r"hide_keyboard|\.focus = False|focus\", False", m_sb.group(0)):
         problems.append("the word suggestion bar must never close the keyboard")
+    problems += check_updater(path, src, tree)
     # What's new must describe the version being shipped
     m = re.search(r'^VERSION = "([^"]+)"', src, re.M)
     c = re.search(r'^CHANGELOG = """([^\n]*)', src, re.M)

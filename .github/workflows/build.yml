@@ -24,6 +24,7 @@ jobs:
         run: |
           python tests/release_gate.py main.py
           python tests/test_answer_quality.py
+          python tests/test_updater.py
       - name: Install build tools
         run: |
           # GitHub's Azure Ubuntu mirror sometimes fails; use the main Ubuntu servers and retry.

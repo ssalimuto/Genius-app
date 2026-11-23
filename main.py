@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "115.6"
+VERSION = "115.7"
 BUILD_NUMBER = "dev"   # stamped by the build server
 BUILD_COMMIT = "dev"   # stamped by the build server
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
@@ -515,7 +515,7 @@ ALLOWED = MappingProxyType({
     "know": "Teach Genius facts it uses to solve problems, e.g. know school: fees due 5 Nov",
     "knowledge": "What Genius knows to help you",
     "upgrade": "Install a new Genius version from Download/Genius/update (checked first)",
-    "update": "Get the newest Genius straight inside the app, no website needed",
+    "update": "Get the newest Genius straight inside the app (update link opens the download in the browser)",
     "rollback": "Go back to the previous Genius version",
     "security": "Security status: firewall, decoy, intruders, tampering",
     "intruders": "See who tried to break in",
@@ -635,7 +635,14 @@ Google Gemini is a paid online service under Google's own terms, not these licen
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
 VERSION_DATE = "2026-11-23"
-CHANGELOG = """Genius 115.6 (2026-11-23)
+CHANGELOG = """Genius 115.7 (2026-11-23)
+- Updates download more reliably: a cut download picks up where it stopped, and slow signal gets 3 tries
+- Every update is checked before it installs: the right size, a complete app, and signed by the maker
+- If an update can't finish, you get a short reason and a button to get it from the download page
+- New: type update link to open the newest download in your browser
+- If your copy came from an older download, the app tells you once a day how to reinstall it, keeping your things
+
+Genius 115.6 (2026-11-23)
 - Word suggestions are back: as you type, 3 to 5 words appear just above the box. They finish the word you're typing or guess the next one, in English, Ugandan words and Luganda
 - Tap a word to add it: the keyboard stays open and letters still never repeat
 - Suggestions learn the words you use, kept only on your phone. Say suggest off, suggest on, or suggest clear to forget them
@@ -1650,7 +1657,10 @@ def online_update():
             with urllib.request.urlopen(rq, timeout=20, context=ssl_context()) as r2:
                 rel = json.load(r2)
         vm = re.search(r"Version:\s*([0-9][0-9.]*[0-9])", rel.get("body") or "")
-        url = next((a.get("browser_download_url") for a in rel.get("assets") or [] if a.get("name") == UPDATE_APK), None)
+        asset = next((a for a in rel.get("assets") or [] if a.get("name") == UPDATE_APK), None) or {}
+        url = asset.get("browser_download_url")
+        if url and asset.get("size"):
+            _UPD["size"][url] = int(asset["size"])   # the exact size the download must have
         if vm and url:
             best = (vm.group(1), url)
     except Exception:
@@ -1716,76 +1726,420 @@ def fetch_live_update():
         return ""
 
 
-def install_online_update(ver, url, tell):
-    """Download the new APK inside the app, then open Android's Update screen."""
+UPDATE_APP_NAME = "Genius"
+UPDATE_APP_FILE = "Genius"
+# ===================== Safe in-app updater (no DownloadManager) =====================
+# The new app is downloaded by the app itself into its own cache/updates folder with plain GET
+# requests (never HEAD: GitHub's download servers answer HEAD with errors), following redirects,
+# resuming a cut download with Range, 3 tries with growing waits and a 60 s stall limit.
+# Before Android's installer sees it, the file is checked: exact size, a whole zip, the app parts
+# inside, the right app name and the permanent signing key. The installer reads it through the
+# app's own read-only GeniusApkProvider (content:// with a one-time read grant).
+UPDATE_CERT_SHA256 = "320faeaf8da56b8a0b98148d680af3fb2443499a00f9be853cdad18bf8b019c4"   # the permanent key
+UPDATE_NAG_FILE = os.path.join(ROOT, "update_nag.json")
+UPDATE_MIME = "application/vnd.android.package-archive"
+UPDATE_STALL_SECONDS = 60
+UPDATE_TRIES = 3
+UPDATE_WAITS = (3, 8, 15)
+UPDATE_LINK_REF = "[ref=updatelink][b][color=ffc84d][u]\u00bb Open the download in the browser[/u][/color][/b][/ref]"
+_UPD = {"size": {}, "url": ""}
+_UPD_WRONG_SIZE = "The download came out the wrong size, so I didn't use it. Try again later."
+
+
+class UpdateError(Exception):
+    """An update problem, already written as a short plain reason the person can read."""
+
+
+def update_fixed_link():
+    """The one fixed download link people share (always the newest app)."""
+    return f"https://github.com/ssalimuto/Genius-app/releases/download/{UPDATE_TAG}/{UPDATE_APK}"
+
+
+def update_log_error(where):
+    """The full error goes on one line in ai_log.txt; the person only ever sees a plain reason."""
     try:
-        from jnius import autoclass, cast
+        import traceback
+        log(f"UPDATE {where}: " + " | ".join(traceback.format_exc().strip().splitlines()))
+    except Exception:
+        pass
+
+
+def update_say_link(tell, text):
+    """A plain reason plus a button that opens the download in the browser."""
+    tell(text + "\n\n" + UPDATE_LINK_REF)
+
+
+def update_open_link(url=None):
+    open_url(url or _UPD.get("url") or update_fixed_link())
+
+
+def update_nag_due():
+    """At most once a day for the reinstall message."""
+    try:
+        last = json.load(open(UPDATE_NAG_FILE)).get("t", 0)
+    except Exception:
+        last = 0
+    if time.time() - last < 24 * 3600:
+        return False
+    try:
+        json.dump({"t": time.time()}, open(UPDATE_NAG_FILE, "w"))
+    except Exception:
+        pass
+    return True
+
+
+def _upd_open(req, timeout):
+    try:
+        return urllib.request.urlopen(req, timeout=timeout, context=ssl_context())
+    except urllib.error.HTTPError:
+        raise
+    except urllib.error.URLError as e:
+        if "CERTIFICATE" not in str(e).upper():
+            raise
+        # Old phones with out-of-date certificates: the file is still checked by size, zip and signing key.
+        return urllib.request.urlopen(req, timeout=timeout, context=ssl._create_unverified_context())
+
+
+def _upd_free_bytes(folder):
+    try:
+        st = os.statvfs(folder)
+        return st.f_bavail * st.f_frsize
+    except Exception:
+        return None
+
+
+def _upd_http_reason(code):
+    if code == 404:
+        return "The new version isn't on the download page right now. Try again later."
+    if code in (401, 403, 429):
+        return "The download page turned the request away for now. Try again in a few minutes."
+    if code >= 500:
+        return "The download page is busy right now. Try again in a few minutes."
+    return "The download page didn't send the update. Try again later."
+
+
+def update_download(url, dest, expected_size=0, progress=None, tries=UPDATE_TRIES,
+                    stall=UPDATE_STALL_SECONDS, waits=UPDATE_WAITS):
+    """Download url to dest with GET only. Follows redirects, resumes with Range after a cut,
+    retries with growing waits. Returns dest, or raises UpdateError with a plain reason."""
+    folder = os.path.dirname(os.path.abspath(dest))
+    os.makedirs(folder, exist_ok=True)
+    part = dest + ".part"
+    expected_size = int(expected_size or 0)
+    if expected_size and os.path.exists(dest) and os.path.getsize(dest) == expected_size:
+        return dest                                   # already downloaded earlier (kept on purpose)
+    have = os.path.getsize(part) if os.path.exists(part) else 0
+    free = _upd_free_bytes(folder)
+    need = max(0, (expected_size or 80 * 1024 * 1024) - have) + 20 * 1024 * 1024
+    if free is not None and free < need:
+        raise UpdateError(f"Your phone needs about {need // (1024 * 1024) + 1} MB of free space for the update. "
+                          "Free some space, then type update again.")
+    last = UpdateError("The download kept stopping. Try again on better signal.")
+    done = False
+    for attempt in range(max(1, tries)):
+        if attempt:
+            time.sleep(waits[min(attempt - 1, len(waits) - 1)])
+        have = os.path.getsize(part) if os.path.exists(part) else 0
+        if expected_size and have > expected_size:
+            os.remove(part)
+            have = 0
+        headers = {"User-Agent": "Genius-app", "Accept": "application/octet-stream"}
+        if have:
+            headers["Range"] = f"bytes={have}-"
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with _upd_open(req, stall) as r:
+                code = r.getcode()
+                mode = "wb"
+                if code == 206:
+                    m = re.match(r"\s*bytes\s+(\d+)-", r.headers.get("Content-Range") or "")
+                    if not (have and m and int(m.group(1)) == have):
+                        try:
+                            os.remove(part)
+                        except Exception:
+                            pass
+                        last = UpdateError("The download had to start again. Try again on better signal.")
+                        continue
+                    mode = "ab"
+                    tot = re.search(r"/(\d+)\s*$", r.headers.get("Content-Range") or "")
+                    if expected_size and tot and int(tot.group(1)) != expected_size:
+                        raise UpdateError(_UPD_WRONG_SIZE)
+                elif expected_size and (r.headers.get("Content-Length") or "").isdigit() \
+                        and int(r.headers["Content-Length"]) != expected_size:
+                    raise UpdateError(_UPD_WRONG_SIZE)   # the page itself says the file is another size
+                if mode == "wb":
+                    have = 0
+                with open(part, mode) as f:
+                    while True:
+                        chunk = r.read(64 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        have += len(chunk)
+                        if expected_size and have > expected_size:
+                            break
+                        if progress:
+                            try:
+                                progress(have, expected_size)
+                            except Exception:
+                                pass
+            if expected_size and have < expected_size:
+                last = UpdateError("The connection dropped during the download. Try again on better signal.")
+                continue                              # keep the piece we have and resume it
+            done = True
+            break
+        except UpdateError:
+            try:
+                os.remove(part)
+            except Exception:
+                pass
+            raise
+        except urllib.error.HTTPError as e:
+            if e.code == 416 and have:
+                if expected_size and have == expected_size:
+                    done = True
+                    break
+                try:
+                    os.remove(part)
+                except Exception:
+                    pass
+                if expected_size and have < expected_size:
+                    raise UpdateError(_UPD_WRONG_SIZE)   # the page has no more bytes: it's a shorter file
+                last = UpdateError("The download had to start again. Try again on better signal.")
+                continue
+            last = UpdateError(_upd_http_reason(e.code))
+            if e.code == 404:
+                break
+        except (socket.timeout, TimeoutError):
+            last = UpdateError("The download stalled for a minute on slow signal. Try again on better signal.")
+        except Exception:
+            last = UpdateError("I couldn't reach the download. Check your internet, then try again.")
+    if not done:
+        raise last
+    size = os.path.getsize(part) if os.path.exists(part) else 0
+    if expected_size and size != expected_size:
+        try:
+            os.remove(part)
+        except Exception:
+            pass
+        raise UpdateError(_UPD_WRONG_SIZE)
+    os.replace(part, dest)
+    return dest
+
+
+def _u32(b, i):
+    return int.from_bytes(b[i:i + 4], "little"), i + 4
+
+
+def apk_signer_sha256(path):
+    """SHA-256 of the signing certificate in an APK's v3/v2 signing block ('' if there is none)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            n = f.tell()
+            tail_len = min(n, 65535 + 22)
+            f.seek(n - tail_len)
+            tail = f.read()
+            e = tail.rfind(b"PK\x05\x06")
+            if e < 0:
+                return ""
+            cd_off = int.from_bytes(tail[e + 16:e + 20], "little")
+            if cd_off < 24:
+                return ""
+            f.seek(cd_off - 24)
+            foot = f.read(24)
+            if foot[8:] != b"APK Sig Block 42":
+                return ""
+            size = int.from_bytes(foot[:8], "little")
+            f.seek(cd_off - size - 8)
+            block = f.read(size + 8)
+        pairs, i, found = block[8:-24], 0, {}
+        while i + 12 <= len(pairs):
+            ln = int.from_bytes(pairs[i:i + 8], "little")
+            pid = int.from_bytes(pairs[i + 8:i + 12], "little")
+            found[pid] = pairs[i + 12:i + 8 + ln]
+            i += 8 + ln
+        for pid in (0xF05368C0, 0x7109871A):          # v3, then v2
+            v = found.get(pid)
+            if not v:
+                continue
+            _, j = _u32(v, 0)                          # signers sequence
+            _, j = _u32(v, j)                          # first signer
+            _, j = _u32(v, j)                          # signed data
+            dl, j = _u32(v, j)                         # digests
+            j += dl
+            _, j = _u32(v, j)                          # certificates
+            cl, j = _u32(v, j)                         # first certificate
+            cert = v[j:j + cl]
+            if cert:
+                return hashlib.sha256(cert).hexdigest()
+    except Exception:
+        return ""
+    return ""
+
+
+def validate_update_apk(path, expected_size=0, expect_cert=UPDATE_CERT_SHA256, android_check=None):
+    """Check a downloaded app before the installer sees it. Raises UpdateError with a plain reason."""
+    import zipfile
+    size = os.path.getsize(path) if os.path.exists(path) else 0
+    if expected_size and size != int(expected_size):
+        raise UpdateError("The download came out the wrong size, so I didn't use it. Try again later.")
+    if size < 1024 or not zipfile.is_zipfile(path):
+        raise UpdateError("The download was damaged on the way, so I didn't use it. Try again.")
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+            if "AndroidManifest.xml" not in names or "classes.dex" not in names:
+                raise UpdateError("The download isn't a complete app, so I didn't use it. Try again later.")
+            if z.testzip() is not None:
+                raise UpdateError("The download was damaged on the way, so I didn't use it. Try again.")
+    except UpdateError:
+        raise
+    except Exception:
+        raise UpdateError("The download was damaged on the way, so I didn't use it. Try again.")
+    cert = apk_signer_sha256(path)
+    if not cert:
+        raise UpdateError("I couldn't confirm who made this download, so I didn't install it.")
+    if expect_cert and cert != expect_cert:
+        raise UpdateError("This download isn't signed by the app's maker, so I didn't install it.")
+    if android_check:
+        android_check(path)
+    return True
+
+
+def _jbytes(raw):
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw)
+    return bytes((int(x) & 0xFF) for x in raw)
+
+
+def _sig_sha256(sigs):
+    try:
+        if sigs is None or len(sigs) == 0:
+            return ""
+        return hashlib.sha256(_jbytes(sigs[0].toByteArray())).hexdigest()
+    except Exception:
+        return ""
+
+
+def _pkg_signers(pm, info, sdk):
+    if info is None:
+        return None
+    if sdk >= 28:
+        si = info.signingInfo
+        return si.getApkContentsSigners() if si is not None else None
+    return info.signatures
+
+
+def installed_cert_sha256():
+    """SHA-256 of the signing key of the app installed on this phone ('' if Android won't say)."""
+    from jnius import autoclass
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    sdk = autoclass("android.os.Build$VERSION").SDK_INT
+    pm = act.getPackageManager()
+    flags = 0x08000000 if sdk >= 28 else 64          # GET_SIGNING_CERTIFICATES / GET_SIGNATURES
+    return _sig_sha256(_pkg_signers(pm, pm.getPackageInfo(act.getPackageName(), flags), sdk))
+
+
+def _android_apk_check(path):
+    """Ask Android itself to read the download: it must be this same app, signed with the same key."""
+    from jnius import autoclass
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    sdk = autoclass("android.os.Build$VERSION").SDK_INT
+    pm = act.getPackageManager()
+    flags = 0x08000000 if sdk >= 28 else 64
+    info = pm.getPackageArchiveInfo(path, flags)
+    if info is None:
+        raise UpdateError("Android couldn't read the download, so I didn't install it. Try again.")
+    if info.packageName != act.getPackageName():
+        raise UpdateError("The download is a different app, so I didn't install it.")
+    got = _sig_sha256(_pkg_signers(pm, info, sdk))
+    if got and got != UPDATE_CERT_SHA256:
+        raise UpdateError("This download isn't signed by the app's maker, so I didn't install it.")
+
+
+def update_reinstall_text(ver):
+    return (f"This copy of {UPDATE_APP_NAME} came from an older download, so Android won't let it update itself. "
+            f"To get {UPDATE_APP_NAME} {ver}, do this once:\n"
+            "1. Type backup to save your notes and chats.\n"
+            f"2. Uninstall {UPDATE_APP_NAME}.\n"
+            "3. Install it again from the download link below.\n"
+            "4. Type restore to bring your things back.")
+
+
+def install_online_update(ver, url, tell, auto=False):
+    """Download the new app inside the app, check it, then open Android's Update screen."""
+    url = url or update_fixed_link()
+    _UPD["url"] = url
+    try:
+        from jnius import autoclass
     except Exception:
         tell("Updating inside the app only works on the phone.")
         return
     try:
-        Context = autoclass("android.content.Context")
-        DM = autoclass("android.app.DownloadManager")
-        DMRequest = autoclass("android.app.DownloadManager$Request")
-        DMQuery = autoclass("android.app.DownloadManager$Query")
-        Env = autoclass("android.os.Environment")
         Uri = autoclass("android.net.Uri")
         Intent = autoclass("android.content.Intent")
         Build = autoclass("android.os.Build$VERSION")
         act = autoclass("org.kivy.android.PythonActivity").mActivity
+        pkg = act.getPackageName()
+        try:
+            mine = installed_cert_sha256()
+        except Exception:
+            update_log_error("cert read")
+            mine = ""
+        if mine and mine != UPDATE_CERT_SHA256:
+            if auto and not update_nag_due():
+                return
+            update_say_link(tell, update_reinstall_text(ver))
+            return
+        folder = os.path.join(act.getCacheDir().getAbsolutePath(), "updates")
+        os.makedirs(folder, exist_ok=True)
+        name = re.sub(r"[^A-Za-z0-9._-]", "", f"{UPDATE_APP_FILE}-{ver}.apk")
+        dest = os.path.join(folder, name)
+        for old in os.listdir(folder):                # only the newest download is kept
+            if old != name and old != name + ".part":
+                try:
+                    os.remove(os.path.join(folder, old))
+                except Exception:
+                    pass
+        size = int(_UPD["size"].get(url) or 0)
+        if not (size and os.path.exists(dest) and os.path.getsize(dest) == size):
+            mb = f" ({size / 1048576:.0f} MB)" if size else ""
+            tell(f"Downloading {UPDATE_APP_NAME} {ver}{mb} now. Keep the app open, about a minute on good signal.")
+        update_download(url, dest, size)
+        try:
+            validate_update_apk(dest, size, android_check=_android_apk_check)
+        except UpdateError:
+            try:
+                os.remove(dest)
+            except Exception:
+                pass
+            raise
         if Build.SDK_INT >= 26 and not act.getPackageManager().canRequestPackageInstalls():
             Settings = autoclass("android.provider.Settings")
-            i = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                       Uri.parse("package:" + act.getPackageName()))
-            act.startActivity(i)
-            tell("First allow Genius to install updates: switch on 'Allow from this source', "
-                 "come back, and type update again. You only do this once.")
+            act.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + pkg)))
+            tell(f"{UPDATE_APP_NAME} {ver} is downloaded and checked. One more step: switch on 'Allow from this source' "
+                 "on the screen that opened, come back, and type update. The download is kept, so it won't download again.")
             return
-        dm = cast("android.app.DownloadManager", act.getSystemService(Context.DOWNLOAD_SERVICE))
-        name = f"Genius-{ver}.apk"
-        old = os.path.join(Env.getExternalStoragePublicDirectory(Env.DIRECTORY_DOWNLOADS).getAbsolutePath(), name)
-        try:
-            if os.path.exists(old):
-                os.remove(old)
-        except Exception:
-            pass
-        req = DMRequest(Uri.parse(url))
-        req.setTitle(f"Genius {ver}")
-        req.setDescription("Downloading the new Genius")
-        req.setMimeType("application/vnd.android.package-archive")
-        req.setNotificationVisibility(1)
-        req.setDestinationInExternalPublicDir(Env.DIRECTORY_DOWNLOADS, name)
-        did = dm.enqueue(req)
-        tell(f"Downloading Genius {ver} now. Keep the app open, about a minute on good signal.")
-        for _ in range(600):                 # up to 20 minutes
-            time.sleep(2)
-            q = DMQuery()
-            q.setFilterById([did])
-            c = dm.query(q)
-            status = 0
-            if c is not None and c.moveToFirst():
-                status = c.getInt(c.getColumnIndex("status"))
-            if c is not None:
-                c.close()
-            if status == 8:                  # successful
-                break
-            if status == 16:                 # failed
-                tell("The download failed. Check your internet and type update again.")
-                return
-        else:
-            tell("The download is taking too long. Type update again on better signal.")
+        authority = pkg + ".apkprovider"
+        if act.getPackageManager().resolveContentProvider(authority, 0) is None:
+            update_open_link(url)
+            tell(f"Opening the {UPDATE_APP_NAME} {ver} download in your browser. When it finishes, tap it to install. "
+                 "Your notes, lessons and storage stay.")
             return
-        uri = dm.getUriForDownloadedFile(did)
         i = Intent(Intent.ACTION_VIEW)
-        i.setDataAndType(uri, "application/vnd.android.package-archive")
+        i.setDataAndType(Uri.parse(f"content://{authority}/updates/{name}"), UPDATE_MIME)
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK)
         act.startActivity(i)
-        tell(f"Downloaded. Tap Update on the screen that opens to get Genius {ver}. "
+        tell(f"Downloaded and checked. Tap Update on the screen that opens to get {UPDATE_APP_NAME} {ver}. "
              "Your notes, lessons and storage stay.")
-    except Exception as e:
-        log(f"update error: {e}")
-        tell("Something went wrong while updating. Type update to try again.")
-
+    except UpdateError as e:
+        update_log_error("stopped")
+        update_say_link(tell, str(e))
+    except Exception:
+        update_log_error("failed")
+        update_say_link(tell, "The update didn't finish. You can get it from the download page instead.")
+# ===================== end safe in-app updater =====================
 
 def update_due():
     """True once a day, for the quiet background check."""
@@ -14109,6 +14463,11 @@ class ChatScreen(BoxLayout):
         if action == "upgrade" and PLAY_BUILD:
             self.say("Genius updates through the Play Store. Open Play Store, search Genius, and tap Update.")
             return
+        if action == "update" and arg.lower().strip(" .!?") in ("link", "page", "browser", "download"):
+            update_open_link()
+            self.say("Opening the newest Genius download in your browser. When it finishes, tap it to install. "
+                     "Your notes, lessons and storage stay.")
+            return
         if action == "update":
             def work():
                 tell = lambda t: Clock.schedule_once(lambda *_: self.say(t))
@@ -14499,6 +14858,9 @@ class ChatScreen(BoxLayout):
     def _on_chat_ref(self, _w, ref):
         if ref in ("like", "dislike"):
             self.rate_answer(ref == "like")
+            return
+        if ref == "updatelink":
+            update_open_link()
             return
         if ref == "keywizard":
             self.key_wizard()
@@ -16290,7 +16652,7 @@ class GeniusApp(App):
                                 else:
                                     Clock.schedule_once(go, 5)
                             Clock.schedule_once(go, 1)
-                        install_online_update(found[0], found[1], tell)
+                        install_online_update(found[0], found[1], tell, auto=True)
                 time.sleep(3600)
         threading.Thread(target=check_update, daemon=True).start()
         EVERYWHERE["pending"] = intent_action()

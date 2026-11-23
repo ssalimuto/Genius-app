@@ -26,6 +26,7 @@ jobs:
         run: |
           python tests/release_gate.py ssalimuto/main.py
           python tests/test_answer_quality.py
+          python tests/test_updater.py
       - name: Install build tools
         run: |
           if [ -f /etc/apt/apt-mirrors.txt ]; then echo "http://archive.ubuntu.com/ubuntu/	priority:1" | sudo tee /etc/apt/apt-mirrors.txt; fi
