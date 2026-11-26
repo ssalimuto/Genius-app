@@ -2,7 +2,7 @@
 import os, re, ssl, json, time, base64, hashlib, hmac, socket, threading, random, urllib.request, urllib.error, urllib.parse
 from types import MappingProxyType
 
-VERSION = "115.7"
+VERSION = "115.8"
 BUILD_NUMBER = "dev"   # stamped by the build server
 BUILD_COMMIT = "dev"   # stamped by the build server
 NEEDS_APK = "109.0"     # the oldest installed app this code can run inside
@@ -634,8 +634,11 @@ What this means
 Google Gemini is a paid online service under Google's own terms, not these licenses."""
 
 PLAY_BUILD = False   # True only in the Play Store build: Play delivers updates itself
-VERSION_DATE = "2026-11-23"
-CHANGELOG = """Genius 115.7 (2026-11-23)
+VERSION_DATE = "2026-11-26"
+CHANGELOG = """Genius 115.8 (2026-11-26)
+- Fixed typing: letters appear in order and word suggestions show again
+
+Genius 115.7 (2026-11-23)
 - Updates download more reliably: a cut download picks up where it stopped, and slow signal gets 3 tries
 - Every update is checked before it installs: the right size, a complete app, and signed by the maker
 - If an update can't finish, you get a short reason and a button to get it from the download page
@@ -24089,15 +24092,21 @@ def sb_add_bar(container, ti, index=None):
         def update(*_):
             st["ev"] = None
             try:
-                ci = ti.cursor_index()
-            except Exception:
-                ci = None
-            sb_fill_row(row, sv, sb_suggest(ti.text, cursor=ci) if ti.focus else [], ti)
+                try:
+                    ci = ti.cursor_index()
+                except Exception:
+                    ci = None
+                sb_fill_row(row, sv, sb_suggest(ti.text, cursor=ci) if ti.focus else [], ti)
+            except Exception as e:
+                log(f"SUGGEST bar update: {type(e).__name__}")
 
         def typing(*_):
-            if st["ev"] is not None:
-                st["ev"].cancel()
-            st["ev"] = Clock.schedule_once(update, SB_DEBOUNCE)
+            try:
+                if st["ev"] is not None:
+                    st["ev"].cancel()
+                st["ev"] = Clock.schedule_once(update, SB_DEBOUNCE)
+            except Exception as e:
+                log(f"SUGGEST bar typing: {type(e).__name__}")
         ti.bind(text=typing, focus=typing)
         if index is None:
             kids = list(getattr(container, "children", []))
@@ -24110,17 +24119,25 @@ def sb_add_bar(container, ti, index=None):
 
 
 def _sb_chat_typing(self, _ti, text):
-    if self._sugg_ev is not None:
-        self._sugg_ev.cancel()
+    """Runs on every letter, so it must never raise: an error here stops the letter showing (115.8 keyfix)."""
+    try:
+        ev = getattr(self, "_sugg_ev", None)
+        if ev is not None:
+            ev.cancel()
 
-    def update(*_):
-        self._sugg_ev = None
-        try:
-            ci = self.inp.cursor_index()
-        except Exception:
-            ci = None
-        sb_fill_row(self.sugg_row, self.sugg_sv, sb_suggest(self.inp.text, cursor=ci), self.inp)
-    self._sugg_ev = Clock.schedule_once(update, SB_DEBOUNCE)
+        def update(*_):
+            self._sugg_ev = None
+            try:
+                try:
+                    ci = self.inp.cursor_index()
+                except Exception:
+                    ci = None
+                sb_fill_row(self.sugg_row, self.sugg_sv, sb_suggest(self.inp.text, cursor=ci), self.inp)
+            except Exception as e:
+                log(f"SUGGEST chat: {type(e).__name__}")
+        self._sugg_ev = Clock.schedule_once(update, SB_DEBOUNCE)
+    except Exception as e:
+        log(f"SUGGEST typing: {type(e).__name__}")
 
 
 ChatScreen._typing = _sb_chat_typing
@@ -24166,6 +24183,39 @@ def ga_handle(screen, line, action, arg, low):
 
 threading.Thread(target=_sb_base, daemon=True).start()     # build the word list before the first key press
 # ===================== end word suggestions =====================
+
+
+# ===================== 115.8 Keyfix: patched methods keep working when Kivy calls them =====================
+# Root cause of "typed letters don't show and no word chips" (115.6+): Kivy's bind() and Clock keep a bound
+# method as (object, function __name__) and look it up again by that NAME on every call. ChatScreen._typing
+# was replaced by _sb_chat_typing, so each letter made Kivy look for ChatScreen._sb_chat_typing, which did
+# not exist: AttributeError inside insert_text, so the cursor never moved, the rest of the keyboard events
+# were dropped, the chips never ran, and after 25 errors a minute the crash guard closed the app.
+# Fix: every method replaced this way is also reachable under its own function name.
+def kf_alias_patched_methods(namespace=None):
+    import inspect as _insp
+    import types as _types
+    fixed = []
+    for _cls in list((namespace or globals()).values()):
+        if not _insp.isclass(_cls):
+            continue
+        for _attr, _fn in list(vars(_cls).items()):
+            if isinstance(_fn, _types.FunctionType) and _fn.__name__ != _attr:
+                _nm = _fn.__name__
+                if _nm.isidentifier() and not any(_nm in vars(_k) for _k in _cls.__mro__):
+                    try:
+                        setattr(_cls, _nm, _fn)
+                        fixed.append(f"{_cls.__name__}.{_nm}")
+                    except Exception:
+                        pass
+    return fixed
+
+
+try:
+    _KF_FIXED = kf_alias_patched_methods()
+except Exception:
+    _KF_FIXED = []
+# ===================== end keyfix =====================
 
 
 if __name__ == "__main__":

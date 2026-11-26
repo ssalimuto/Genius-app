@@ -21,6 +21,7 @@ FEATURES = {
                                                        "sb_hold_focus", "SuggestChip", "SuggestScroll", "sb_add_bar",
                                                        "_sb_chat_typing"],
                                                       ['"suggest on"', '"suggest off"', "SuggestScroll(", "sb_add_bar(root, ti)"]),
+    "Typing fix (patched methods reachable by name)": (["kf_alias_patched_methods"], []),
     "Chat bubbles": (["ChatBubbles"], []),
     "App Builder": (["hk_build", "hk_builder_panel", "hk_edit"], []),
     "App Maker (installable apps)": (["ho_make_apk"], ["apk_template.bin"]),
@@ -96,6 +97,84 @@ def check_updater(path, src, tree):
                     problems.append("updater: GeniusApkProvider must serve only cache/updates/*.apk, read-only")
     return problems
 
+
+ALIAS_STEP = "kf_alias_patched_methods"
+
+
+def check_patched_method_names(src, tree):
+    """A method swapped in from outside the class (Cls.attr = some_function) must also be reachable under the
+    function's own __name__. Kivy's bind() and Clock keep a bound method as (object, __name__) and look it up
+    again by that name on every call; when the class has no attribute by that name, every call raises
+    AttributeError. That is how ChatScreen._typing = _sb_chat_typing broke typing in 115.6 and 115.7.
+    Passes when the class itself defines the name, when the name is aliased explicitly (Cls.fn = fn or
+    setattr(Cls, "fn", fn)), or when the module runs kf_alias_patched_methods() after the last swap and
+    before the app starts."""
+    problems = []
+    top = tree.body
+    top_funcs = {n.name for n in top if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    class_names = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            own = set()
+            for b in node.body:
+                if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    own.add(b.name)
+                elif isinstance(b, ast.Assign):
+                    own.update(t.id for t in b.targets if isinstance(t, ast.Name))
+            class_names.setdefault(node.name, set()).update(own)
+    swaps, aliased = [], set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if not (isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)):
+                    continue
+                cls, attr = t.value.id, t.attr
+                v = node.value
+                if isinstance(v, ast.Lambda):
+                    swaps.append((cls, attr, "<lambda>", node.lineno))
+                elif isinstance(v, ast.Name) and v.id in top_funcs:
+                    if v.id == attr:
+                        aliased.add((cls, attr))
+                    else:
+                        swaps.append((cls, attr, v.id, node.lineno))
+        elif isinstance(node, ast.Call) and _call_name(node) == "setattr" and len(node.args) == 3:
+            c, n, f = node.args
+            if (isinstance(c, ast.Name) and isinstance(n, ast.Constant) and isinstance(n.value, str)
+                    and isinstance(f, ast.Name) and f.id == n.value):
+                aliased.add((c.id, n.value))
+    # Where the alias step runs (a top-level call, or a top-level try whose body calls it)
+    step_line = None
+    if ALIAS_STEP in top_funcs:
+        fn = next(n for n in top if isinstance(n, ast.FunctionDef) and n.name == ALIAS_STEP)
+        body = ast.get_source_segment(src, fn) or ""
+        if "setattr(" in body and "__name__" in body:
+            for n in top:
+                stmts = [n] + (list(n.body) if isinstance(n, ast.Try) else [])
+                for st in stmts:
+                    if isinstance(st, ast.If):
+                        continue
+                    for sub in ast.walk(st):
+                        if isinstance(sub, ast.Call) and _call_name(sub) == ALIAS_STEP:
+                            step_line = st.lineno
+        else:
+            problems.append(f"patched methods: {ALIAS_STEP}() no longer registers functions under their __name__")
+    # The app starts in the last top-level `if __name__ == "__main__":` (an earlier one only boots a live update)
+    mains = [n.lineno for n in top if isinstance(n, ast.If) and "__main__" in (ast.get_source_segment(src, n.test) or "")]
+    main_line = mains[-1] if mains else None
+    for cls, attr, fname, line in swaps:
+        if fname in class_names.get(cls, set()) or (cls, fname) in aliased:
+            continue
+        if fname == "<lambda>":
+            problems.append(f"line {line}: {cls}.{attr} is a lambda; Kivy would look up '<lambda>' on it. Use a named function")
+            continue
+        if step_line and step_line > line and (main_line is None or step_line < main_line):
+            continue
+        why = "it runs before this line" if step_line and step_line <= line else "it is not called before the app starts"
+        problems.append(f"line {line}: {cls}.{attr} = {fname}, but {cls} has no '{fname}' and it is not aliased "
+                        f"(Kivy bind/Clock would raise AttributeError; call {ALIAS_STEP}() after the last swap"
+                        + (f": {why})" if ALIAS_STEP in top_funcs else ")"))
+    return problems
+
 TRACE_CALLS = {"format_exc", "format_exception", "print_exc", "format_tb"}
 SHOW_CALLS = {"show", "say", "tell", "set_text", "toast", "notify", "speak", "tts"}
 BANNED = "".join(["H", "a", "r", "k"])   # a name that must never appear in the app
@@ -163,6 +242,7 @@ def check_file(path):
     if m_sb and re.search(r"hide_keyboard|\.focus = False|focus\", False", m_sb.group(0)):
         problems.append("the word suggestion bar must never close the keyboard")
     problems += check_updater(path, src, tree)
+    problems += check_patched_method_names(src, tree)
     # What's new must describe the version being shipped
     m = re.search(r'^VERSION = "([^"]+)"', src, re.M)
     c = re.search(r'^CHANGELOG = """([^\n]*)', src, re.M)
