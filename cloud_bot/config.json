@@ -1,0 +1,63 @@
+{
+  "_note": "Default = meanrev on GBPUSD daily: the only mode/pair that passed walk-forward (see results_v2.md). Still DRY RUN: i_accept_risk is false. Live is also refused for any mode/pair not marked PASS in wf_results.json.",
+  "metaapi_token_env": "METAAPI_TOKEN",
+  "metaapi_account_id": "",
+  "region": "new-york",
+  "symbols": [
+    "GBPUSD"
+  ],
+  "timeframe": "1d",
+  "mode": "meanrev",
+  "risk_per_trade_pct": 1.0,
+  "max_risk_per_trade_pct": 3.0,
+  "daily_loss_limit_pct": 3.0,
+  "max_drawdown_pct": 15.0,
+  "max_trades_per_day": 3,
+  "params": {
+    "trend": {
+      "ema": 200,
+      "breakout": 20,
+      "atr": 14,
+      "sl_atr": 2.0,
+      "tp_atr": 3.0
+    },
+    "meanrev": {
+      "ema": 200,
+      "atr": 14,
+      "bb_k": 2.0,
+      "tp_atr": 3.0,
+      "rsi_lo": 10,
+      "sl_atr": 2.5,
+      "max_bars": 24
+    },
+    "grid": {
+      "ema": 200,
+      "atr": 14,
+      "rsi_lo": 10,
+      "spacing_atr": 1.0,
+      "max_levels": 3,
+      "tp_atr": 0.5,
+      "max_bars": 72
+    },
+    "auto": {
+      "ema": 200,
+      "atr": 14,
+      "adx_th": 25,
+      "breakout": 20,
+      "sl_atr": 2.0,
+      "tp_atr": 3.0,
+      "rsi_lo": 10,
+      "bb_k": 2.0,
+      "mr_sl_atr": 2.5,
+      "max_bars": 24
+    }
+  },
+  "spread_pips": {
+    "EURUSD": 1.2,
+    "GBPUSD": 1.6,
+    "USDJPY": 1.4
+  },
+  "slippage_pips": 0.3,
+  "i_accept_risk": false,
+  "poll_seconds": 60
+}

@@ -1,0 +1,67 @@
+name: Ssalimuto Profits cloud check
+# One quiet pass of the cloud bot. Public logs show only ran / signal / skipped:
+# never balances, tokens or account ids. Dry run unless the repo variable LIVE is true.
+on:
+  schedule:
+    - cron: '*/30 * * * 1-5'
+    - cron: '10 22 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: profits-cloud
+  cancel-in-progress: false
+jobs:
+  once:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Secrets present?
+        id: chk
+        env:
+          T: ${{ secrets.METAAPI_TOKEN }}
+          A: ${{ secrets.METAAPI_ACCOUNT_ID }}
+        run: |
+          if [ -z "$T" ] || [ -z "$A" ]; then
+            echo "skipped: secrets not set"
+            echo "go=0" >> $GITHUB_OUTPUT
+          else
+            echo "go=1" >> $GITHUB_OUTPUT
+          fi
+      - uses: actions/checkout@v4
+        if: steps.chk.outputs.go == '1'
+      - uses: actions/setup-python@v5
+        if: steps.chk.outputs.go == '1'
+        with:
+          python-version: '3.11'
+      - name: Restore bot state
+        if: steps.chk.outputs.go == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: .bot_state
+          key: profits-bot-state-${{ github.run_id }}
+          restore-keys: profits-bot-state-
+      - name: Run once
+        if: steps.chk.outputs.go == '1'
+        env:
+          METAAPI_TOKEN: ${{ secrets.METAAPI_TOKEN }}
+          METAAPI_ACCOUNT_ID: ${{ secrets.METAAPI_ACCOUNT_ID }}
+          METAAPI_REGION: ${{ vars.METAAPI_REGION }}
+          BOT_QUIET: '1'
+          BOT_STOP: ${{ vars.BOT_STOP }}
+          LIVE: ${{ vars.LIVE }}
+        run: |
+          mkdir -p .bot_state
+          export BOT_STATE_PATH="$PWD/.bot_state/state.json"
+          if [ "$LIVE" = "true" ]; then
+            export BOT_ACCEPT_RISK=1
+            python cloud_bot/safe_mt5_bot.py once --live
+          else
+            python cloud_bot/safe_mt5_bot.py once
+          fi
+      - name: Save bot state
+        if: always() && steps.chk.outputs.go == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: .bot_state
+          key: profits-bot-state-${{ github.run_id }}

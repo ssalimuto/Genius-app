@@ -1,0 +1,1079 @@
+[
+{
+"tf": "1h",
+"mode": "trend",
+"symbol": "EURUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"sl_atr": 1.5,
+"tp_atr": 3.0
+},
+"oos": {
+"trades": 104,
+"win_rate": 30.8,
+"profit_factor": 0.85,
+"return_pct": -9.9,
+"max_dd_pct": 15.1
+}
+},
+{
+"tf": "1h",
+"mode": "meanrev",
+"symbol": "EURUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 5,
+"sl_atr": 2.5,
+"max_bars": 12
+},
+"oos": {
+"trades": 153,
+"win_rate": 56.9,
+"profit_factor": 0.97,
+"return_pct": -0.7,
+"max_dd_pct": 5.8
+}
+},
+{
+"tf": "1h",
+"mode": "grid",
+"symbol": "EURUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"rsi_lo": 10,
+"max_levels": 3,
+"max_bars": 72,
+"spacing_atr": 1.25,
+"tp_atr": 0.5
+},
+"oos": {
+"trades": 208,
+"win_rate": 88.9,
+"profit_factor": 0.97,
+"return_pct": -0.5,
+"max_dd_pct": 4.9
+}
+},
+{
+"tf": "1h",
+"mode": "auto",
+"symbol": "EURUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 20,
+"sl_atr": 1.5,
+"rsi_lo": 10,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 127,
+"win_rate": 40.9,
+"profit_factor": 0.89,
+"return_pct": -7.2,
+"max_dd_pct": 15.4
+}
+},
+{
+"tf": "1h",
+"mode": "trend",
+"symbol": "GBPUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 40,
+"sl_atr": 1.5,
+"tp_atr": 3.0
+},
+"oos": {
+"trades": 101,
+"win_rate": 30.7,
+"profit_factor": 0.88,
+"return_pct": -7.7,
+"max_dd_pct": 15.0
+}
+},
+{
+"tf": "1h",
+"mode": "meanrev",
+"symbol": "GBPUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 5,
+"sl_atr": 2.5,
+"max_bars": 12
+},
+"oos": {
+"trades": 148,
+"win_rate": 64.9,
+"profit_factor": 1.09,
+"return_pct": 2.2,
+"max_dd_pct": 4.9
+}
+},
+{
+"tf": "1h",
+"mode": "grid",
+"symbol": "GBPUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"rsi_lo": 10,
+"max_levels": 3,
+"max_bars": 72,
+"spacing_atr": 1.25,
+"tp_atr": 1.0
+},
+"oos": {
+"trades": 182,
+"win_rate": 78.6,
+"profit_factor": 0.8,
+"return_pct": -6.8,
+"max_dd_pct": 8.5
+}
+},
+{
+"tf": "1h",
+"mode": "auto",
+"symbol": "GBPUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 25,
+"sl_atr": 2.0,
+"rsi_lo": 10,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 158,
+"win_rate": 47.5,
+"profit_factor": 0.8,
+"return_pct": -10.3,
+"max_dd_pct": 15.7
+}
+},
+{
+"tf": "1h",
+"mode": "trend",
+"symbol": "USDJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"sl_atr": 2.0,
+"tp_atr": 3.0
+},
+"oos": {
+"trades": 62,
+"win_rate": 30.6,
+"profit_factor": 0.63,
+"return_pct": -13.8,
+"max_dd_pct": 15.0
+}
+},
+{
+"tf": "1h",
+"mode": "meanrev",
+"symbol": "USDJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 10,
+"sl_atr": 1.5,
+"max_bars": 12
+},
+"oos": {
+"trades": 234,
+"win_rate": 60.3,
+"profit_factor": 0.87,
+"return_pct": -8.9,
+"max_dd_pct": 15.3
+}
+},
+{
+"tf": "1h",
+"mode": "grid",
+"symbol": "USDJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"rsi_lo": 10,
+"max_levels": 3,
+"max_bars": 72,
+"spacing_atr": 1.25,
+"tp_atr": 1.0
+},
+"oos": {
+"trades": 163,
+"win_rate": 79.1,
+"profit_factor": 0.98,
+"return_pct": -0.5,
+"max_dd_pct": 5.5
+}
+},
+{
+"tf": "1h",
+"mode": "auto",
+"symbol": "USDJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 20,
+"sl_atr": 1.5,
+"rsi_lo": 10,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 58,
+"win_rate": 39.7,
+"profit_factor": 0.74,
+"return_pct": -6.7,
+"max_dd_pct": 15.5
+}
+},
+{
+"tf": "1d",
+"mode": "trend",
+"symbol": "EURUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"sl_atr": 2.0,
+"tp_atr": 2.0
+},
+"oos": {
+"trades": 15,
+"win_rate": 46.7,
+"profit_factor": 0.81,
+"return_pct": -2.4,
+"max_dd_pct": 8.9
+}
+},
+{
+"tf": "1d",
+"mode": "meanrev",
+"symbol": "EURUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 5,
+"sl_atr": 2.5,
+"max_bars": 12
+},
+"oos": {
+"trades": 23,
+"win_rate": 60.9,
+"profit_factor": 1.05,
+"return_pct": 0.3,
+"max_dd_pct": 3.2
+}
+},
+{
+"tf": "1d",
+"mode": "grid",
+"symbol": "EURUSD",
+"pass": false,
+"params": null,
+"oos": null
+},
+{
+"tf": "1d",
+"mode": "auto",
+"symbol": "EURUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 25,
+"sl_atr": 2.0,
+"rsi_lo": 5,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 21,
+"win_rate": 47.6,
+"profit_factor": 0.52,
+"return_pct": -5.5,
+"max_dd_pct": 9.5
+}
+},
+{
+"tf": "1d",
+"mode": "trend",
+"symbol": "GBPUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"sl_atr": 1.5,
+"tp_atr": 2.0
+},
+"oos": {
+"trades": 19,
+"win_rate": 31.6,
+"profit_factor": 0.61,
+"return_pct": -7.1,
+"max_dd_pct": 10.7
+}
+},
+{
+"tf": "1d",
+"mode": "meanrev",
+"symbol": "GBPUSD",
+"pass": true,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 10,
+"sl_atr": 2.5,
+"max_bars": 24
+},
+"oos": {
+"trades": 31,
+"win_rate": 58.1,
+"profit_factor": 1.34,
+"return_pct": 3.2,
+"max_dd_pct": 3.6
+}
+},
+{
+"tf": "1d",
+"mode": "grid",
+"symbol": "GBPUSD",
+"pass": false,
+"params": null,
+"oos": null
+},
+{
+"tf": "1d",
+"mode": "auto",
+"symbol": "GBPUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 25,
+"sl_atr": 1.5,
+"rsi_lo": 10,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 31,
+"win_rate": 41.9,
+"profit_factor": 0.45,
+"return_pct": -12.0,
+"max_dd_pct": 15.0
+}
+},
+{
+"tf": "1d",
+"mode": "trend",
+"symbol": "USDJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 40,
+"sl_atr": 2.0,
+"tp_atr": 2.0
+},
+"oos": {
+"trades": 13,
+"win_rate": 46.2,
+"profit_factor": 0.82,
+"return_pct": -2.3,
+"max_dd_pct": 6.6
+}
+},
+{
+"tf": "1d",
+"mode": "meanrev",
+"symbol": "USDJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 5,
+"sl_atr": 2.5,
+"max_bars": 12
+},
+"oos": {
+"trades": 16,
+"win_rate": 62.5,
+"profit_factor": 0.81,
+"return_pct": -1.2,
+"max_dd_pct": 5.7
+}
+},
+{
+"tf": "1d",
+"mode": "grid",
+"symbol": "USDJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"rsi_lo": 10,
+"max_levels": 3,
+"max_bars": 72,
+"spacing_atr": 0.75,
+"tp_atr": 0.5
+},
+"oos": {
+"trades": 1,
+"win_rate": 100.0,
+"profit_factor": 99.0,
+"return_pct": 0.3,
+"max_dd_pct": 0.0
+}
+},
+{
+"tf": "1d",
+"mode": "auto",
+"symbol": "USDJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 20,
+"sl_atr": 2.0,
+"rsi_lo": 5,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 15,
+"win_rate": 46.7,
+"profit_factor": 0.97,
+"return_pct": -0.5,
+"max_dd_pct": 6.1
+}
+},
+{
+"tf": "1d",
+"mode": "trend",
+"symbol": "AUDUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"sl_atr": 2.0,
+"tp_atr": 2.0
+},
+"oos": {
+"trades": 18,
+"win_rate": 50.0,
+"profit_factor": 0.79,
+"return_pct": -2.7,
+"max_dd_pct": 9.1
+}
+},
+{
+"tf": "1d",
+"mode": "meanrev",
+"symbol": "AUDUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 5,
+"sl_atr": 2.5,
+"max_bars": 24
+},
+"oos": {
+"trades": 20,
+"win_rate": 60.0,
+"profit_factor": 0.58,
+"return_pct": -3.2,
+"max_dd_pct": 4.6
+}
+},
+{
+"tf": "1d",
+"mode": "grid",
+"symbol": "AUDUSD",
+"pass": false,
+"params": null,
+"oos": null
+},
+{
+"tf": "1d",
+"mode": "auto",
+"symbol": "AUDUSD",
+"pass": true,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 25,
+"sl_atr": 2.0,
+"rsi_lo": 10,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 26,
+"win_rate": 61.5,
+"profit_factor": 1.69,
+"return_pct": 5.0,
+"max_dd_pct": 2.6
+}
+},
+{
+"tf": "1d",
+"mode": "trend",
+"symbol": "USDCAD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"sl_atr": 1.5,
+"tp_atr": 2.0
+},
+"oos": {
+"trades": 24,
+"win_rate": 45.8,
+"profit_factor": 0.88,
+"return_pct": -1.5,
+"max_dd_pct": 6.4
+}
+},
+{
+"tf": "1d",
+"mode": "meanrev",
+"symbol": "USDCAD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 10,
+"sl_atr": 2.5,
+"max_bars": 12
+},
+"oos": {
+"trades": 38,
+"win_rate": 50.0,
+"profit_factor": 0.45,
+"return_pct": -7.5,
+"max_dd_pct": 7.8
+}
+},
+{
+"tf": "1d",
+"mode": "grid",
+"symbol": "USDCAD",
+"pass": false,
+"params": null,
+"oos": null
+},
+{
+"tf": "1d",
+"mode": "auto",
+"symbol": "USDCAD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 25,
+"sl_atr": 1.5,
+"rsi_lo": 10,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 41,
+"win_rate": 41.5,
+"profit_factor": 0.49,
+"return_pct": -9.3,
+"max_dd_pct": 10.0
+}
+},
+{
+"tf": "1d",
+"mode": "trend",
+"symbol": "USDCHF",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 40,
+"sl_atr": 1.5,
+"tp_atr": 2.0
+},
+"oos": {
+"trades": 16,
+"win_rate": 31.2,
+"profit_factor": 0.63,
+"return_pct": -5.1,
+"max_dd_pct": 7.5
+}
+},
+{
+"tf": "1d",
+"mode": "meanrev",
+"symbol": "USDCHF",
+"pass": true,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 5,
+"sl_atr": 2.5,
+"max_bars": 12
+},
+"oos": {
+"trades": 23,
+"win_rate": 87.0,
+"profit_factor": 2.52,
+"return_pct": 5.4,
+"max_dd_pct": 2.8
+}
+},
+{
+"tf": "1d",
+"mode": "grid",
+"symbol": "USDCHF",
+"pass": false,
+"params": null,
+"oos": null
+},
+{
+"tf": "1d",
+"mode": "auto",
+"symbol": "USDCHF",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 20,
+"sl_atr": 1.5,
+"rsi_lo": 10,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 30,
+"win_rate": 40.0,
+"profit_factor": 0.42,
+"return_pct": -12.4,
+"max_dd_pct": 14.1
+}
+},
+{
+"tf": "1d",
+"mode": "trend",
+"symbol": "NZDUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 40,
+"sl_atr": 2.0,
+"tp_atr": 2.0
+},
+"oos": {
+"trades": 20,
+"win_rate": 50.0,
+"profit_factor": 0.83,
+"return_pct": -2.2,
+"max_dd_pct": 6.8
+}
+},
+{
+"tf": "1d",
+"mode": "meanrev",
+"symbol": "NZDUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 5,
+"sl_atr": 1.5,
+"max_bars": 12
+},
+"oos": {
+"trades": 22,
+"win_rate": 59.1,
+"profit_factor": 0.98,
+"return_pct": -0.1,
+"max_dd_pct": 3.3
+}
+},
+{
+"tf": "1d",
+"mode": "grid",
+"symbol": "NZDUSD",
+"pass": false,
+"params": null,
+"oos": null
+},
+{
+"tf": "1d",
+"mode": "auto",
+"symbol": "NZDUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 25,
+"sl_atr": 2.0,
+"rsi_lo": 10,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 33,
+"win_rate": 48.5,
+"profit_factor": 0.64,
+"return_pct": -5.9,
+"max_dd_pct": 8.3
+}
+},
+{
+"tf": "1d",
+"mode": "trend",
+"symbol": "EURGBP",
+"pass": false,
+"params": null,
+"oos": null
+},
+{
+"tf": "1d",
+"mode": "meanrev",
+"symbol": "EURGBP",
+"pass": true,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 10,
+"sl_atr": 1.5,
+"max_bars": 12
+},
+"oos": {
+"trades": 34,
+"win_rate": 64.7,
+"profit_factor": 1.23,
+"return_pct": 1.5,
+"max_dd_pct": 2.7
+}
+},
+{
+"tf": "1d",
+"mode": "grid",
+"symbol": "EURGBP",
+"pass": false,
+"params": null,
+"oos": null
+},
+{
+"tf": "1d",
+"mode": "auto",
+"symbol": "EURGBP",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 25,
+"sl_atr": 2.0,
+"rsi_lo": 5,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 25,
+"win_rate": 60.0,
+"profit_factor": 0.68,
+"return_pct": -2.9,
+"max_dd_pct": 6.3
+}
+},
+{
+"tf": "1d",
+"mode": "trend",
+"symbol": "EURJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"sl_atr": 2.0,
+"tp_atr": 3.0
+},
+"oos": {
+"trades": 15,
+"win_rate": 46.7,
+"profit_factor": 1.3,
+"return_pct": 4.6,
+"max_dd_pct": 13.2
+}
+},
+{
+"tf": "1d",
+"mode": "meanrev",
+"symbol": "EURJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 5,
+"sl_atr": 2.5,
+"max_bars": 12
+},
+"oos": {
+"trades": 15,
+"win_rate": 80.0,
+"profit_factor": 1.34,
+"return_pct": 2.5,
+"max_dd_pct": 3.1
+}
+},
+{
+"tf": "1d",
+"mode": "grid",
+"symbol": "EURJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"rsi_lo": 10,
+"max_levels": 3,
+"max_bars": 72,
+"spacing_atr": 0.75,
+"tp_atr": 1.0
+},
+"oos": {
+"trades": 3,
+"win_rate": 100.0,
+"profit_factor": 99.0,
+"return_pct": 4.0,
+"max_dd_pct": 0.8
+}
+},
+{
+"tf": "1d",
+"mode": "auto",
+"symbol": "EURJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 25,
+"sl_atr": 1.5,
+"rsi_lo": 5,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 13,
+"win_rate": 69.2,
+"profit_factor": 1.61,
+"return_pct": 4.5,
+"max_dd_pct": 5.3
+}
+},
+{
+"tf": "1d",
+"mode": "trend",
+"symbol": "GBPJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"sl_atr": 2.0,
+"tp_atr": 2.0
+},
+"oos": {
+"trades": 16,
+"win_rate": 50.0,
+"profit_factor": 0.86,
+"return_pct": -2.5,
+"max_dd_pct": 8.5
+}
+},
+{
+"tf": "1d",
+"mode": "meanrev",
+"symbol": "GBPJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"bb_k": 2.0,
+"tp_atr": 3.0,
+"rsi_lo": 10,
+"sl_atr": 2.5,
+"max_bars": 12
+},
+"oos": {
+"trades": 23,
+"win_rate": 73.9,
+"profit_factor": 1.15,
+"return_pct": 1.9,
+"max_dd_pct": 5.3
+}
+},
+{
+"tf": "1d",
+"mode": "grid",
+"symbol": "GBPJPY",
+"pass": false,
+"params": null,
+"oos": null
+},
+{
+"tf": "1d",
+"mode": "auto",
+"symbol": "GBPJPY",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 20,
+"tp_atr": 3.0,
+"bb_k": 2.0,
+"max_bars": 24,
+"adx_th": 25,
+"sl_atr": 1.5,
+"rsi_lo": 5,
+"mr_sl_atr": 2.5
+},
+"oos": {
+"trades": 14,
+"win_rate": 42.9,
+"profit_factor": 0.31,
+"return_pct": -11.9,
+"max_dd_pct": 11.9
+}
+},
+{
+"tf": "1d",
+"mode": "trend",
+"symbol": "XAUUSD",
+"pass": false,
+"params": {
+"ema": 200,
+"atr": 14,
+"breakout": 40,
+"sl_atr": 1.5,
+"tp_atr": 3.0
+},
+"oos": {
+"trades": 0,
+"win_rate": 0,
+"profit_factor": 0.0,
+"return_pct": 0.0,
+"max_dd_pct": 0.0
+}
+},
+{
+"tf": "1d",
+"mode": "meanrev",
+"symbol": "XAUUSD",
+"pass": false,
+"params": null,
+"oos": null
+},
+{
+"tf": "1d",
+"mode": "grid",
+"symbol": "XAUUSD",
+"pass": false,
+"params": null,
+"oos": null
+},
+{
+"tf": "1d",
+"mode": "auto",
+"symbol": "XAUUSD",
+"pass": false,
+"params": null,
+"oos": null
+}
+]
