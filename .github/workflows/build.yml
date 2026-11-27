@@ -4,6 +4,11 @@ on:
     paths-ignore:
       - 'ssalimuto/**'
       - '.github/workflows/ssalimuto.yml'
+      - 'profits/**'
+      - 'cloud_bot/**'
+      - '.github/workflows/profits_build.yml'
+      - '.github/workflows/profits_publish.yml'
+      - '.github/workflows/profits_cloud.yml'
   workflow_dispatch:
 permissions:
   contents: write
