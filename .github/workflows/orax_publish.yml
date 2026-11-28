@@ -1,0 +1,44 @@
+name: Publish Orax to its fixed download link
+# The app is signed with the permanent key outside GitHub (the key is never in this repo).
+# The signed app sits on the branch "orax-signed"; this checks the key and the package,
+# then puts it on the fixed link as Orax.apk (not marked as the latest release).
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get the signed app
+        run: |
+          git fetch --depth 1 origin orax-signed
+          mkdir -p signed && git --work-tree=signed checkout origin/orax-signed -- .
+          ls -l signed
+          test -f signed/Orax.apk
+      - name: Check key and package
+        run: |
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          F=signed/Orax.apk
+          "$BT/zipalign" -c -p 4 $F
+          "$BT/apksigner" verify --verbose $F
+          D=$("$BT/apksigner" verify --print-certs $F | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')
+          test "$D" = "320faeaf8da56b8a0b98148d680af3fb2443499a00f9be853cdad18bf8b019c4" || { echo "not signed with the permanent key"; exit 1; }
+          "$BT/aapt" dump badging $F | head -1 | tee /tmp/badging
+          grep -q "package: name='org.ssalimuto.orax'" /tmp/badging
+          V=$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" /tmp/badging)
+          echo "VER=$V" >> $GITHUB_ENV
+          sha256sum $F
+      - name: Put it on the fixed link
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="Orax for Android. Made by Ssali Muto. Tap Orax.apk below to download the app.
+
+          Orax helps you find and plan work. Earnings depend on your effort; no app can promise income.
+
+          Version: $VER"
+          gh release view orax-android >/dev/null 2>&1 || gh release create orax-android --title "Orax for Android" --notes "$NOTES" --latest=false
+          gh release upload orax-android signed/Orax.apk --clobber
+          gh release edit orax-android --title "Orax for Android" --notes "$NOTES" --latest=false

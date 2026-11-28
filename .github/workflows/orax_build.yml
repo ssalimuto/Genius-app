@@ -1,0 +1,75 @@
+name: Build Orax APK
+on:
+  push:
+    paths:
+      - 'orax/**'
+      - '.github/workflows/orax_build.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: orax
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Release gate and logic tests
+        run: |
+          python tests/release_gate.py
+          python tests/test_core.py
+      - name: Headless cold start and UI smoke test (real Kivy window on a virtual screen)
+        run: |
+          sudo apt-get update -o Acquire::Retries=3 && sudo apt-get install -y -o Acquire::Retries=5 xvfb libgl1-mesa-dri libmtdev1 || true
+          pip install "kivy[base]==2.3.0" certifi
+          export KIVY_NO_ARGS=1
+          xvfb-run -a -s "-screen 0 720x1600x24" python tests/crash_guard_test.py
+          xvfb-run -a -s "-screen 0 720x1600x24" python tests/smoke_ui.py
+      - name: Install build tools
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo "http://archive.ubuntu.com/ubuntu/	priority:1" | sudo tee /etc/apt/apt-mirrors.txt; fi
+          sudo sed -i 's#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g' /etc/apt/sources.list 2>/dev/null || true
+          for i in 1 2 3; do
+            sudo apt-get update -o Acquire::Retries=3 && sudo apt-get install -y -o Acquire::Retries=5 --fix-missing git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev automake && break
+            echo "apt failed, retrying in 20s"; sleep 20
+          done
+          pip install --upgrade pip
+          pip install buildozer cython==0.29.36
+      - name: python-for-android v2024.01.21
+        run: |
+          git clone --depth 1 -b v2024.01.21 https://github.com/kivy/python-for-android.git p4a-src
+          sed -i "s#^p4a.branch = .*#p4a.source_dir = $PWD/p4a-src#" buildozer.spec
+          grep -n "p4a.source_dir" buildozer.spec
+      - name: Stamp build number and commit (version stays 1.0.0)
+        run: |
+          sed -i "0,/^BUILD_NUMBER = \"dev\"/s//BUILD_NUMBER = \"$GITHUB_RUN_NUMBER\"/" orax_app.py
+          sed -i "0,/^BUILD_COMMIT = \"dev\"/s//BUILD_COMMIT = \"${GITHUB_SHA::7}\"/" orax_app.py
+          grep -m3 -E '^(VERSION|BUILD_NUMBER|BUILD_COMMIT) = ' orax_app.py
+      - name: Build release APK (unsigned)
+        run: yes | buildozer android release
+      - name: Check the built APK
+        run: |
+          ls -l bin/
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          A=$(ls bin/*.apk | head -1)
+          "$BT/aapt" dump badging "$A" | grep -E "^package:|sdkVersion|native-code|uses-permission" | tee /tmp/badging.txt
+          grep -q "package: name='org.ssalimuto.orax' versionCode='102500001' versionName='1.0.0'" /tmp/badging.txt
+          grep -q "sdkVersion:'21'" /tmp/badging.txt
+          grep -q "armeabi-v7a" /tmp/badging.txt
+          grep -q "arm64-v8a" /tmp/badging.txt
+          "$BT/aapt" dump xmltree "$A" AndroidManifest.xml | grep -c -i "queries" 
+          unzip -l "$A" | grep -E "lib/.*/lib(python|pybundle|main)" 
+          mkdir -p out && cp "$A" "out/Orax-1.0.0-${GITHUB_RUN_NUMBER}-unsigned.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Orax-unsigned
+          path: orax/out/*.apk
+          retention-days: 14
